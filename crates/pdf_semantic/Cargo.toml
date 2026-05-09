@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Semantic document model construction from positioned text."
 
 [dependencies]
+pdf_text.workspace = true
 spdfdiff_types.workspace = true
 
 [lints]

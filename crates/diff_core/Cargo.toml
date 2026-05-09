@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Semantic document matching and diffing."
 
 [dependencies]
+pdf_semantic.workspace = true
 spdfdiff_types.workspace = true
 
 [lints]

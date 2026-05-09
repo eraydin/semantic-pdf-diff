@@ -13,7 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+diff_core.workspace = true
 diff_report.workspace = true
+pdf_content.workspace = true
+pdf_core.workspace = true
+pdf_semantic.workspace = true
+pdf_text.workspace = true
 spdfdiff_types.workspace = true
 
 [lints]

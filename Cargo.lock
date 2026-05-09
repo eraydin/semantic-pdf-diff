@@ -102,6 +102,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 name = "diff_core"
 version = "0.1.0"
 dependencies = [
+ "pdf_semantic",
  "spdfdiff_types",
 ]
 
@@ -161,6 +162,7 @@ dependencies = [
 name = "pdf_semantic"
 version = "0.1.0"
 dependencies = [
+ "pdf_text",
  "spdfdiff_types",
 ]
 
@@ -168,6 +170,7 @@ dependencies = [
 name = "pdf_text"
 version = "0.1.0"
 dependencies = [
+ "pdf_content",
  "spdfdiff_types",
 ]
 
@@ -237,7 +240,12 @@ name = "spdfdiff_cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "diff_core",
  "diff_report",
+ "pdf_content",
+ "pdf_core",
+ "pdf_semantic",
+ "pdf_text",
  "spdfdiff_types",
 ]
 

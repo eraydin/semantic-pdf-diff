@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Positioned glyph and text-run extraction."
 
 [dependencies]
+pdf_content.workspace = true
 spdfdiff_types.workspace = true
 
 [lints]
