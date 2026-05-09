@@ -2,16 +2,31 @@
 
 ## Coordination rules
 
-1. Every agent works in one crate or one clearly named folder.
-2. Every agent must add tests for new behavior.
-3. Shared public IR, geometry, provenance, IDs, and diagnostics belong in `crates/spdfdiff_types`.
-4. Public structs must derive `Debug`, `Clone` where reasonable, and `Serialize`/`Deserialize` only for report/IR-facing types.
-5. Do not introduce third-party PDF libraries into core crates.
-6. Do not change public IR fields without updating golden tests and `02_DATA_MODEL_AND_DIFF_IR.md`.
-7. Use small PRs. Each PR should compile independently.
-8. Prefer explicit diagnostics over panics.
-9. Add TODO comments only with issue-style tags: `TODO(spdfdiff-123): ...`.
-10. Any public claim about PDF compatibility must be backed by a corpus metric or a diagnostic test.
+1. Use `spdfdiff-orchestrator` when assigning or integrating multiple parallel workstreams.
+2. Every agent works in one crate or one clearly named folder.
+3. Every agent must add tests for new behavior.
+4. Shared public IR, geometry, provenance, IDs, and diagnostics belong in `crates/spdfdiff_types`.
+5. Public structs must derive `Debug`, `Clone` where reasonable, and `Serialize`/`Deserialize` only for report/IR-facing types.
+6. Do not introduce third-party PDF libraries into core crates.
+7. Do not change public IR fields without updating golden tests and `02_DATA_MODEL_AND_DIFF_IR.md`.
+8. Use small PRs. Each PR should compile independently.
+9. Prefer explicit diagnostics over panics.
+10. Add TODO comments only with issue-style tags: `TODO(spdfdiff-123): ...`.
+11. Any public claim about PDF compatibility must be backed by a corpus metric or a diagnostic test.
+
+## Orchestrator role
+
+The orchestrator is a thin technical integration role, not a feature owner.
+
+Responsibilities:
+
+- assign crate/folder ownership before parallel work begins;
+- protect `crates/spdfdiff_types`, `AGENTS.md`, plan files, diagnostics, serialized IR, and CLI shape from uncoordinated edits;
+- sequence shared-boundary changes before downstream work;
+- verify that each specialist uses the matching repo-local skill;
+- run or require the full workspace gate after integration;
+- label scope honestly as `vertical-slice`, `compatibility-gate`, or `public-alpha`;
+- pause for clarification when two agents need the same files or a change broadens product claims.
 
 ## Workstream A — Low-level PDF parser
 

@@ -41,6 +41,8 @@ PDF-specific crates are not allowed in core crates.
 
 Shared public types belong in `spdfdiff_types`. Do not duplicate public geometry, provenance, diagnostic, ID, or report-facing IR structs in downstream crates.
 
+Use the repo-local `spdfdiff-orchestrator` skill when coordinating parallel agents, changing shared public APIs, or integrating cross-crate work. The orchestrator owns sequencing and boundary checks; specialist agents own implementation inside their assigned crates or folders.
+
 ## 4. Branching model for agents
 
 Suggested branches:

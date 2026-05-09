@@ -1,0 +1,4 @@
+interface:
+  display_name: "SPDFDiff Orchestrator"
+  short_description: "Coordinate parallel work and shared APIs."
+  default_prompt: "Use this skill when coordinating multiple semantic-pdf-diff workstreams or reviewing shared API changes."

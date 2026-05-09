@@ -59,6 +59,8 @@ minimal_old.pdf + minimal_new.pdf
 ## Repo-Local Skills
 
 - Use repo-local skills from `.agents/skills` when a task matches their scope.
+- Use `spdfdiff-orchestrator` before coordinating parallel agents, changing shared
+  API boundaries, or merging cross-crate work.
 - Keep skills aligned with `AGENTS.md` and the plan files when workflow rules, crate
   boundaries, diagnostics, or verification requirements change.
 - Prefer updating the relevant skill in the same change that updates the canonical
