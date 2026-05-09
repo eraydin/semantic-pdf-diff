@@ -1,0 +1,4 @@
+interface:
+  display_name: "SPDFDiff Semantic Diff"
+  short_description: "Implement semantic extraction and diff engine slices."
+  default_prompt: "Use this skill when working on pdf_semantic or diff_core."

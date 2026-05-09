@@ -1,0 +1,4 @@
+interface:
+  display_name: "SPDFDiff Quality Gate"
+  short_description: "Validate fixtures, corpus, and release gates."
+  default_prompt: "Use this skill when validating quality, fixtures, fuzzing, corpus, or compatibility claims."

@@ -56,6 +56,14 @@ minimal_old.pdf + minimal_new.pdf
 - `spdfdiff_cli` owns the public CLI shape: `diff`, `inspect`, `extract`, and
   `corpus`.
 
+## Repo-Local Skills
+
+- Use repo-local skills from `.agents/skills` when a task matches their scope.
+- Keep skills aligned with `AGENTS.md` and the plan files when workflow rules, crate
+  boundaries, diagnostics, or verification requirements change.
+- Prefer updating the relevant skill in the same change that updates the canonical
+  plan or instructions it depends on.
+
 ## Diagnostics And Compatibility
 
 - Prefer explicit diagnostics and partial results over panics.

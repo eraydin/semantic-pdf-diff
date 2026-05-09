@@ -1,0 +1,4 @@
+interface:
+  display_name: "SPDFDiff Parser"
+  short_description: "Implement PDF parser slices for semantic-pdf-diff."
+  default_prompt: "Use this skill when implementing or reviewing pdf_core parser work."

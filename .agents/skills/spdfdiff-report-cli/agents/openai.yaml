@@ -1,0 +1,4 @@
+interface:
+  display_name: "SPDFDiff Report CLI"
+  short_description: "Implement report generation and CLI slices."
+  default_prompt: "Use this skill when working on diff_report or spdfdiff_cli."

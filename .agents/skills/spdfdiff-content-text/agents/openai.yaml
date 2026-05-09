@@ -1,0 +1,4 @@
+interface:
+  display_name: "SPDFDiff Content Text"
+  short_description: "Implement content stream and text extraction slices."
+  default_prompt: "Use this skill when working on pdf_content or pdf_text."
