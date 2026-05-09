@@ -36,6 +36,15 @@ pub struct PdfPage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ParsedIndirectObject {
+    pub id: ObjectId,
+    pub value: PdfPrimitive,
+    pub stream: Option<PdfStream>,
+    pub byte_range: ByteRange,
+    pub value_byte_range: ByteRange,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParsedPrimitive {
     pub value: PdfPrimitive,
     pub byte_range: ByteRange,
@@ -129,6 +138,112 @@ pub fn parse_primitive(bytes: &[u8], config: ParseConfig) -> Result<ParsedPrimit
     })
 }
 
+pub fn parse_indirect_object(
+    bytes: &[u8],
+    config: ParseConfig,
+) -> Result<ParsedIndirectObject, PdfDiffError> {
+    config.limits.check_file_size(bytes.len())?;
+    let mut parser = PrimitiveParser::new(bytes, config);
+    let object_start = parser.skip_whitespace_and_comments();
+    let object_number = parser.parse_unsigned_object_number("object number")?;
+    parser.skip_whitespace_and_comments();
+    let generation = parser.parse_unsigned_generation()?;
+    parser.skip_whitespace_and_comments();
+    parser.expect_keyword(b"obj")?;
+    let value_start = parser.skip_whitespace_and_comments();
+
+    let parts = split_indirect_object_value_and_stream(bytes, value_start, config)?;
+    let parsed = parse_primitive(parts.value_bytes, config)?;
+    let mut end_parser = PrimitiveParser::new(&bytes[parts.value_end..], config);
+    end_parser.skip_whitespace_and_comments();
+    end_parser.expect_keyword(b"endobj")?;
+    let object_end = parts.value_end + end_parser.index;
+    end_parser.skip_whitespace_and_comments();
+    if parts.value_end + end_parser.index < bytes.len() {
+        return Err(PdfDiffError::InvalidInput(
+            "trailing bytes after indirect object".into(),
+        ));
+    }
+
+    Ok(ParsedIndirectObject {
+        id: ObjectId {
+            number: object_number,
+            generation,
+        },
+        value: parsed.value,
+        stream: parts.stream,
+        byte_range: ByteRange::new(object_start, object_end),
+        value_byte_range: ByteRange::new(
+            parts.value_offset + parsed.byte_range.start,
+            parts.value_offset + parsed.byte_range.end,
+        ),
+    })
+}
+
+struct IndirectValueParts<'a> {
+    value_bytes: &'a [u8],
+    value_offset: usize,
+    value_end: usize,
+    stream: Option<PdfStream>,
+}
+
+fn split_indirect_object_value_and_stream(
+    bytes: &[u8],
+    value_start: usize,
+    config: ParseConfig,
+) -> Result<IndirectValueParts<'_>, PdfDiffError> {
+    let Some(relative_endobj) = find_keyword(bytes, value_start, b"endobj") else {
+        return Err(PdfDiffError::InvalidInput(
+            "indirect object is missing endobj".into(),
+        ));
+    };
+    let body_end = relative_endobj;
+    let Some(stream_marker) =
+        find_keyword(bytes, value_start, b"stream").filter(|marker| *marker < body_end)
+    else {
+        let (value_bytes, leading_trim) = trim_ascii(&bytes[value_start..body_end]);
+        return Ok(IndirectValueParts {
+            value_bytes,
+            value_offset: value_start + leading_trim,
+            value_end: body_end,
+            stream: None,
+        });
+    };
+    let (value_bytes, leading_trim) = trim_ascii(&bytes[value_start..stream_marker]);
+    let stream_data_start = match bytes.get(stream_marker + b"stream".len()) {
+        Some(b'\r') if bytes.get(stream_marker + b"stream".len() + 1) == Some(&b'\n') => {
+            stream_marker + b"stream".len() + 2
+        }
+        Some(b'\n') => stream_marker + b"stream".len() + 1,
+        _ => stream_marker + b"stream".len(),
+    };
+    let Some(endstream_marker) =
+        find_keyword(bytes, stream_data_start, b"endstream").filter(|marker| *marker < body_end)
+    else {
+        return Err(PdfDiffError::InvalidInput(
+            "stream object is missing endstream".into(),
+        ));
+    };
+    let stream_bytes = trim_trailing_ascii(&bytes[stream_data_start..endstream_marker]);
+    if stream_bytes.len() > config.limits.max_stream_bytes {
+        return Err(PdfDiffError::ResourceLimitExceeded(format!(
+            "stream has {} bytes, limit is {}",
+            stream_bytes.len(),
+            config.limits.max_stream_bytes
+        )));
+    }
+
+    Ok(IndirectValueParts {
+        value_bytes,
+        value_offset: value_start + leading_trim,
+        value_end: body_end,
+        stream: Some(PdfStream {
+            bytes: stream_bytes.to_vec(),
+            byte_range: ByteRange::new(stream_data_start, stream_data_start + stream_bytes.len()),
+        }),
+    })
+}
+
 struct PrimitiveParser<'a> {
     bytes: &'a [u8],
     index: usize,
@@ -169,6 +284,41 @@ impl<'a> PrimitiveParser<'a> {
                 "expected PDF primitive, found end of input".into(),
             )),
         }
+    }
+
+    fn parse_unsigned_object_number(&mut self, label: &str) -> Result<u32, PdfDiffError> {
+        let word = self.read_word();
+        let NumericPrimitive::Integer(value) = parse_number_token(&word)? else {
+            return Err(PdfDiffError::InvalidInput(format!(
+                "{label} must be an integer"
+            )));
+        };
+        u32::try_from(value).map_err(|_| {
+            PdfDiffError::InvalidInput(format!("{label} is outside the supported range"))
+        })
+    }
+
+    fn parse_unsigned_generation(&mut self) -> Result<u16, PdfDiffError> {
+        let word = self.read_word();
+        let NumericPrimitive::Integer(value) = parse_number_token(&word)? else {
+            return Err(PdfDiffError::InvalidInput(
+                "generation number must be an integer".into(),
+            ));
+        };
+        u16::try_from(value).map_err(|_| {
+            PdfDiffError::InvalidInput("generation number is outside the supported range".into())
+        })
+    }
+
+    fn expect_keyword(&mut self, expected: &[u8]) -> Result<(), PdfDiffError> {
+        let word = self.read_word();
+        if word == expected {
+            return Ok(());
+        }
+        Err(PdfDiffError::InvalidInput(format!(
+            "expected keyword {}",
+            String::from_utf8_lossy(expected)
+        )))
     }
 
     fn parse_keyword(&mut self) -> Result<PdfPrimitive, PdfDiffError> {
@@ -500,6 +650,34 @@ fn hex_value(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+fn find_keyword(bytes: &[u8], start: usize, keyword: &[u8]) -> Option<usize> {
+    bytes
+        .get(start..)?
+        .windows(keyword.len())
+        .position(|window| window == keyword)
+        .map(|index| start + index)
+}
+
+fn trim_ascii(bytes: &[u8]) -> (&[u8], usize) {
+    let mut start = 0;
+    let mut end = bytes.len();
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    (&bytes[start..end], start)
+}
+
+fn trim_trailing_ascii(bytes: &[u8]) -> &[u8] {
+    let mut end = bytes.len();
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &bytes[..end]
 }
 
 fn parse_header(bytes: &[u8]) -> Result<PdfDocument, PdfDiffError> {
@@ -870,6 +1048,82 @@ mod tests {
         assert!(matches!(
             parse_primitive(b"[[1]]", config),
             Err(PdfDiffError::ResourceLimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn parses_indirect_object_with_dictionary() {
+        let parsed = parse_indirect_object(
+            b"7 0 obj\n<< /Type /Page /Contents 8 0 R >>\nendobj\n",
+            ParseConfig::default(),
+        )
+        .expect("indirect object should parse");
+
+        assert_eq!(
+            parsed.id,
+            ObjectId {
+                number: 7,
+                generation: 0
+            }
+        );
+        assert_eq!(parsed.byte_range, ByteRange::new(0, 48));
+        assert_eq!(parsed.value_byte_range, ByteRange::new(8, 41));
+        let PdfPrimitive::Dictionary(entries) = parsed.value else {
+            panic!("expected dictionary object");
+        };
+        assert_eq!(
+            entries[1],
+            (
+                "Contents".into(),
+                PdfPrimitive::Reference(ObjectId {
+                    number: 8,
+                    generation: 0
+                })
+            )
+        );
+        assert_eq!(parsed.stream, None);
+    }
+
+    #[test]
+    fn parses_indirect_stream_object() {
+        let parsed = parse_indirect_object(
+            b"8 0 obj\n<< /Length 5 >>\nstream\nHello\nendstream\nendobj",
+            ParseConfig::default(),
+        )
+        .expect("stream object should parse");
+
+        assert_eq!(
+            parsed.id,
+            ObjectId {
+                number: 8,
+                generation: 0
+            }
+        );
+        assert_eq!(
+            parsed.value,
+            PdfPrimitive::Dictionary(vec![("Length".into(), PdfPrimitive::Integer(5))])
+        );
+        let stream = parsed.stream.expect("stream should be present");
+        assert_eq!(stream.bytes, b"Hello");
+        assert_eq!(stream.byte_range, ByteRange::new(31, 36));
+    }
+
+    #[test]
+    fn rejects_unterminated_indirect_object_gracefully() {
+        assert!(matches!(
+            parse_indirect_object(b"1 0 obj\n<< /Type /Page >>", ParseConfig::default()),
+            Err(PdfDiffError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_unterminated_stream_object_gracefully() {
+        assert!(matches!(
+            parse_indirect_object(
+                b"1 0 obj\n<< /Length 5 >>\nstream\nHello\nendobj",
+                ParseConfig::default()
+            ),
+            Err(PdfDiffError::InvalidInput(_))
         ));
     }
 
