@@ -35,6 +35,26 @@ pub struct PdfPage {
     pub content_object_id: ObjectId,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedPrimitive {
+    pub value: PdfPrimitive,
+    pub byte_range: ByteRange,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PdfPrimitive {
+    Null,
+    Boolean(bool),
+    Integer(i64),
+    Real(f64),
+    Name(String),
+    LiteralString(Vec<u8>),
+    HexString(Vec<u8>),
+    Array(Vec<PdfPrimitive>),
+    Dictionary(Vec<(String, PdfPrimitive)>),
+    Reference(ObjectId),
+}
+
 impl PdfDocument {
     pub fn parse(bytes: &[u8]) -> Result<Self, PdfDiffError> {
         Self::parse_with_config(bytes, ParseConfig::default())
@@ -89,6 +109,397 @@ pub struct PageContent<'a> {
 #[must_use]
 pub fn default_resource_limits() -> ResourceLimits {
     ResourceLimits::default()
+}
+
+pub fn parse_primitive(bytes: &[u8], config: ParseConfig) -> Result<ParsedPrimitive, PdfDiffError> {
+    config.limits.check_file_size(bytes.len())?;
+    let mut parser = PrimitiveParser::new(bytes, config);
+    let start = parser.skip_whitespace_and_comments();
+    let value = parser.parse_value(0)?;
+    let end = parser.index;
+    parser.skip_whitespace_and_comments();
+    if !parser.is_eof() {
+        return Err(PdfDiffError::InvalidInput(
+            "trailing bytes after PDF primitive".into(),
+        ));
+    }
+    Ok(ParsedPrimitive {
+        value,
+        byte_range: ByteRange::new(start, end),
+    })
+}
+
+struct PrimitiveParser<'a> {
+    bytes: &'a [u8],
+    index: usize,
+    config: ParseConfig,
+}
+
+impl<'a> PrimitiveParser<'a> {
+    fn new(bytes: &'a [u8], config: ParseConfig) -> Self {
+        Self {
+            bytes,
+            index: 0,
+            config,
+        }
+    }
+
+    fn parse_value(&mut self, depth: usize) -> Result<PdfPrimitive, PdfDiffError> {
+        if depth > self.config.limits.max_indirect_depth {
+            return Err(PdfDiffError::ResourceLimitExceeded(format!(
+                "primitive nesting depth exceeds limit of {}",
+                self.config.limits.max_indirect_depth
+            )));
+        }
+
+        self.skip_whitespace_and_comments();
+        match self.peek() {
+            Some(b'/') => self.parse_name().map(PdfPrimitive::Name),
+            Some(b'(') => self.parse_literal_string().map(PdfPrimitive::LiteralString),
+            Some(b'[') => self.parse_array(depth),
+            Some(b'<') if self.peek_next() == Some(b'<') => self.parse_dictionary(depth),
+            Some(b'<') => self.parse_hex_string().map(PdfPrimitive::HexString),
+            Some(byte) if starts_keyword_byte(byte) => self.parse_keyword(),
+            Some(byte) if starts_number_byte(byte) => self.parse_number_or_reference(),
+            Some(_) => Err(PdfDiffError::InvalidInput(format!(
+                "unexpected byte 0x{:02x} while parsing PDF primitive",
+                self.bytes[self.index]
+            ))),
+            None => Err(PdfDiffError::InvalidInput(
+                "expected PDF primitive, found end of input".into(),
+            )),
+        }
+    }
+
+    fn parse_keyword(&mut self) -> Result<PdfPrimitive, PdfDiffError> {
+        let word = self.read_word();
+        match word.as_slice() {
+            b"true" => Ok(PdfPrimitive::Boolean(true)),
+            b"false" => Ok(PdfPrimitive::Boolean(false)),
+            b"null" => Ok(PdfPrimitive::Null),
+            _ => Err(PdfDiffError::InvalidInput(format!(
+                "unsupported primitive keyword {}",
+                String::from_utf8_lossy(&word)
+            ))),
+        }
+    }
+
+    fn parse_number_or_reference(&mut self) -> Result<PdfPrimitive, PdfDiffError> {
+        let first = self.read_word();
+        let first_number = parse_number_token(&first)?;
+        let after_first = self.index;
+
+        if let NumericPrimitive::Integer(number) = first_number {
+            let restore = self.index;
+            self.skip_whitespace_and_comments();
+            if let Some(second) = self.try_read_integer_word() {
+                self.skip_whitespace_and_comments();
+                if self.peek() == Some(b'R') && self.peek_after_word() {
+                    self.index += 1;
+                    let object_number = u32::try_from(number).map_err(|_| {
+                        PdfDiffError::InvalidInput("reference object number is out of range".into())
+                    })?;
+                    let generation = u16::try_from(second).map_err(|_| {
+                        PdfDiffError::InvalidInput(
+                            "reference generation number is out of range".into(),
+                        )
+                    })?;
+                    return Ok(PdfPrimitive::Reference(ObjectId {
+                        number: object_number,
+                        generation,
+                    }));
+                }
+            }
+            self.index = restore;
+        }
+
+        self.index = after_first;
+        match first_number {
+            NumericPrimitive::Integer(value) => Ok(PdfPrimitive::Integer(value)),
+            NumericPrimitive::Real(value) => Ok(PdfPrimitive::Real(value)),
+        }
+    }
+
+    fn parse_name(&mut self) -> Result<String, PdfDiffError> {
+        self.expect_byte(b'/')?;
+        let mut output = Vec::new();
+        while let Some(byte) = self.peek() {
+            if is_delimiter_or_whitespace(byte) {
+                break;
+            }
+            if byte == b'#' {
+                self.index += 1;
+                let high = self.next_hex_digit()?;
+                let low = self.next_hex_digit()?;
+                output.push((high << 4) | low);
+            } else {
+                output.push(byte);
+                self.index += 1;
+            }
+        }
+        if output.is_empty() {
+            return Err(PdfDiffError::InvalidInput("PDF name is empty".into()));
+        }
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    }
+
+    fn parse_literal_string(&mut self) -> Result<Vec<u8>, PdfDiffError> {
+        self.expect_byte(b'(')?;
+        let mut output = Vec::new();
+        let mut depth = 1usize;
+        while let Some(byte) = self.peek() {
+            self.index += 1;
+            match byte {
+                b'\\' => {
+                    let Some(escaped) = self.peek() else {
+                        return Err(PdfDiffError::InvalidInput(
+                            "unterminated literal string escape".into(),
+                        ));
+                    };
+                    self.index += 1;
+                    match escaped {
+                        b'n' => output.push(b'\n'),
+                        b'r' => output.push(b'\r'),
+                        b't' => output.push(b'\t'),
+                        b'b' => output.push(0x08),
+                        b'f' => output.push(0x0c),
+                        b'\n' => {}
+                        b'\r' => {
+                            if self.peek() == Some(b'\n') {
+                                self.index += 1;
+                            }
+                        }
+                        b'0'..=b'7' => output.push(self.finish_octal_escape(escaped)),
+                        other => output.push(other),
+                    }
+                }
+                b'(' => {
+                    depth += 1;
+                    output.push(byte);
+                }
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(output);
+                    }
+                    output.push(byte);
+                }
+                other => output.push(other),
+            }
+        }
+        Err(PdfDiffError::InvalidInput(
+            "unterminated literal string".into(),
+        ))
+    }
+
+    fn parse_hex_string(&mut self) -> Result<Vec<u8>, PdfDiffError> {
+        self.expect_byte(b'<')?;
+        let mut nibbles = Vec::new();
+        while let Some(byte) = self.peek() {
+            self.index += 1;
+            if byte == b'>' {
+                if nibbles.len() % 2 == 1 {
+                    nibbles.push(0);
+                }
+                return Ok(nibbles
+                    .chunks(2)
+                    .map(|pair| (pair[0] << 4) | pair[1])
+                    .collect());
+            }
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
+            nibbles.push(hex_value(byte).ok_or_else(|| {
+                PdfDiffError::InvalidInput(format!("invalid hex string digit 0x{byte:02x}"))
+            })?);
+        }
+        Err(PdfDiffError::InvalidInput("unterminated hex string".into()))
+    }
+
+    fn parse_array(&mut self, depth: usize) -> Result<PdfPrimitive, PdfDiffError> {
+        self.expect_byte(b'[')?;
+        let mut values = Vec::new();
+        loop {
+            self.skip_whitespace_and_comments();
+            match self.peek() {
+                Some(b']') => {
+                    self.index += 1;
+                    return Ok(PdfPrimitive::Array(values));
+                }
+                Some(_) => values.push(self.parse_value(depth + 1)?),
+                None => {
+                    return Err(PdfDiffError::InvalidInput("unterminated array".into()));
+                }
+            }
+        }
+    }
+
+    fn parse_dictionary(&mut self, depth: usize) -> Result<PdfPrimitive, PdfDiffError> {
+        self.expect_byte(b'<')?;
+        self.expect_byte(b'<')?;
+        let mut entries = Vec::new();
+        loop {
+            self.skip_whitespace_and_comments();
+            match (self.peek(), self.peek_next()) {
+                (Some(b'>'), Some(b'>')) => {
+                    self.index += 2;
+                    return Ok(PdfPrimitive::Dictionary(entries));
+                }
+                (Some(b'/'), _) => {
+                    let key = self.parse_name()?;
+                    let value = self.parse_value(depth + 1)?;
+                    entries.push((key, value));
+                }
+                (Some(_), _) => {
+                    return Err(PdfDiffError::InvalidInput(
+                        "dictionary key must be a PDF name".into(),
+                    ));
+                }
+                (None, _) => {
+                    return Err(PdfDiffError::InvalidInput("unterminated dictionary".into()));
+                }
+            }
+        }
+    }
+
+    fn skip_whitespace_and_comments(&mut self) -> usize {
+        loop {
+            while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
+                self.index += 1;
+            }
+            if self.peek() == Some(b'%') {
+                while let Some(byte) = self.peek() {
+                    self.index += 1;
+                    if matches!(byte, b'\r' | b'\n') {
+                        break;
+                    }
+                }
+                continue;
+            }
+            return self.index;
+        }
+    }
+
+    fn read_word(&mut self) -> Vec<u8> {
+        let start = self.index;
+        while let Some(byte) = self.peek() {
+            if is_delimiter_or_whitespace(byte) {
+                break;
+            }
+            self.index += 1;
+        }
+        self.bytes[start..self.index].to_vec()
+    }
+
+    fn try_read_integer_word(&mut self) -> Option<i64> {
+        let start = self.index;
+        let word = self.read_word();
+        if word.is_empty() {
+            self.index = start;
+            return None;
+        }
+        match parse_number_token(&word).ok()? {
+            NumericPrimitive::Integer(value) => Some(value),
+            NumericPrimitive::Real(_) => {
+                self.index = start;
+                None
+            }
+        }
+    }
+
+    fn peek_after_word(&self) -> bool {
+        self.bytes
+            .get(self.index + 1)
+            .is_none_or(|byte| is_delimiter_or_whitespace(*byte))
+    }
+
+    fn finish_octal_escape(&mut self, first: u8) -> u8 {
+        let mut value = first - b'0';
+        for _ in 0..2 {
+            let Some(byte @ b'0'..=b'7') = self.peek() else {
+                break;
+            };
+            self.index += 1;
+            value = value.saturating_mul(8).saturating_add(byte - b'0');
+        }
+        value
+    }
+
+    fn expect_byte(&mut self, expected: u8) -> Result<(), PdfDiffError> {
+        if self.peek() == Some(expected) {
+            self.index += 1;
+            return Ok(());
+        }
+        Err(PdfDiffError::InvalidInput(format!(
+            "expected byte 0x{expected:02x}"
+        )))
+    }
+
+    fn next_hex_digit(&mut self) -> Result<u8, PdfDiffError> {
+        let Some(byte) = self.peek() else {
+            return Err(PdfDiffError::InvalidInput(
+                "name hex escape is truncated".into(),
+            ));
+        };
+        self.index += 1;
+        hex_value(byte)
+            .ok_or_else(|| PdfDiffError::InvalidInput("name hex escape is invalid".into()))
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.index).copied()
+    }
+
+    fn peek_next(&self) -> Option<u8> {
+        self.bytes.get(self.index + 1).copied()
+    }
+
+    fn is_eof(&self) -> bool {
+        self.index >= self.bytes.len()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NumericPrimitive {
+    Integer(i64),
+    Real(f64),
+}
+
+fn parse_number_token(bytes: &[u8]) -> Result<NumericPrimitive, PdfDiffError> {
+    let token = std::str::from_utf8(bytes)
+        .map_err(|_| PdfDiffError::InvalidInput("number token is not UTF-8".into()))?;
+    if token.contains('.') {
+        return token
+            .parse::<f64>()
+            .map(NumericPrimitive::Real)
+            .map_err(|_| PdfDiffError::InvalidInput(format!("invalid real number {token}")));
+    }
+    token
+        .parse::<i64>()
+        .map(NumericPrimitive::Integer)
+        .map_err(|_| PdfDiffError::InvalidInput(format!("invalid integer {token}")))
+}
+
+fn starts_keyword_byte(byte: u8) -> bool {
+    matches!(byte, b't' | b'f' | b'n')
+}
+
+fn starts_number_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')
+}
+
+fn is_delimiter_or_whitespace(byte: u8) -> bool {
+    byte.is_ascii_whitespace()
+        || matches!(byte, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'/' | b'%')
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn parse_header(bytes: &[u8]) -> Result<PdfDocument, PdfDiffError> {
@@ -340,6 +751,126 @@ mod tests {
         let error =
             PdfDocument::parse_with_config(b"%PDF-1.7\n", config).expect_err("limit should fail");
         assert!(matches!(error, PdfDiffError::ResourceLimitExceeded(_)));
+    }
+
+    #[test]
+    fn parses_primitive_scalars() {
+        assert_eq!(
+            parse_primitive(b" true ", ParseConfig::default())
+                .expect("boolean should parse")
+                .value,
+            PdfPrimitive::Boolean(true)
+        );
+        assert_eq!(
+            parse_primitive(b"null", ParseConfig::default())
+                .expect("null should parse")
+                .value,
+            PdfPrimitive::Null
+        );
+        assert_eq!(
+            parse_primitive(b"-42", ParseConfig::default())
+                .expect("integer should parse")
+                .value,
+            PdfPrimitive::Integer(-42)
+        );
+        assert!(matches!(
+            parse_primitive(b"3.25", ParseConfig::default())
+                .expect("real should parse")
+                .value,
+            PdfPrimitive::Real(value) if value == 3.25
+        ));
+    }
+
+    #[test]
+    fn skips_comments_and_preserves_primitive_byte_range() {
+        let parsed = parse_primitive(b"  % comment\n/Name", ParseConfig::default())
+            .expect("name should parse");
+
+        assert_eq!(parsed.value, PdfPrimitive::Name("Name".into()));
+        assert_eq!(parsed.byte_range, ByteRange::new(12, 17));
+    }
+
+    #[test]
+    fn parses_names_with_hex_escapes() {
+        let parsed =
+            parse_primitive(b"/A#20Name", ParseConfig::default()).expect("name should parse");
+
+        assert_eq!(parsed.value, PdfPrimitive::Name("A Name".into()));
+    }
+
+    #[test]
+    fn parses_literal_and_hex_strings() {
+        assert_eq!(
+            parse_primitive(br"(Hello \(PDF\)\n)", ParseConfig::default())
+                .expect("literal string should parse")
+                .value,
+            PdfPrimitive::LiteralString(b"Hello (PDF)\n".to_vec())
+        );
+        assert_eq!(
+            parse_primitive(b"<48656c6c6f2>", ParseConfig::default())
+                .expect("hex string should parse")
+                .value,
+            PdfPrimitive::HexString(vec![b'H', b'e', b'l', b'l', b'o', 0x20])
+        );
+    }
+
+    #[test]
+    fn parses_arrays_dictionaries_and_references() {
+        let parsed = parse_primitive(
+            b"<< /Type /Page /Count 1 /Kids [3 0 R] >>",
+            ParseConfig::default(),
+        )
+        .expect("dictionary should parse");
+
+        let PdfPrimitive::Dictionary(entries) = parsed.value else {
+            panic!("expected dictionary");
+        };
+        assert_eq!(
+            entries[0],
+            ("Type".into(), PdfPrimitive::Name("Page".into()))
+        );
+        assert_eq!(entries[1], ("Count".into(), PdfPrimitive::Integer(1)));
+        assert_eq!(
+            entries[2],
+            (
+                "Kids".into(),
+                PdfPrimitive::Array(vec![PdfPrimitive::Reference(ObjectId {
+                    number: 3,
+                    generation: 0
+                })])
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_primitives_without_panic() {
+        assert!(matches!(
+            parse_primitive(b"(unterminated", ParseConfig::default()),
+            Err(PdfDiffError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            parse_primitive(b"<< /Name >>", ParseConfig::default()),
+            Err(PdfDiffError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            parse_primitive(b"<zz>", ParseConfig::default()),
+            Err(PdfDiffError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn enforces_primitive_nesting_limit() {
+        let config = ParseConfig {
+            limits: ResourceLimits {
+                max_indirect_depth: 1,
+                ..ResourceLimits::default()
+            },
+        };
+
+        assert!(matches!(
+            parse_primitive(b"[[1]]", config),
+            Err(PdfDiffError::ResourceLimitExceeded(_))
+        ));
     }
 
     #[test]
