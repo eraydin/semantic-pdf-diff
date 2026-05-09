@@ -1,20 +1,82 @@
 # Semantic PDF Diff Agent Instructions
 
-## Scope
+## Mission
 
-Build the project as a Rust library and CLI for semantic PDF diffing. Start with the
-engine and stable report IR; do not build a GUI, editor, renderer, or OCR path in the
-early vertical slice.
+Build `semantic-pdf-diff` as a Rust library and CLI that produces stable,
+evidence-preserving semantic diffs for digitally generated PDFs.
 
-## Required Workflow
+The first usable target is the vertical slice:
 
-- Keep public shared types in `crates/spdfdiff_types`.
-- Do not add PDF-specific parser libraries to core crates.
-- Prefer diagnostics and partial results over panics for invalid or unsupported PDFs.
-- Preserve provenance whenever data crosses crate boundaries.
-- Keep output deterministic: no timestamps, random IDs, absolute paths, or unordered
-  report-facing maps in snapshots.
-- Add tests with behavior changes.
+```text
+minimal_old.pdf + minimal_new.pdf
+  -> parse object graph
+  -> resolve page
+  -> parse content stream
+  -> extract positioned text
+  -> build paragraph blocks
+  -> diff text blocks
+  -> emit stable JSON and simple Markdown
+```
+
+## Non-Negotiable Constraints
+
+- Do not use third-party PDF parser/rendering libraries in core crates.
+- Do not start with a GUI, PDF editor, full renderer, OCR path, or visual diff mode.
+- Do not hide unsupported PDF features; emit stable diagnostics.
+- Do not discard provenance when data crosses crate boundaries.
+- Do not introduce nondeterministic report output.
+- Do not claim broad real-world PDF compatibility until xref streams, object streams,
+  resource limits, and corpus metrics exist.
+- Do not parse untrusted PDF streams without applying `ResourceLimits`.
+- Do not couple semantic diff logic directly to raw PDF object internals.
+
+## Rust Standards
+
+- Use Rust 2024 for new code.
+- Maintain MSRV `1.85` unless the plan is deliberately updated.
+- Keep workspace lints active and fix warnings instead of suppressing them.
+- Keep `unsafe` out of the workspace unless a future plan explicitly justifies it.
+- Add tests with behavior changes; prefer a test-first workflow for parser, extraction,
+  semantic, diff, and report behavior.
+
+## Crate Boundaries
+
+- `crates/spdfdiff_types` owns shared public IDs, geometry, provenance,
+  diagnostics, resource limits, errors, and report-facing IR.
+- Downstream crates may re-export shared types for ergonomics, but must not define
+  incompatible public versions of those models.
+- `pdf_core` owns low-level parsing, object graph, streams, xref handling, and parser
+  diagnostics.
+- `pdf_content` owns content stream tokenization and operator interpretation.
+- `pdf_text` owns font decoding, `/ToUnicode`, glyphs, and text runs.
+- `pdf_semantic` owns layout blocks, semantic nodes, reading order, and anchors.
+- `diff_core` owns matching, text hunks, move detection, confidence, and neutral
+  severity defaults.
+- `diff_report` owns stable JSON, Markdown, and later HTML/SVG report generation.
+- `spdfdiff_cli` owns the public CLI shape: `diff`, `inspect`, `extract`, and
+  `corpus`.
+
+## Diagnostics And Compatibility
+
+- Prefer explicit diagnostics and partial results over panics.
+- Every unsupported feature needs a stable code, such as `UNSUPPORTED_XREF_STREAM`,
+  `UNSUPPORTED_ENCRYPTION`, `MISSING_TOUNICODE`, or `CONTENT_OPERATOR_UNKNOWN`.
+- Use compatibility labels honestly:
+  - `vertical-slice`: controlled fixtures only.
+  - `compatibility-gate`: modern PDF constructs such as xref/object streams.
+  - `public-alpha`: corpus-backed behavior with documented limitations.
+- Public-alpha claims require tests, diagnostics, and corpus evidence.
+
+## Determinism
+
+- Do not use random UUIDs, pointer addresses, timestamps, absolute paths, or
+  unordered map iteration in report-facing output.
+- Keep IDs deterministic through structural paths, canonical hashes, or sorted
+  counters.
+- Snapshot output must not include machine-specific paths, timings, or unstable
+  ordering.
+- The default engine classifier must not emit legal/business `Critical` severity;
+  reserve that for caller-provided domain classifiers.
 
 ## Verification
 
@@ -26,5 +88,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-If Rust tooling is unavailable locally, state that clearly and run the non-Cargo checks
-that are available.
+If Rust tooling is unavailable locally, state that clearly and run the non-Cargo
+checks that are available. Do not claim Cargo verification passed unless it actually
+ran successfully.
