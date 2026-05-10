@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Low-level PDF parsing primitives for semantic PDF diffing."
 
 [dependencies]
+flate2.workspace = true
 spdfdiff_types.workspace = true
 
 [lints]

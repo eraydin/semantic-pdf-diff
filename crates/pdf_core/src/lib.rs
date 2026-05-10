@@ -1,4 +1,6 @@
+use flate2::read::ZlibDecoder;
 use spdfdiff_types::{ByteRange, Diagnostic, ObjectId, ParseConfig, PdfDiffError, ResourceLimits};
+use std::io::Read;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfVersion {
@@ -25,7 +27,19 @@ pub struct PdfObject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfStream {
     pub bytes: Vec<u8>,
+    pub raw_bytes: Vec<u8>,
     pub byte_range: ByteRange,
+    pub declared_length: Option<usize>,
+    pub filter: Option<String>,
+    pub decoded: bool,
+}
+
+impl PdfStream {
+    fn with_metadata(mut self, declared_length: Option<usize>, filter: Option<String>) -> Self {
+        self.declared_length = declared_length;
+        self.filter = filter;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +195,18 @@ pub fn parse_indirect_object(
 
     let parts = split_indirect_object_value_and_stream(bytes, value_start, config)?;
     let parsed = parse_primitive(parts.value_bytes, config)?;
+    let stream = parts
+        .stream
+        .map(|raw_stream| {
+            decode_stream(
+                raw_stream.with_metadata(
+                    stream_length_from_primitive(&parsed.value),
+                    stream_filter_from_primitive(&parsed.value),
+                ),
+                config,
+            )
+        })
+        .transpose()?;
     let mut end_parser = PrimitiveParser::new(&bytes[parts.value_end..], config);
     end_parser.skip_whitespace_and_comments();
     end_parser.expect_keyword(b"endobj")?;
@@ -198,7 +224,7 @@ pub fn parse_indirect_object(
             generation,
         },
         value: parsed.value,
-        stream: parts.stream,
+        stream,
         byte_range: ByteRange::new(object_start, object_end),
         value_byte_range: ByteRange::new(
             parts.value_offset + parsed.byte_range.start,
@@ -385,9 +411,93 @@ fn split_indirect_object_value_and_stream(
         value_end: body_end,
         stream: Some(PdfStream {
             bytes: stream_bytes.to_vec(),
+            raw_bytes: stream_bytes.to_vec(),
             byte_range: ByteRange::new(stream_data_start, stream_data_start + stream_bytes.len()),
+            declared_length: None,
+            filter: None,
+            decoded: true,
         }),
     })
+}
+
+fn decode_stream(mut stream: PdfStream, config: ParseConfig) -> Result<PdfStream, PdfDiffError> {
+    match stream.filter.as_deref() {
+        None => {
+            stream.decoded = true;
+            Ok(stream)
+        }
+        Some("FlateDecode") | Some("Fl") => {
+            match flate_decode_limited(&stream.raw_bytes, config.limits.max_decoded_stream_bytes) {
+                Ok(decoded) => {
+                    stream.bytes = decoded;
+                    stream.decoded = true;
+                    Ok(stream)
+                }
+                Err(PdfDiffError::ResourceLimitExceeded(message)) => {
+                    Err(PdfDiffError::ResourceLimitExceeded(message))
+                }
+                Err(_) => {
+                    stream.bytes.clone_from(&stream.raw_bytes);
+                    stream.decoded = false;
+                    Ok(stream)
+                }
+            }
+        }
+        Some(_) => {
+            stream.bytes.clone_from(&stream.raw_bytes);
+            stream.decoded = false;
+            Ok(stream)
+        }
+    }
+}
+
+fn flate_decode_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, PdfDiffError> {
+    let mut decoder = ZlibDecoder::new(bytes);
+    let mut decoded = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = decoder
+            .read(&mut chunk)
+            .map_err(|error| PdfDiffError::InvalidInput(format!("FlateDecode failed: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        if decoded.len().saturating_add(read) > limit {
+            return Err(PdfDiffError::ResourceLimitExceeded(format!(
+                "decoded stream exceeds limit of {limit} bytes"
+            )));
+        }
+        decoded.extend_from_slice(&chunk[..read]);
+    }
+    Ok(decoded)
+}
+
+fn stream_filter_from_primitive(value: &PdfPrimitive) -> Option<String> {
+    match dictionary_value(value, "Filter")? {
+        PdfPrimitive::Name(name) => Some(name.clone()),
+        PdfPrimitive::Array(items) => items.iter().find_map(|item| match item {
+            PdfPrimitive::Name(name) => Some(name.clone()),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn stream_length_from_primitive(value: &PdfPrimitive) -> Option<usize> {
+    match dictionary_value(value, "Length")? {
+        PdfPrimitive::Integer(length) => usize::try_from(*length).ok(),
+        _ => None,
+    }
+}
+
+fn dictionary_value<'a>(value: &'a PdfPrimitive, key: &str) -> Option<&'a PdfPrimitive> {
+    let PdfPrimitive::Dictionary(entries) = value else {
+        return None;
+    };
+    entries
+        .iter()
+        .find(|(entry_key, _)| entry_key == key)
+        .map(|(_, entry_value)| entry_value)
 }
 
 struct PrimitiveParser<'a> {
@@ -1068,10 +1178,38 @@ fn parse_stream(
             config.limits.max_stream_bytes
         )));
     }
-    Ok(Some(PdfStream {
-        bytes: bytes[stream_data_start..stream_data_end].to_vec(),
-        byte_range: ByteRange::new(stream_data_start, stream_data_end),
-    }))
+    decode_stream(
+        PdfStream {
+            bytes: bytes[stream_data_start..stream_data_end].to_vec(),
+            raw_bytes: bytes[stream_data_start..stream_data_end].to_vec(),
+            byte_range: ByteRange::new(stream_data_start, stream_data_end),
+            declared_length: stream_length_from_body(body),
+            filter: stream_filter_from_body(body),
+            decoded: true,
+        },
+        *config,
+    )
+    .map(Some)
+}
+
+fn stream_filter_from_body(body: &str) -> Option<String> {
+    let start = body.find("/Filter")? + "/Filter".len();
+    let mut parts = body[start..].split_ascii_whitespace();
+    let first = parts.next()?;
+    if let Some(name) = first.strip_prefix('/') {
+        return Some(name.to_owned());
+    }
+    if first == "[" {
+        return parts
+            .find_map(|part| part.strip_prefix('/'))
+            .map(ToOwned::to_owned);
+    }
+    None
+}
+
+fn stream_length_from_body(body: &str) -> Option<usize> {
+    let start = body.find("/Length")? + "/Length".len();
+    body[start..].split_ascii_whitespace().next()?.parse().ok()
 }
 
 fn resolve_pages(
@@ -1131,14 +1269,38 @@ fn scan_unsupported_features(objects: &[PdfObject]) -> Vec<Diagnostic> {
                 .with_object(object.id),
             );
         }
-        if object.stream.is_some() && object.body.contains("/Filter") {
-            diagnostics.push(
-                Diagnostic::warning(
-                    "UNSUPPORTED_STREAM_FILTER",
-                    "filtered streams are not decoded by the vertical-slice parser",
-                )
-                .with_object(object.id),
-            );
+        if let Some(stream) = &object.stream {
+            if let Some(declared_length) = stream.declared_length {
+                if declared_length != stream.raw_bytes.len() {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "STREAM_LENGTH_MISMATCH",
+                            format!(
+                                "stream declared {declared_length} bytes but contains {} bytes",
+                                stream.raw_bytes.len()
+                            ),
+                        )
+                        .with_object(object.id),
+                    );
+                }
+            }
+            match stream.filter.as_deref() {
+                Some("FlateDecode" | "Fl") if !stream.decoded => diagnostics.push(
+                    Diagnostic::warning(
+                        "STREAM_DECODE_FAILED",
+                        "FlateDecode stream could not be decoded; raw bytes were preserved",
+                    )
+                    .with_object(object.id),
+                ),
+                Some("FlateDecode" | "Fl") | None => {}
+                Some(filter) => diagnostics.push(
+                    Diagnostic::warning(
+                        "UNSUPPORTED_STREAM_FILTER",
+                        format!("unsupported stream filter {filter}; raw bytes were preserved"),
+                    )
+                    .with_object(object.id),
+                ),
+            }
         }
     }
     diagnostics
@@ -1173,7 +1335,9 @@ impl DiagnosticExt for Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::ZlibEncoder};
     use spdfdiff_types::DiagnosticSeverity;
+    use std::io::Write;
 
     #[test]
     fn parses_pdf_header() {
@@ -1374,7 +1538,38 @@ mod tests {
         );
         let stream = parsed.stream.expect("stream should be present");
         assert_eq!(stream.bytes, b"Hello");
+        assert_eq!(stream.raw_bytes, b"Hello");
+        assert_eq!(stream.declared_length, Some(5));
+        assert_eq!(stream.filter, None);
+        assert!(stream.decoded);
         assert_eq!(stream.byte_range, ByteRange::new(31, 36));
+    }
+
+    #[test]
+    fn decodes_flate_stream_object() {
+        let compressed = flate_bytes(b"BT (Hello) Tj ET");
+        let object = stream_object_with_filter(&compressed, "/FlateDecode");
+        let parsed = parse_indirect_object(&object, ParseConfig::default())
+            .expect("flate stream object should parse");
+        let stream = parsed.stream.expect("stream should be present");
+
+        assert_eq!(stream.bytes, b"BT (Hello) Tj ET");
+        assert_eq!(stream.raw_bytes, compressed);
+        assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
+        assert!(stream.decoded);
+    }
+
+    #[test]
+    fn preserves_raw_bytes_when_flate_decode_fails() {
+        let object = stream_object_with_filter(b"not deflated", "/FlateDecode");
+        let parsed = parse_indirect_object(&object, ParseConfig::default())
+            .expect("failed decode should keep partial stream object");
+        let stream = parsed.stream.expect("stream should be present");
+
+        assert_eq!(stream.bytes, b"not deflated");
+        assert_eq!(stream.raw_bytes, b"not deflated");
+        assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
+        assert!(!stream.decoded);
     }
 
     #[test]
@@ -1498,13 +1693,13 @@ endobj
     }
 
     #[test]
-    fn emits_diagnostic_for_filtered_stream() {
+    fn emits_diagnostic_for_unsupported_stream_filter() {
         let pdf = b"%PDF-1.7
 1 0 obj
 << /Type /Page /Contents 2 0 R >>
 endobj
 2 0 obj
-<< /Length 5 /Filter /FlateDecode >>
+<< /Length 5 /Filter /ASCIIHexDecode >>
 stream
 abcde
 endstream
@@ -1519,6 +1714,47 @@ endobj
                     number: 2,
                     generation: 0
                 })));
+    }
+
+    #[test]
+    fn emits_diagnostic_when_flate_decode_fails() {
+        let pdf = b"%PDF-1.7
+1 0 obj
+<< /Type /Page /Contents 2 0 R >>
+endobj
+2 0 obj
+<< /Length 12 /Filter /FlateDecode >>
+stream
+not deflated
+endstream
+endobj
+";
+        let document = PdfDocument::parse(pdf).expect("fixture should parse partially");
+
+        assert!(document.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == "STREAM_DECODE_FAILED"
+            && diagnostic.object
+                == Some(ObjectId {
+                    number: 2,
+                    generation: 0
+                })));
+    }
+
+    #[test]
+    fn enforces_decoded_stream_size_limit() {
+        let compressed = flate_bytes(b"decoded text");
+        let object = stream_object_with_filter(&compressed, "/FlateDecode");
+        let config = ParseConfig {
+            limits: ResourceLimits {
+                max_decoded_stream_bytes: 4,
+                ..ResourceLimits::default()
+            },
+        };
+
+        assert!(matches!(
+            parse_indirect_object(&object, config),
+            Err(PdfDiffError::ResourceLimitExceeded(_))
+        ));
     }
 
     fn minimal_pdf() -> &'static [u8] {
@@ -1571,6 +1807,23 @@ endobj
             object_offsets,
             xref_offset,
         }
+    }
+
+    fn flate_bytes(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bytes).expect("fixture should compress");
+        encoder.finish().expect("fixture should finish")
+    }
+
+    fn stream_object_with_filter(stream_bytes: &[u8], filter: &str) -> Vec<u8> {
+        let mut object = format!(
+            "9 0 obj\n<< /Length {} /Filter {filter} >>\nstream\n",
+            stream_bytes.len()
+        )
+        .into_bytes();
+        object.extend_from_slice(stream_bytes);
+        object.extend_from_slice(b"\nendstream\nendobj");
+        object
     }
 
     fn dictionary_entry<'a>(value: &'a PdfPrimitive, key: &str) -> Option<&'a PdfPrimitive> {
