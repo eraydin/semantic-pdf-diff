@@ -56,6 +56,13 @@ pub struct ParsedIndirectObject {
     pub stream: Option<PdfStream>,
     pub byte_range: ByteRange,
     pub value_byte_range: ByteRange,
+    pub embedded_source: Option<EmbeddedObjectSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedObjectSource {
+    pub object_stream_id: ObjectId,
+    pub object_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -289,6 +296,7 @@ pub fn parse_indirect_object(
             parts.value_offset + parsed.byte_range.start,
             parts.value_offset + parsed.byte_range.end,
         ),
+        embedded_source: None,
     })
 }
 
@@ -409,6 +417,8 @@ pub fn parse_object_store(bytes: &[u8], config: ParseConfig) -> Result<ObjectSto
         }
         objects.push(object);
     }
+    let mut embedded_objects = extract_object_streams(&objects, config)?;
+    objects.append(&mut embedded_objects);
     objects.sort_by_key(|object| (object.id.number, object.id.generation));
     Ok(ObjectStore { xref, objects })
 }
@@ -423,6 +433,158 @@ fn offset_indirect_object_ranges(object: &mut ParsedIndirectObject, offset: usiz
 
 fn offset_range(range: ByteRange, offset: usize) -> ByteRange {
     ByteRange::new(range.start + offset, range.end + offset)
+}
+
+fn extract_object_streams(
+    objects: &[ParsedIndirectObject],
+    config: ParseConfig,
+) -> Result<Vec<ParsedIndirectObject>, PdfDiffError> {
+    let mut embedded = Vec::new();
+    for object in objects {
+        if !matches!(
+            dictionary_value(&object.value, "Type"),
+            Some(PdfPrimitive::Name(name)) if name == "ObjStm"
+        ) {
+            continue;
+        }
+        embedded.extend(extract_object_stream(object, config)?);
+    }
+    Ok(embedded)
+}
+
+fn extract_object_stream(
+    object: &ParsedIndirectObject,
+    config: ParseConfig,
+) -> Result<Vec<ParsedIndirectObject>, PdfDiffError> {
+    let Some(stream) = &object.stream else {
+        return Err(PdfDiffError::InvalidInput(format!(
+            "object stream {} does not contain a stream",
+            object.id.number
+        )));
+    };
+    if !stream.decoded {
+        return Err(PdfDiffError::InvalidInput(format!(
+            "object stream {} could not be decoded",
+            object.id.number
+        )));
+    }
+    let object_count = required_dictionary_usize(&object.value, "N")?;
+    let first_object_offset = required_dictionary_usize(&object.value, "First")?;
+    if object_count > config.limits.max_objects {
+        return Err(resource_limit_error(
+            "RESOURCE_LIMIT_OBJECT_COUNT",
+            format!(
+                "object stream {} contains {object_count} objects, limit is {}",
+                object.id.number, config.limits.max_objects
+            ),
+        ));
+    }
+    let header = stream.bytes.get(..first_object_offset).ok_or_else(|| {
+        PdfDiffError::InvalidInput(format!(
+            "object stream {} has /First outside the decoded stream",
+            object.id.number
+        ))
+    })?;
+    let offsets = parse_object_stream_offsets(header, object_count, object.id)?;
+    let mut embedded = Vec::new();
+    for (index, (object_number, relative_offset)) in offsets.iter().copied().enumerate() {
+        let object_start = first_object_offset
+            .checked_add(relative_offset)
+            .ok_or_else(|| PdfDiffError::InvalidInput("object stream offset overflow".into()))?;
+        let object_end = offsets
+            .get(index + 1)
+            .map_or(stream.bytes.len(), |(_, next_offset)| {
+                first_object_offset + *next_offset
+            });
+        if object_start > object_end || object_end > stream.bytes.len() {
+            return Err(PdfDiffError::InvalidInput(format!(
+                "object stream {} has malformed embedded object offsets",
+                object.id.number
+            )));
+        }
+        let object_bytes = trim_trailing_ascii(&stream.bytes[object_start..object_end]);
+        let parsed = parse_primitive(object_bytes, config)?;
+        embedded.push(ParsedIndirectObject {
+            id: ObjectId {
+                number: object_number,
+                generation: 0,
+            },
+            value: parsed.value,
+            stream: None,
+            byte_range: object
+                .stream
+                .as_ref()
+                .map_or(object.byte_range, |source_stream| source_stream.byte_range),
+            value_byte_range: ByteRange::new(
+                object_start + parsed.byte_range.start,
+                object_start + parsed.byte_range.end,
+            ),
+            embedded_source: Some(EmbeddedObjectSource {
+                object_stream_id: object.id,
+                object_index: index,
+            }),
+        });
+    }
+    Ok(embedded)
+}
+
+fn parse_object_stream_offsets(
+    bytes: &[u8],
+    object_count: usize,
+    object_stream_id: ObjectId,
+) -> Result<Vec<(u32, usize)>, PdfDiffError> {
+    let header = std::str::from_utf8(bytes).map_err(|_| {
+        PdfDiffError::InvalidInput(format!(
+            "object stream {} has a non-UTF-8 offset table",
+            object_stream_id.number
+        ))
+    })?;
+    let mut parts = header.split_ascii_whitespace();
+    let mut offsets = Vec::new();
+    for _ in 0..object_count {
+        let object_number = parts
+            .next()
+            .ok_or_else(|| {
+                PdfDiffError::InvalidInput(format!(
+                    "object stream {} offset table is truncated",
+                    object_stream_id.number
+                ))
+            })?
+            .parse::<u32>()
+            .map_err(|_| {
+                PdfDiffError::InvalidInput(format!(
+                    "object stream {} has invalid embedded object number",
+                    object_stream_id.number
+                ))
+            })?;
+        let offset = parts
+            .next()
+            .ok_or_else(|| {
+                PdfDiffError::InvalidInput(format!(
+                    "object stream {} offset table is truncated",
+                    object_stream_id.number
+                ))
+            })?
+            .parse::<usize>()
+            .map_err(|_| {
+                PdfDiffError::InvalidInput(format!(
+                    "object stream {} has invalid embedded object offset",
+                    object_stream_id.number
+                ))
+            })?;
+        offsets.push((object_number, offset));
+    }
+    Ok(offsets)
+}
+
+fn required_dictionary_usize(value: &PdfPrimitive, key: &str) -> Result<usize, PdfDiffError> {
+    let Some(PdfPrimitive::Integer(number)) = dictionary_value(value, key) else {
+        return Err(PdfDiffError::InvalidInput(format!(
+            "dictionary is missing integer /{key}"
+        )));
+    };
+    usize::try_from(*number)
+        .map_err(|_| PdfDiffError::InvalidInput(format!("dictionary /{key} is out of range")))
 }
 
 fn parse_xref_stream_at(
@@ -2070,6 +2232,47 @@ mod tests {
     }
 
     #[test]
+    fn resolves_object_stored_inside_object_stream() {
+        let fixture = object_stream_pdf(false);
+        let store = parse_object_store(&fixture.bytes, ParseConfig::default())
+            .expect("object stream store should parse");
+
+        let embedded = store
+            .get(ObjectId {
+                number: 5,
+                generation: 0,
+            })
+            .expect("embedded object should resolve");
+
+        assert_eq!(
+            embedded.value,
+            PdfPrimitive::Dictionary(vec![("Type".into(), PdfPrimitive::Name("Page".into()))])
+        );
+        assert_eq!(
+            embedded.embedded_source,
+            Some(EmbeddedObjectSource {
+                object_stream_id: ObjectId {
+                    number: 2,
+                    generation: 0
+                },
+                object_index: 0
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_object_stream_fails_softly() {
+        let fixture = object_stream_pdf(true);
+        let error = parse_object_store(&fixture.bytes, ParseConfig::default())
+            .expect_err("malformed object stream should fail");
+
+        assert!(matches!(
+            error,
+            PdfDiffError::InvalidInput(message) if message.contains("object stream")
+        ));
+    }
+
+    #[test]
     fn malformed_xref_stream_reports_exact_error() {
         let fixture = malformed_xref_stream_pdf();
         let error =
@@ -2302,6 +2505,57 @@ endobj
         bytes.extend_from_slice(
             format!(
                 "4 0 obj\n<< /Type /XRef /Size 4 /Root 1 0 R /W [1 4 2] /Index [0 4] /Length {} /Filter /FlateDecode >>\nstream\n",
+                compressed.len()
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(&compressed);
+        bytes.extend_from_slice(
+            format!("\nendstream\nendobj\nstartxref\n{xref_offset}\n%%EOF\n").as_bytes(),
+        );
+
+        ClassicXrefFixture {
+            bytes,
+            object_offsets,
+            xref_offset,
+        }
+    }
+
+    fn object_stream_pdf(malformed: bool) -> ClassicXrefFixture {
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut object_offsets = Vec::new();
+
+        object_offsets.push(bytes.len());
+        bytes.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Page 5 0 R >>\nendobj\n");
+
+        let embedded_body = b"<< /Type /Page >>";
+        let object_stream_header = if malformed { "5 0" } else { "5 0 " };
+        let object_count = if malformed { 2 } else { 1 };
+        let first = object_stream_header.len();
+        object_offsets.push(bytes.len());
+        bytes.extend_from_slice(
+            format!(
+                "2 0 obj\n<< /Type /ObjStm /N {object_count} /First {first} /Length {} >>\nstream\n",
+                first + embedded_body.len()
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(object_stream_header.as_bytes());
+        bytes.extend_from_slice(embedded_body);
+        bytes.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let xref_offset = bytes.len();
+        let mut xref_data = Vec::new();
+        push_xref_stream_entry(&mut xref_data, 0, 0, 65_535);
+        push_xref_stream_entry(&mut xref_data, 1, object_offsets[0], 0);
+        push_xref_stream_entry(&mut xref_data, 1, object_offsets[1], 0);
+        push_xref_stream_entry(&mut xref_data, 0, 0, 0);
+        push_xref_stream_entry(&mut xref_data, 1, xref_offset, 0);
+        push_xref_stream_entry(&mut xref_data, 2, 2, 0);
+        let compressed = flate_bytes(&xref_data);
+        bytes.extend_from_slice(
+            format!(
+                "4 0 obj\n<< /Type /XRef /Size 6 /Root 1 0 R /W [1 4 2] /Index [0 6] /Length {} /Filter /FlateDecode >>\nstream\n",
                 compressed.len()
             )
             .as_bytes(),
