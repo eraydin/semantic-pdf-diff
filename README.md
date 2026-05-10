@@ -5,6 +5,21 @@ digitally generated PDFs and producing stable semantic diff reports.
 
 The current CLI entry point is `spdfdiff`.
 
+## Current Capabilities
+
+The `spdfdiff diff` command currently compares extracted text from simple,
+digitally generated PDFs and writes JSON or Markdown reports.
+
+The `pdf_core` library crate also exposes parser APIs for:
+
+- PDF headers, primitive objects, indirect objects, and stream objects;
+- no-filter and `FlateDecode` stream bytes;
+- classic xref tables and trailers;
+- controlled `/Type /XRef` streams with `/W` and `/Index`;
+- controlled `/Type /ObjStm` object streams through `ObjectStore`;
+- resource limits for file size, object count, reference depth, stream bytes,
+  decoded stream bytes, content operators, and page count.
+
 ## Build
 
 From the repository root:
@@ -91,6 +106,26 @@ report includes this kind of summary and change entry:
 
 Each change includes old/new evidence when extracted text is available, including
 page number, bounding box, text, and provenance fields.
+
+## Parser Library Example
+
+Use `pdf_core` directly when you need parser-level access to objects and xref
+data:
+
+```rust
+use pdf_core::parse_object_store;
+use spdfdiff_types::{ObjectId, ParseConfig};
+
+let bytes = std::fs::read("sample.pdf")?;
+let store = parse_object_store(&bytes, ParseConfig::default())?;
+
+if let Some(object) = store.get(ObjectId { number: 1, generation: 0 }) {
+    println!("{:?}", object.value);
+}
+```
+
+For embedded object-stream members, `object.embedded_source` identifies the
+containing object stream and embedded object index.
 
 ## Markdown Example
 
