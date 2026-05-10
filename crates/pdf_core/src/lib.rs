@@ -70,6 +70,17 @@ pub struct XrefEntry {
     pub object_id: ObjectId,
     pub byte_offset: usize,
     pub in_use: bool,
+    pub kind: XrefEntryKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XrefEntryKind {
+    Free,
+    InUse,
+    Compressed {
+        object_stream: ObjectId,
+        object_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +93,47 @@ impl ObjectStore {
     #[must_use]
     pub fn get(&self, id: ObjectId) -> Option<&ParsedIndirectObject> {
         self.objects.iter().find(|object| object.id == id)
+    }
+
+    pub fn resolve_reference_chain(
+        &self,
+        id: ObjectId,
+        limits: ResourceLimits,
+    ) -> Result<&ParsedIndirectObject, PdfDiffError> {
+        let mut current = id;
+        let mut seen = Vec::new();
+        for depth in 0..=limits.max_indirect_depth {
+            if seen.contains(&current) {
+                return Err(resource_limit_error(
+                    "RESOURCE_LIMIT_REFERENCE_CYCLE",
+                    format!("reference cycle detected at object {}", current.number),
+                ));
+            }
+            seen.push(current);
+            let object = self.get(current).ok_or_else(|| {
+                PdfDiffError::InvalidInput(format!("object {} was not found", current.number))
+            })?;
+            let PdfPrimitive::Reference(next) = object.value else {
+                return Ok(object);
+            };
+            if depth == limits.max_indirect_depth {
+                return Err(resource_limit_error(
+                    "RESOURCE_LIMIT_REFERENCE_DEPTH",
+                    format!(
+                        "reference depth exceeds limit of {}",
+                        limits.max_indirect_depth
+                    ),
+                ));
+            }
+            current = next;
+        }
+        Err(resource_limit_error(
+            "RESOURCE_LIMIT_REFERENCE_DEPTH",
+            format!(
+                "reference depth exceeds limit of {}",
+                limits.max_indirect_depth
+            ),
+        ))
     }
 }
 
@@ -115,11 +167,14 @@ impl PdfDocument {
         let mut document = parse_header(bytes)?;
         document.objects = parse_indirect_objects(bytes, &config)?;
         if document.objects.len() > config.limits.max_objects {
-            return Err(PdfDiffError::ResourceLimitExceeded(format!(
-                "file has {} indirect objects, limit is {}",
-                document.objects.len(),
-                config.limits.max_objects
-            )));
+            return Err(resource_limit_error(
+                "RESOURCE_LIMIT_OBJECT_COUNT",
+                format!(
+                    "file has {} indirect objects, limit is {}",
+                    document.objects.len(),
+                    config.limits.max_objects
+                ),
+            ));
         }
         document
             .diagnostics
@@ -179,6 +234,10 @@ pub fn parse_primitive(bytes: &[u8], config: ParseConfig) -> Result<ParsedPrimit
     })
 }
 
+fn resource_limit_error(code: &str, message: impl Into<String>) -> PdfDiffError {
+    PdfDiffError::ResourceLimitExceeded(format!("{code}: {}", message.into()))
+}
+
 pub fn parse_indirect_object(
     bytes: &[u8],
     config: ParseConfig,
@@ -236,6 +295,12 @@ pub fn parse_indirect_object(
 pub fn parse_xref_table(bytes: &[u8], config: ParseConfig) -> Result<XrefTable, PdfDiffError> {
     config.limits.check_file_size(bytes.len())?;
     let start_offset = locate_startxref(bytes)?;
+    if bytes
+        .get(start_offset..)
+        .is_some_and(|remaining| !remaining.starts_with(b"xref"))
+    {
+        return parse_xref_stream_at(bytes, start_offset, config);
+    }
     let mut parser = XrefParser::new(bytes, start_offset);
     parser.expect_keyword(b"xref")?;
     let mut entries = Vec::new();
@@ -279,16 +344,24 @@ pub fn parse_xref_table(bytes: &[u8], config: ParseConfig) -> Result<XrefTable, 
                 },
                 byte_offset,
                 in_use,
+                kind: if in_use {
+                    XrefEntryKind::InUse
+                } else {
+                    XrefEntryKind::Free
+                },
             });
         }
     }
 
     if entries.len() > config.limits.max_objects {
-        return Err(PdfDiffError::ResourceLimitExceeded(format!(
-            "xref table has {} entries, limit is {}",
-            entries.len(),
-            config.limits.max_objects
-        )));
+        return Err(resource_limit_error(
+            "RESOURCE_LIMIT_OBJECT_COUNT",
+            format!(
+                "xref table has {} entries, limit is {}",
+                entries.len(),
+                config.limits.max_objects
+            ),
+        ));
     }
 
     let trailer_start = parser.skip_ascii_whitespace();
@@ -310,7 +383,7 @@ pub fn parse_object_store(bytes: &[u8], config: ParseConfig) -> Result<ObjectSto
     for entry in xref
         .entries
         .iter()
-        .filter(|entry| entry.in_use && entry.object_id.number != 0)
+        .filter(|entry| entry.kind == XrefEntryKind::InUse && entry.object_id.number != 0)
     {
         if entry.byte_offset >= bytes.len() {
             return Err(PdfDiffError::InvalidInput(format!(
@@ -350,6 +423,249 @@ fn offset_indirect_object_ranges(object: &mut ParsedIndirectObject, offset: usiz
 
 fn offset_range(range: ByteRange, offset: usize) -> ByteRange {
     ByteRange::new(range.start + offset, range.end + offset)
+}
+
+fn parse_xref_stream_at(
+    bytes: &[u8],
+    start_offset: usize,
+    config: ParseConfig,
+) -> Result<XrefTable, PdfDiffError> {
+    let object_end = find_keyword(bytes, start_offset, b"endobj")
+        .map(|offset| offset + b"endobj".len())
+        .ok_or_else(|| PdfDiffError::InvalidInput("xref stream object is missing endobj".into()))?;
+    let object = parse_indirect_object(&bytes[start_offset..object_end], config)?;
+    let PdfPrimitive::Dictionary(_) = object.value else {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream object value must be a dictionary".into(),
+        ));
+    };
+    if !matches!(
+        dictionary_value(&object.value, "Type"),
+        Some(PdfPrimitive::Name(name)) if name == "XRef"
+    ) {
+        return Err(PdfDiffError::InvalidInput(
+            "startxref does not point to a classic xref table or /XRef stream".into(),
+        ));
+    }
+    let Some(stream) = object.stream else {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream object does not contain a stream".into(),
+        ));
+    };
+    if !stream.decoded {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream could not be decoded".into(),
+        ));
+    }
+
+    let widths = xref_stream_widths(&object.value)?;
+    let indices = xref_stream_indices(&object.value)?;
+    let entries = parse_xref_stream_entries(&stream.bytes, &widths, &indices, config.limits)?;
+
+    Ok(XrefTable {
+        start_offset,
+        entries,
+        trailer: object.value,
+    })
+}
+
+fn xref_stream_widths(value: &PdfPrimitive) -> Result<[usize; 3], PdfDiffError> {
+    let Some(PdfPrimitive::Array(items)) = dictionary_value(value, "W") else {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream is missing /W array".into(),
+        ));
+    };
+    if items.len() != 3 {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream /W array must have three entries".into(),
+        ));
+    }
+    let mut widths = [0usize; 3];
+    for (index, item) in items.iter().enumerate() {
+        let PdfPrimitive::Integer(width) = item else {
+            return Err(PdfDiffError::InvalidInput(
+                "xref stream /W entries must be integers".into(),
+            ));
+        };
+        widths[index] = usize::try_from(*width).map_err(|_| {
+            PdfDiffError::InvalidInput("xref stream /W entry is out of range".into())
+        })?;
+    }
+    if widths == [0, 0, 0] {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream /W array cannot be all zero".into(),
+        ));
+    }
+    Ok(widths)
+}
+
+fn xref_stream_indices(value: &PdfPrimitive) -> Result<Vec<(usize, usize)>, PdfDiffError> {
+    if let Some(PdfPrimitive::Array(items)) = dictionary_value(value, "Index") {
+        if items.len() % 2 != 0 {
+            return Err(PdfDiffError::InvalidInput(
+                "xref stream /Index array must contain object/count pairs".into(),
+            ));
+        }
+        let mut pairs = Vec::new();
+        for pair in items.chunks(2) {
+            let [PdfPrimitive::Integer(first), PdfPrimitive::Integer(count)] = pair else {
+                return Err(PdfDiffError::InvalidInput(
+                    "xref stream /Index entries must be integers".into(),
+                ));
+            };
+            pairs.push((
+                usize::try_from(*first).map_err(|_| {
+                    PdfDiffError::InvalidInput(
+                        "xref stream /Index object number is out of range".into(),
+                    )
+                })?,
+                usize::try_from(*count).map_err(|_| {
+                    PdfDiffError::InvalidInput("xref stream /Index count is out of range".into())
+                })?,
+            ));
+        }
+        return Ok(pairs);
+    }
+
+    let Some(PdfPrimitive::Integer(size)) = dictionary_value(value, "Size") else {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream requires /Size when /Index is absent".into(),
+        ));
+    };
+    Ok(vec![(
+        0,
+        usize::try_from(*size)
+            .map_err(|_| PdfDiffError::InvalidInput("xref stream /Size is out of range".into()))?,
+    )])
+}
+
+fn parse_xref_stream_entries(
+    bytes: &[u8],
+    widths: &[usize; 3],
+    indices: &[(usize, usize)],
+    limits: ResourceLimits,
+) -> Result<Vec<XrefEntry>, PdfDiffError> {
+    let entry_width = widths.iter().sum::<usize>();
+    if entry_width == 0 {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream entry width is zero".into(),
+        ));
+    }
+    let expected_entries = indices
+        .iter()
+        .try_fold(0usize, |total, (_, count)| total.checked_add(*count))
+        .ok_or_else(|| PdfDiffError::InvalidInput("xref stream entry count overflow".into()))?;
+    if expected_entries > limits.max_objects {
+        return Err(resource_limit_error(
+            "RESOURCE_LIMIT_OBJECT_COUNT",
+            format!(
+                "xref stream has {expected_entries} entries, limit is {}",
+                limits.max_objects
+            ),
+        ));
+    }
+    let expected_bytes = expected_entries
+        .checked_mul(entry_width)
+        .ok_or_else(|| PdfDiffError::InvalidInput("xref stream byte count overflow".into()))?;
+    if bytes.len() < expected_bytes {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream is shorter than /W and /Index require".into(),
+        ));
+    }
+
+    let mut entries = Vec::new();
+    let mut cursor = 0;
+    for (first_object, count) in indices {
+        for local_index in 0..*count {
+            let field_type = read_xref_stream_field(bytes, &mut cursor, widths[0])?.unwrap_or(1);
+            let field_2 = read_xref_stream_field(bytes, &mut cursor, widths[1])?.unwrap_or(0);
+            let field_3 = read_xref_stream_field(bytes, &mut cursor, widths[2])?.unwrap_or(0);
+            let object_number = u32::try_from(first_object + local_index).map_err(|_| {
+                PdfDiffError::InvalidInput("xref stream object number is out of range".into())
+            })?;
+            let entry = match field_type {
+                0 => XrefEntry {
+                    object_id: ObjectId {
+                        number: object_number,
+                        generation: u16::try_from(field_3).map_err(|_| {
+                            PdfDiffError::InvalidInput(
+                                "xref stream generation is out of range".into(),
+                            )
+                        })?,
+                    },
+                    byte_offset: 0,
+                    in_use: false,
+                    kind: XrefEntryKind::Free,
+                },
+                1 => XrefEntry {
+                    object_id: ObjectId {
+                        number: object_number,
+                        generation: u16::try_from(field_3).map_err(|_| {
+                            PdfDiffError::InvalidInput(
+                                "xref stream generation is out of range".into(),
+                            )
+                        })?,
+                    },
+                    byte_offset: field_2,
+                    in_use: true,
+                    kind: XrefEntryKind::InUse,
+                },
+                2 => XrefEntry {
+                    object_id: ObjectId {
+                        number: object_number,
+                        generation: 0,
+                    },
+                    byte_offset: 0,
+                    in_use: true,
+                    kind: XrefEntryKind::Compressed {
+                        object_stream: ObjectId {
+                            number: u32::try_from(field_2).map_err(|_| {
+                                PdfDiffError::InvalidInput(
+                                    "xref stream object-stream number is out of range".into(),
+                                )
+                            })?,
+                            generation: 0,
+                        },
+                        object_index: field_3,
+                    },
+                },
+                other => {
+                    return Err(PdfDiffError::InvalidInput(format!(
+                        "unsupported xref stream entry type {other}"
+                    )));
+                }
+            };
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
+}
+
+fn read_xref_stream_field(
+    bytes: &[u8],
+    cursor: &mut usize,
+    width: usize,
+) -> Result<Option<usize>, PdfDiffError> {
+    if width == 0 {
+        return Ok(None);
+    }
+    let end = cursor
+        .checked_add(width)
+        .ok_or_else(|| PdfDiffError::InvalidInput("xref stream cursor overflow".into()))?;
+    let Some(field) = bytes.get(*cursor..end) else {
+        return Err(PdfDiffError::InvalidInput(
+            "xref stream entry is truncated".into(),
+        ));
+    };
+    *cursor = end;
+    let mut value = 0usize;
+    for byte in field {
+        value = value
+            .checked_mul(256)
+            .and_then(|current| current.checked_add(usize::from(*byte)))
+            .ok_or_else(|| PdfDiffError::InvalidInput("xref stream field overflow".into()))?;
+    }
+    Ok(Some(value))
 }
 
 struct IndirectValueParts<'a> {
@@ -398,11 +714,14 @@ fn split_indirect_object_value_and_stream(
     };
     let stream_bytes = trim_trailing_ascii(&bytes[stream_data_start..endstream_marker]);
     if stream_bytes.len() > config.limits.max_stream_bytes {
-        return Err(PdfDiffError::ResourceLimitExceeded(format!(
-            "stream has {} bytes, limit is {}",
-            stream_bytes.len(),
-            config.limits.max_stream_bytes
-        )));
+        return Err(resource_limit_error(
+            "RESOURCE_LIMIT_STREAM_BYTES",
+            format!(
+                "stream has {} bytes, limit is {}",
+                stream_bytes.len(),
+                config.limits.max_stream_bytes
+            ),
+        ));
     }
 
     Ok(IndirectValueParts {
@@ -463,9 +782,10 @@ fn flate_decode_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, PdfDiffEr
             break;
         }
         if decoded.len().saturating_add(read) > limit {
-            return Err(PdfDiffError::ResourceLimitExceeded(format!(
-                "decoded stream exceeds limit of {limit} bytes"
-            )));
+            return Err(resource_limit_error(
+                "RESOURCE_LIMIT_DECODED_STREAM_BYTES",
+                format!("decoded stream exceeds limit of {limit} bytes"),
+            ));
         }
         decoded.extend_from_slice(&chunk[..read]);
     }
@@ -517,10 +837,13 @@ impl<'a> PrimitiveParser<'a> {
 
     fn parse_value(&mut self, depth: usize) -> Result<PdfPrimitive, PdfDiffError> {
         if depth > self.config.limits.max_indirect_depth {
-            return Err(PdfDiffError::ResourceLimitExceeded(format!(
-                "primitive nesting depth exceeds limit of {}",
-                self.config.limits.max_indirect_depth
-            )));
+            return Err(resource_limit_error(
+                "RESOURCE_LIMIT_RECURSION_DEPTH",
+                format!(
+                    "primitive nesting depth exceeds limit of {}",
+                    self.config.limits.max_indirect_depth
+                ),
+            ));
         }
 
         self.skip_whitespace_and_comments();
@@ -1173,10 +1496,13 @@ fn parse_stream(
     }
     let stream_len = stream_data_end.saturating_sub(stream_data_start);
     if stream_len > config.limits.max_stream_bytes {
-        return Err(PdfDiffError::ResourceLimitExceeded(format!(
-            "stream has {stream_len} bytes, limit is {}",
-            config.limits.max_stream_bytes
-        )));
+        return Err(resource_limit_error(
+            "RESOURCE_LIMIT_STREAM_BYTES",
+            format!(
+                "stream has {stream_len} bytes, limit is {}",
+                config.limits.max_stream_bytes
+            ),
+        ));
     }
     decode_stream(
         PdfStream {
@@ -1239,11 +1565,14 @@ fn resolve_pages(
         });
     }
     if pages.len() > limits.max_pages {
-        return Err(PdfDiffError::ResourceLimitExceeded(format!(
-            "file has {} pages, limit is {}",
-            pages.len(),
-            limits.max_pages
-        )));
+        return Err(resource_limit_error(
+            "RESOURCE_LIMIT_PAGE_COUNT",
+            format!(
+                "file has {} pages, limit is {}",
+                pages.len(),
+                limits.max_pages
+            ),
+        ));
     }
     Ok(pages)
 }
@@ -1251,15 +1580,6 @@ fn resolve_pages(
 fn scan_unsupported_features(objects: &[PdfObject]) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for object in objects {
-        if object.body.contains("/Type /XRef") {
-            diagnostics.push(
-                Diagnostic::warning(
-                    "UNSUPPORTED_XREF_STREAM",
-                    "xref stream objects are not part of the vertical-slice parser",
-                )
-                .with_object(object.id),
-            );
-        }
         if object.body.contains("/Type /ObjStm") {
             diagnostics.push(
                 Diagnostic::warning(
@@ -1362,6 +1682,25 @@ mod tests {
         let error =
             PdfDocument::parse_with_config(b"%PDF-1.7\n", config).expect_err("limit should fail");
         assert!(matches!(error, PdfDiffError::ResourceLimitExceeded(_)));
+    }
+
+    #[test]
+    fn object_count_limit_error_has_stable_code() {
+        let fixture = classic_xref_pdf();
+        let config = ParseConfig {
+            limits: ResourceLimits {
+                max_objects: 1,
+                ..ResourceLimits::default()
+            },
+        };
+
+        let error = parse_xref_table(&fixture.bytes, config).expect_err("limit should fail");
+
+        assert!(matches!(
+            error,
+            PdfDiffError::ResourceLimitExceeded(message)
+                if message.contains("RESOURCE_LIMIT_OBJECT_COUNT")
+        ));
     }
 
     #[test]
@@ -1480,7 +1819,8 @@ mod tests {
 
         assert!(matches!(
             parse_primitive(b"[[1]]", config),
-            Err(PdfDiffError::ResourceLimitExceeded(_))
+            Err(PdfDiffError::ResourceLimitExceeded(message))
+                if message.contains("RESOURCE_LIMIT_RECURSION_DEPTH")
         ));
     }
 
@@ -1637,7 +1977,112 @@ mod tests {
     }
 
     #[test]
-    fn emits_diagnostic_for_xref_stream_object() {
+    fn detects_recursive_reference_chain_safely() {
+        let fixture = recursive_reference_pdf();
+        let store = parse_object_store(&fixture, ParseConfig::default())
+            .expect("recursive object store should parse");
+
+        let error = store
+            .resolve_reference_chain(
+                ObjectId {
+                    number: 1,
+                    generation: 0,
+                },
+                ResourceLimits::default(),
+            )
+            .expect_err("cycle should be rejected");
+
+        assert!(matches!(
+            error,
+            PdfDiffError::ResourceLimitExceeded(message)
+                if message.contains("RESOURCE_LIMIT_REFERENCE_CYCLE")
+        ));
+    }
+
+    #[test]
+    fn enforces_reference_chain_depth_limit() {
+        let fixture = reference_chain_pdf();
+        let store = parse_object_store(&fixture, ParseConfig::default())
+            .expect("reference chain store should parse");
+        let limits = ResourceLimits {
+            max_indirect_depth: 1,
+            ..ResourceLimits::default()
+        };
+
+        let error = store
+            .resolve_reference_chain(
+                ObjectId {
+                    number: 1,
+                    generation: 0,
+                },
+                limits,
+            )
+            .expect_err("depth should be rejected");
+
+        assert!(matches!(
+            error,
+            PdfDiffError::ResourceLimitExceeded(message)
+                if message.contains("RESOURCE_LIMIT_REFERENCE_DEPTH")
+        ));
+    }
+
+    #[test]
+    fn parses_controlled_xref_stream() {
+        let fixture = xref_stream_pdf(false);
+        let xref = parse_xref_table(&fixture.bytes, ParseConfig::default())
+            .expect("xref stream should parse");
+
+        assert_eq!(xref.start_offset, fixture.xref_offset);
+        assert_eq!(xref.entries.len(), 4);
+        assert_eq!(xref.entries[1].kind, XrefEntryKind::InUse);
+        assert_eq!(xref.entries[1].byte_offset, fixture.object_offsets[0]);
+        assert_eq!(
+            dictionary_entry(&xref.trailer, "Type"),
+            Some(&PdfPrimitive::Name("XRef".into()))
+        );
+
+        let store = parse_object_store(&fixture.bytes, ParseConfig::default())
+            .expect("xref stream object store should parse");
+        assert!(
+            store
+                .get(ObjectId {
+                    number: 1,
+                    generation: 0
+                })
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_compressed_xref_stream_entry() {
+        let fixture = xref_stream_pdf(true);
+        let xref = parse_xref_table(&fixture.bytes, ParseConfig::default())
+            .expect("xref stream should parse");
+
+        assert!(xref.entries.iter().any(|entry| entry.kind
+            == XrefEntryKind::Compressed {
+                object_stream: ObjectId {
+                    number: 2,
+                    generation: 0
+                },
+                object_index: 7
+            }));
+    }
+
+    #[test]
+    fn malformed_xref_stream_reports_exact_error() {
+        let fixture = malformed_xref_stream_pdf();
+        let error =
+            parse_xref_table(&fixture, ParseConfig::default()).expect_err("xref should fail");
+
+        assert!(matches!(
+            error,
+            PdfDiffError::InvalidInput(message) if message.contains("/W")
+        ));
+    }
+
+    #[test]
+    fn xref_stream_object_is_not_reported_as_unsupported() {
         let pdf = b"%PDF-1.7
 1 0 obj
 << /Type /XRef /Length 0 >>
@@ -1648,13 +2093,7 @@ endobj
 ";
         let document = PdfDocument::parse(pdf).expect("xref stream fixture should parse partially");
 
-        assert!(document.diagnostics.iter().any(|diagnostic| diagnostic.code
-            == "UNSUPPORTED_XREF_STREAM"
-            && diagnostic.object
-                == Some(ObjectId {
-                    number: 1,
-                    generation: 0
-                })));
+        assert_eq!(document.diagnostics.len(), 0);
     }
 
     #[test]
@@ -1753,7 +2192,8 @@ endobj
 
         assert!(matches!(
             parse_indirect_object(&object, config),
-            Err(PdfDiffError::ResourceLimitExceeded(_))
+            Err(PdfDiffError::ResourceLimitExceeded(message))
+                if message.contains("RESOURCE_LIMIT_DECODED_STREAM_BYTES")
         ));
     }
 
@@ -1784,20 +2224,49 @@ endobj
     }
 
     fn classic_xref_pdf() -> ClassicXrefFixture {
+        classic_xref_pdf_with_objects(&[
+            b"1 0 obj\n<< /Type /Catalog >>\nendobj\n".as_slice(),
+            b"2 0 obj\n<< /Length 5 >>\nstream\nHello\nendstream\nendobj\n".as_slice(),
+        ])
+    }
+
+    fn recursive_reference_pdf() -> Vec<u8> {
+        classic_xref_pdf_with_objects(&[
+            b"1 0 obj\n2 0 R\nendobj\n".as_slice(),
+            b"2 0 obj\n1 0 R\nendobj\n".as_slice(),
+        ])
+        .bytes
+    }
+
+    fn reference_chain_pdf() -> Vec<u8> {
+        classic_xref_pdf_with_objects(&[
+            b"1 0 obj\n2 0 R\nendobj\n".as_slice(),
+            b"2 0 obj\n3 0 R\nendobj\n".as_slice(),
+            b"3 0 obj\n<< /Type /Catalog >>\nendobj\n".as_slice(),
+        ])
+        .bytes
+    }
+
+    fn classic_xref_pdf_with_objects(objects: &[&[u8]]) -> ClassicXrefFixture {
         let mut bytes = b"%PDF-1.7\n".to_vec();
         let mut object_offsets = Vec::new();
 
-        object_offsets.push(bytes.len());
-        bytes.extend_from_slice(b"1 0 obj\n<< /Type /Catalog >>\nendobj\n");
-
-        object_offsets.push(bytes.len());
-        bytes.extend_from_slice(b"2 0 obj\n<< /Length 5 >>\nstream\nHello\nendstream\nendobj\n");
+        for object in objects {
+            object_offsets.push(bytes.len());
+            bytes.extend_from_slice(object);
+        }
 
         let xref_offset = bytes.len();
+        bytes.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        bytes.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in &object_offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
         bytes.extend_from_slice(
             format!(
-                "xref\n0 3\n0000000000 65535 f \n{:010} 00000 n \n{:010} 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
-                object_offsets[0], object_offsets[1], xref_offset
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                xref_offset
             )
             .as_bytes(),
         );
@@ -1807,6 +2276,64 @@ endobj
             object_offsets,
             xref_offset,
         }
+    }
+
+    fn xref_stream_pdf(include_compressed_entry: bool) -> ClassicXrefFixture {
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut object_offsets = Vec::new();
+
+        object_offsets.push(bytes.len());
+        bytes.extend_from_slice(b"1 0 obj\n<< /Type /Catalog >>\nendobj\n");
+
+        object_offsets.push(bytes.len());
+        bytes.extend_from_slice(b"2 0 obj\n<< /Length 5 >>\nstream\nHello\nendstream\nendobj\n");
+
+        let mut xref_data = Vec::new();
+        push_xref_stream_entry(&mut xref_data, 0, 0, 65_535);
+        push_xref_stream_entry(&mut xref_data, 1, object_offsets[0], 0);
+        push_xref_stream_entry(&mut xref_data, 1, object_offsets[1], 0);
+        if include_compressed_entry {
+            push_xref_stream_entry(&mut xref_data, 2, 2, 7);
+        } else {
+            push_xref_stream_entry(&mut xref_data, 0, 0, 0);
+        }
+        let compressed = flate_bytes(&xref_data);
+        let xref_offset = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "4 0 obj\n<< /Type /XRef /Size 4 /Root 1 0 R /W [1 4 2] /Index [0 4] /Length {} /Filter /FlateDecode >>\nstream\n",
+                compressed.len()
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(&compressed);
+        bytes.extend_from_slice(
+            format!("\nendstream\nendobj\nstartxref\n{xref_offset}\n%%EOF\n").as_bytes(),
+        );
+
+        ClassicXrefFixture {
+            bytes,
+            object_offsets,
+            xref_offset,
+        }
+    }
+
+    fn malformed_xref_stream_pdf() -> Vec<u8> {
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let xref_offset = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "1 0 obj\n<< /Type /XRef /Size 1 /Length 0 >>\nstream\n\nendstream\nendobj\nstartxref\n{xref_offset}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        bytes
+    }
+
+    fn push_xref_stream_entry(entries: &mut Vec<u8>, kind: u8, field_2: usize, field_3: usize) {
+        entries.push(kind);
+        entries.extend_from_slice(&(field_2 as u32).to_be_bytes());
+        entries.extend_from_slice(&(field_3 as u16).to_be_bytes());
     }
 
     fn flate_bytes(bytes: &[u8]) -> Vec<u8> {
