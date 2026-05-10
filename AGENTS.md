@@ -29,6 +29,9 @@ minimal_old.pdf + minimal_new.pdf
   resource limits, and corpus metrics exist.
 - Do not parse untrusted PDF streams without applying `ResourceLimits`.
 - Do not couple semantic diff logic directly to raw PDF object internals.
+- Do not leave `AGENTS.md`, repo-local skills, or user-facing docs stale after a
+  change that alters implemented capabilities, workflow rules, diagnostics, crate
+  boundaries, or compatibility labels.
 
 ## Rust Standards
 
@@ -65,12 +68,32 @@ minimal_old.pdf + minimal_new.pdf
   boundaries, diagnostics, or verification requirements change.
 - Prefer updating the relevant skill in the same change that updates the canonical
   plan or instructions it depends on.
+- After each implementation slice, explicitly check whether `AGENTS.md`, the
+  matching repo-local skill, and README/plan files need updates. If no docs need
+  updates, mention that in the final response; if they do, update them in the same
+  slice before commit/push.
+
+## Current Parser Capability Boundary
+
+- `pdf_core` currently supports parser primitives, indirect objects, classic xref
+  tables/trailers, no-filter and `FlateDecode` streams, controlled `/Type /XRef`
+  streams, controlled `/Type /ObjStm` extraction through `ObjectStore`, embedded
+  object provenance, and resource-limit enforcement for parser-owned limits.
+- This is still a `compatibility-gate` parser foundation, not a public-alpha
+  compatibility claim. Public-alpha still requires corpus metrics, documented
+  unsupported cases, and broader extraction/report evidence.
+- Continue extending parser support in `pdf_core`; do not bypass it with raw string
+  parsing in downstream crates.
 
 ## Diagnostics And Compatibility
 
 - Prefer explicit diagnostics and partial results over panics.
-- Every unsupported feature needs a stable code, such as `UNSUPPORTED_XREF_STREAM`,
-  `UNSUPPORTED_ENCRYPTION`, `MISSING_TOUNICODE`, or `CONTENT_OPERATOR_UNKNOWN`.
+- Every unsupported or degraded report-facing feature needs a stable code, such as
+  `UNSUPPORTED_ENCRYPTION`, `UNSUPPORTED_STREAM_FILTER`, `STREAM_DECODE_FAILED`,
+  `MISSING_TOUNICODE`, or `CONTENT_OPERATOR_UNKNOWN`.
+- Parser resource-limit errors must include stable `RESOURCE_LIMIT_*` code text.
+- Do not use `UNSUPPORTED_XREF_STREAM` or `UNSUPPORTED_OBJECT_STREAM` as blanket
+  diagnostics for controlled xref/object stream cases that `pdf_core` now handles.
 - Use compatibility labels honestly:
   - `vertical-slice`: controlled fixtures only.
   - `compatibility-gate`: modern PDF constructs such as xref/object streams.

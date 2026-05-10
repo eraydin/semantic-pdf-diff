@@ -13,12 +13,15 @@ description: Implement or review semantic-pdf-diff low-level parser work in crat
 4. Treat PDF bytes as hostile input. Apply `ParseConfig` and `ResourceLimits` before allocations, stream decoding, recursion, or object expansion.
 5. Prefer typed errors only for unrecoverable failures. Use structured diagnostics for unsupported or degraded PDF features.
 6. Add focused parser tests for every behavior change, including malformed inputs and unsupported-feature diagnostics.
+7. After parser capability changes, check whether `AGENTS.md`, this skill, README, and plan files need updates. Update them in the same slice when behavior, diagnostics, limits, or compatibility labels changed.
 
 ## Parser Rules
 
 - Preserve byte ranges and object provenance as soon as parser data can cross crate boundaries.
 - Never panic on invalid input. Return `PdfDiffError` or a `Diagnostic`.
-- Do not call unsupported modern PDF structures malformed. Emit exact diagnostics such as `UNSUPPORTED_XREF_STREAM` or `UNSUPPORTED_OBJECT_STREAM` until implemented.
+- Controlled classic xref tables, `/Type /XRef` streams, `/Type /ObjStm` extraction, no-filter streams, and `FlateDecode` streams are implemented parser capabilities. Extend these paths rather than reintroducing broad unsupported diagnostics for them.
+- Do not call unsupported modern PDF variants malformed when partial recovery is possible. Add exact diagnostics or stable `PdfDiffError` text for unsupported variants and malformed compatibility-gate cases.
+- Resource-limit failures should include stable `RESOURCE_LIMIT_*` code text.
 - Keep output deterministic: object ordering, diagnostics, and summaries must not depend on hash-map iteration.
 - Keep parser implementation narrow. Do not add page layout, text extraction, semantic diff, report, GUI, or rendering work in parser slices.
 
