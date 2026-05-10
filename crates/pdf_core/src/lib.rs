@@ -45,6 +45,33 @@ pub struct ParsedIndirectObject {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct XrefTable {
+    pub start_offset: usize,
+    pub entries: Vec<XrefEntry>,
+    pub trailer: PdfPrimitive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XrefEntry {
+    pub object_id: ObjectId,
+    pub byte_offset: usize,
+    pub in_use: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectStore {
+    pub xref: XrefTable,
+    pub objects: Vec<ParsedIndirectObject>,
+}
+
+impl ObjectStore {
+    #[must_use]
+    pub fn get(&self, id: ObjectId) -> Option<&ParsedIndirectObject> {
+        self.objects.iter().find(|object| object.id == id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParsedPrimitive {
     pub value: PdfPrimitive,
     pub byte_range: ByteRange,
@@ -178,6 +205,125 @@ pub fn parse_indirect_object(
             parts.value_offset + parsed.byte_range.end,
         ),
     })
+}
+
+pub fn parse_xref_table(bytes: &[u8], config: ParseConfig) -> Result<XrefTable, PdfDiffError> {
+    config.limits.check_file_size(bytes.len())?;
+    let start_offset = locate_startxref(bytes)?;
+    let mut parser = XrefParser::new(bytes, start_offset);
+    parser.expect_keyword(b"xref")?;
+    let mut entries = Vec::new();
+
+    loop {
+        parser.skip_ascii_whitespace();
+        if parser.starts_with(b"trailer") {
+            parser.expect_keyword(b"trailer")?;
+            break;
+        }
+        let first_object = parser.read_usize("xref subsection first object")?;
+        parser.skip_inline_whitespace();
+        let count = parser.read_usize("xref subsection count")?;
+        parser.skip_line_break();
+        for index in 0..count {
+            let byte_offset = parser.read_fixed_width_usize(10, "xref byte offset")?;
+            parser.skip_inline_whitespace();
+            let generation = parser.read_fixed_width_u16(5, "xref generation")?;
+            parser.skip_inline_whitespace();
+            let in_use = match parser.next_byte() {
+                Some(b'n') => true,
+                Some(b'f') => false,
+                Some(byte) => {
+                    return Err(PdfDiffError::InvalidInput(format!(
+                        "invalid xref entry flag 0x{byte:02x}"
+                    )));
+                }
+                None => {
+                    return Err(PdfDiffError::InvalidInput(
+                        "truncated xref entry flag".into(),
+                    ));
+                }
+            };
+            parser.skip_line_break();
+            entries.push(XrefEntry {
+                object_id: ObjectId {
+                    number: u32::try_from(first_object + index).map_err(|_| {
+                        PdfDiffError::InvalidInput("xref object number is out of range".into())
+                    })?,
+                    generation,
+                },
+                byte_offset,
+                in_use,
+            });
+        }
+    }
+
+    if entries.len() > config.limits.max_objects {
+        return Err(PdfDiffError::ResourceLimitExceeded(format!(
+            "xref table has {} entries, limit is {}",
+            entries.len(),
+            config.limits.max_objects
+        )));
+    }
+
+    let trailer_start = parser.skip_ascii_whitespace();
+    let startxref_marker = find_keyword(bytes, trailer_start, b"startxref").ok_or_else(|| {
+        PdfDiffError::InvalidInput("xref trailer is missing startxref marker".into())
+    })?;
+    let trailer = parse_primitive(&bytes[trailer_start..startxref_marker], config)?.value;
+
+    Ok(XrefTable {
+        start_offset,
+        entries,
+        trailer,
+    })
+}
+
+pub fn parse_object_store(bytes: &[u8], config: ParseConfig) -> Result<ObjectStore, PdfDiffError> {
+    let xref = parse_xref_table(bytes, config)?;
+    let mut objects = Vec::new();
+    for entry in xref
+        .entries
+        .iter()
+        .filter(|entry| entry.in_use && entry.object_id.number != 0)
+    {
+        if entry.byte_offset >= bytes.len() {
+            return Err(PdfDiffError::InvalidInput(format!(
+                "xref entry for object {} points outside the file",
+                entry.object_id.number
+            )));
+        }
+        let object_end = find_keyword(bytes, entry.byte_offset, b"endobj")
+            .map(|offset| offset + b"endobj".len())
+            .ok_or_else(|| {
+                PdfDiffError::InvalidInput(format!(
+                    "xref entry for object {} points to an unterminated object",
+                    entry.object_id.number
+                ))
+            })?;
+        let mut object = parse_indirect_object(&bytes[entry.byte_offset..object_end], config)?;
+        offset_indirect_object_ranges(&mut object, entry.byte_offset);
+        if object.id != entry.object_id {
+            return Err(PdfDiffError::InvalidInput(format!(
+                "xref entry for object {} resolved to object {}",
+                entry.object_id.number, object.id.number
+            )));
+        }
+        objects.push(object);
+    }
+    objects.sort_by_key(|object| (object.id.number, object.id.generation));
+    Ok(ObjectStore { xref, objects })
+}
+
+fn offset_indirect_object_ranges(object: &mut ParsedIndirectObject, offset: usize) {
+    object.byte_range = offset_range(object.byte_range, offset);
+    object.value_byte_range = offset_range(object.value_byte_range, offset);
+    if let Some(stream) = &mut object.stream {
+        stream.byte_range = offset_range(stream.byte_range, offset);
+    }
+}
+
+fn offset_range(range: ByteRange, offset: usize) -> ByteRange {
+    ByteRange::new(range.start + offset, range.end + offset)
 }
 
 struct IndirectValueParts<'a> {
@@ -680,6 +826,129 @@ fn trim_trailing_ascii(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
+fn locate_startxref(bytes: &[u8]) -> Result<usize, PdfDiffError> {
+    let marker = find_last_keyword(bytes, b"startxref")
+        .ok_or_else(|| PdfDiffError::InvalidInput("PDF is missing startxref marker".into()))?;
+    let mut parser = XrefParser::new(bytes, marker + b"startxref".len());
+    parser.skip_ascii_whitespace();
+    parser.read_usize("startxref offset")
+}
+
+fn find_last_keyword(bytes: &[u8], keyword: &[u8]) -> Option<usize> {
+    bytes
+        .windows(keyword.len())
+        .rposition(|window| window == keyword)
+}
+
+struct XrefParser<'a> {
+    bytes: &'a [u8],
+    index: usize,
+}
+
+impl<'a> XrefParser<'a> {
+    fn new(bytes: &'a [u8], index: usize) -> Self {
+        Self { bytes, index }
+    }
+
+    fn expect_keyword(&mut self, expected: &[u8]) -> Result<(), PdfDiffError> {
+        if self.starts_with(expected) {
+            self.index += expected.len();
+            return Ok(());
+        }
+        Err(PdfDiffError::InvalidInput(format!(
+            "expected keyword {}",
+            String::from_utf8_lossy(expected)
+        )))
+    }
+
+    fn starts_with(&self, expected: &[u8]) -> bool {
+        self.bytes
+            .get(self.index..)
+            .is_some_and(|remaining| remaining.starts_with(expected))
+    }
+
+    fn skip_ascii_whitespace(&mut self) -> usize {
+        while self
+            .bytes
+            .get(self.index)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            self.index += 1;
+        }
+        self.index
+    }
+
+    fn skip_inline_whitespace(&mut self) {
+        while matches!(self.bytes.get(self.index), Some(b' ' | b'\t')) {
+            self.index += 1;
+        }
+    }
+
+    fn skip_line_break(&mut self) {
+        self.skip_inline_whitespace();
+        match self.bytes.get(self.index) {
+            Some(b'\r') if self.bytes.get(self.index + 1) == Some(&b'\n') => {
+                self.index += 2;
+            }
+            Some(b'\r' | b'\n') => {
+                self.index += 1;
+            }
+            _ => {}
+        }
+    }
+
+    fn read_usize(&mut self, label: &str) -> Result<usize, PdfDiffError> {
+        let start = self.index;
+        while self
+            .bytes
+            .get(self.index)
+            .is_some_and(|byte| byte.is_ascii_digit())
+        {
+            self.index += 1;
+        }
+        if start == self.index {
+            return Err(PdfDiffError::InvalidInput(format!("expected {label}")));
+        }
+        std::str::from_utf8(&self.bytes[start..self.index])
+            .map_err(|_| PdfDiffError::InvalidInput(format!("{label} is not UTF-8")))?
+            .parse()
+            .map_err(|_| PdfDiffError::InvalidInput(format!("{label} is out of range")))
+    }
+
+    fn read_fixed_width_usize(&mut self, width: usize, label: &str) -> Result<usize, PdfDiffError> {
+        let value = self.fixed_width_bytes(width, label)?;
+        std::str::from_utf8(value)
+            .map_err(|_| PdfDiffError::InvalidInput(format!("{label} is not UTF-8")))?
+            .parse()
+            .map_err(|_| PdfDiffError::InvalidInput(format!("{label} is out of range")))
+    }
+
+    fn read_fixed_width_u16(&mut self, width: usize, label: &str) -> Result<u16, PdfDiffError> {
+        let value = self.fixed_width_bytes(width, label)?;
+        std::str::from_utf8(value)
+            .map_err(|_| PdfDiffError::InvalidInput(format!("{label} is not UTF-8")))?
+            .parse()
+            .map_err(|_| PdfDiffError::InvalidInput(format!("{label} is out of range")))
+    }
+
+    fn fixed_width_bytes(&mut self, width: usize, label: &str) -> Result<&'a [u8], PdfDiffError> {
+        let Some(value) = self.bytes.get(self.index..self.index + width) else {
+            return Err(PdfDiffError::InvalidInput(format!("truncated {label}")));
+        };
+        if !value.iter().all(u8::is_ascii_digit) {
+            return Err(PdfDiffError::InvalidInput(format!("{label} is invalid")));
+        }
+        self.index += width;
+        Ok(value)
+    }
+
+    fn next_byte(&mut self) -> Option<u8> {
+        let byte = self.bytes.get(self.index).copied()?;
+        self.index += 1;
+        Some(byte)
+    }
+}
+
 fn parse_header(bytes: &[u8]) -> Result<PdfDocument, PdfDiffError> {
     let header = bytes
         .get(..8)
@@ -1128,6 +1397,72 @@ mod tests {
     }
 
     #[test]
+    fn parses_classic_xref_table_and_trailer() {
+        let fixture = classic_xref_pdf();
+        let xref = parse_xref_table(&fixture.bytes, ParseConfig::default())
+            .expect("classic xref should parse");
+
+        assert_eq!(xref.start_offset, fixture.xref_offset);
+        assert_eq!(xref.entries.len(), 3);
+        assert_eq!(xref.entries[1].byte_offset, fixture.object_offsets[0]);
+        assert!(xref.entries[1].in_use);
+        assert_eq!(
+            dictionary_entry(&xref.trailer, "Root"),
+            Some(&PdfPrimitive::Reference(ObjectId {
+                number: 1,
+                generation: 0
+            }))
+        );
+    }
+
+    #[test]
+    fn builds_object_store_with_lookup() {
+        let fixture = classic_xref_pdf();
+        let store = parse_object_store(&fixture.bytes, ParseConfig::default())
+            .expect("object store should parse");
+
+        assert_eq!(store.objects.len(), 2);
+        let catalog = store
+            .get(ObjectId {
+                number: 1,
+                generation: 0,
+            })
+            .expect("catalog should be available");
+        assert_eq!(catalog.byte_range.start, fixture.object_offsets[0]);
+        assert!(matches!(catalog.value, PdfPrimitive::Dictionary(_)));
+
+        let stream = store
+            .get(ObjectId {
+                number: 2,
+                generation: 0,
+            })
+            .and_then(|object| object.stream.as_ref())
+            .expect("stream object should be available");
+        assert_eq!(stream.bytes, b"Hello");
+    }
+
+    #[test]
+    fn emits_diagnostic_for_xref_stream_object() {
+        let pdf = b"%PDF-1.7
+1 0 obj
+<< /Type /XRef /Length 0 >>
+stream
+
+endstream
+endobj
+";
+        let document = PdfDocument::parse(pdf).expect("xref stream fixture should parse partially");
+
+        assert!(document.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == "UNSUPPORTED_XREF_STREAM"
+            && diagnostic.object
+                == Some(ObjectId {
+                    number: 1,
+                    generation: 0
+                })));
+    }
+
+    #[test]
     fn resolves_first_page_content_stream() {
         let document = PdfDocument::parse(minimal_pdf()).expect("fixture should parse");
         let content = document
@@ -1204,5 +1539,47 @@ BT /F1 12 Tf 72 720 Td (Hello) Tj ET
 endstream
 endobj
 "
+    }
+
+    struct ClassicXrefFixture {
+        bytes: Vec<u8>,
+        object_offsets: Vec<usize>,
+        xref_offset: usize,
+    }
+
+    fn classic_xref_pdf() -> ClassicXrefFixture {
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut object_offsets = Vec::new();
+
+        object_offsets.push(bytes.len());
+        bytes.extend_from_slice(b"1 0 obj\n<< /Type /Catalog >>\nendobj\n");
+
+        object_offsets.push(bytes.len());
+        bytes.extend_from_slice(b"2 0 obj\n<< /Length 5 >>\nstream\nHello\nendstream\nendobj\n");
+
+        let xref_offset = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "xref\n0 3\n0000000000 65535 f \n{:010} 00000 n \n{:010} 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                object_offsets[0], object_offsets[1], xref_offset
+            )
+            .as_bytes(),
+        );
+
+        ClassicXrefFixture {
+            bytes,
+            object_offsets,
+            xref_offset,
+        }
+    }
+
+    fn dictionary_entry<'a>(value: &'a PdfPrimitive, key: &str) -> Option<&'a PdfPrimitive> {
+        let PdfPrimitive::Dictionary(entries) = value else {
+            return None;
+        };
+        entries
+            .iter()
+            .find(|(entry_key, _)| entry_key == key)
+            .map(|(_, entry_value)| entry_value)
     }
 }
