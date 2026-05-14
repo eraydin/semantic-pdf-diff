@@ -96,6 +96,15 @@ pub fn diff_semantic_documents_with_classifier(
             &mut document,
             classifier,
         );
+        if old_end < old.nodes.len() && new_end < new.nodes.len() {
+            emit_layout_change_if_needed(
+                &old.nodes[old_end],
+                &new.nodes[new_end],
+                config,
+                &mut document,
+                classifier,
+            );
+        }
         old_start = old_end + 1;
         new_start = new_end + 1;
     }
@@ -215,6 +224,42 @@ fn push_change(
         | ChangeKind::Unknown => {}
     }
     document.changes.push(change);
+}
+
+fn emit_layout_change_if_needed(
+    old_node: &SemanticNode,
+    new_node: &SemanticNode,
+    config: DiffConfig,
+    document: &mut DiffDocument,
+    classifier: &impl SeverityClassifier,
+) {
+    if !layout_changed(old_node, new_node, config.layout_tolerance_pt) {
+        return;
+    }
+    push_change(
+        document,
+        ChangeKind::LayoutChanged,
+        Some(old_node),
+        Some(new_node),
+        "paragraph text is unchanged but page or bounding box moved beyond tolerance",
+        classifier,
+    );
+}
+
+fn layout_changed(old_node: &SemanticNode, new_node: &SemanticNode, tolerance: f32) -> bool {
+    if old_node.page_index != new_node.page_index {
+        return true;
+    }
+    match (old_node.bbox, new_node.bbox) {
+        (Some(old_bbox), Some(new_bbox)) => {
+            (old_bbox.x0 - new_bbox.x0).abs() > tolerance
+                || (old_bbox.y0 - new_bbox.y0).abs() > tolerance
+                || (old_bbox.x1 - new_bbox.x1).abs() > tolerance
+                || (old_bbox.y1 - new_bbox.y1).abs() > tolerance
+        }
+        (Some(_), None) | (None, Some(_)) => true,
+        (None, None) => false,
+    }
 }
 
 fn comparable_text(node: &SemanticNode, config: DiffConfig) -> String {
@@ -498,6 +543,30 @@ mod tests {
         assert_eq!(diff.changes[0].severity, ChangeSeverity::Major);
     }
 
+    #[test]
+    fn detects_layout_change_for_exact_text_match() {
+        let old = document_with_positioned_text("old", "Alpha", 0.0, 0.0);
+        let new = document_with_positioned_text("new", "Alpha", 12.0, 0.0);
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert_eq!(diff.summary.layout_changed, 1);
+        assert_eq!(diff.summary.modified, 0);
+        assert_eq!(diff.changes[0].kind, ChangeKind::LayoutChanged);
+        assert_eq!(diff.changes[0].severity, ChangeSeverity::Minor);
+    }
+
+    #[test]
+    fn ignores_layout_change_inside_tolerance() {
+        let old = document_with_positioned_text("old", "Alpha", 0.0, 0.0);
+        let new = document_with_positioned_text("new", "Alpha", 1.0, 0.0);
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert_eq!(diff.summary.layout_changed, 0);
+        assert_eq!(diff.changes, Vec::new());
+    }
+
     fn document_with_text(fingerprint: &str, text: &str) -> SemanticDocument {
         document_with_texts(fingerprint, &[text])
     }
@@ -520,5 +589,21 @@ mod tests {
                 .collect(),
             diagnostics: Vec::new(),
         }
+    }
+
+    fn document_with_positioned_text(
+        fingerprint: &str,
+        text: &str,
+        x: f32,
+        y: f32,
+    ) -> SemanticDocument {
+        let mut document = document_with_text(fingerprint, text);
+        document.nodes[0].bbox = Some(spdfdiff_types::Rect {
+            x0: x,
+            y0: y,
+            x1: x + 10.0,
+            y1: y + 10.0,
+        });
+        document
     }
 }
