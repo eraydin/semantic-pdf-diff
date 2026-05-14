@@ -24,11 +24,15 @@ enum Command {
         file: PathBuf,
         #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
         format: ReportFormat,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     Extract {
         file: PathBuf,
         #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
         format: ReportFormat,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     Corpus {
         folder: PathBuf,
@@ -74,14 +78,22 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
             let rendered = render_diff(&document, format);
             write_or_print(rendered, output)?;
         }
-        Command::Inspect { file, format } => {
+        Command::Inspect {
+            file,
+            format,
+            output,
+        } => {
             let bytes = std::fs::read(&file)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
             let parsed = pdf_core::PdfDocument::parse_with_config(&bytes, ParseConfig::default())?;
             let rendered = render_inspect_report(&file.to_string_lossy(), &parsed, format);
-            println!("{rendered}");
+            write_or_print(rendered, output)?;
         }
-        Command::Extract { file, format } => {
+        Command::Extract {
+            file,
+            format,
+            output,
+        } => {
             let bytes = std::fs::read(&file)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
             let semantic = semantic_document_from_pdf(
@@ -90,10 +102,10 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
                 ParseConfig::default(),
             )?;
             let rendered = render_extract_report(&semantic, format);
-            println!("{rendered}");
+            write_or_print(rendered, output)?;
         }
         Command::Corpus { folder, output } => {
-            let report = build_corpus_report(&folder)?;
+            let report = build_corpus_report(&folder, ParseConfig::default())?;
             std::fs::write(&output, report)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
         }
@@ -101,7 +113,10 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
     Ok(())
 }
 
-fn build_corpus_report(folder: &std::path::Path) -> Result<String, PdfDiffError> {
+fn build_corpus_report(
+    folder: &std::path::Path,
+    config: ParseConfig,
+) -> Result<String, PdfDiffError> {
     let mut paths = Vec::new();
     for entry in
         std::fs::read_dir(folder).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?
@@ -117,22 +132,31 @@ fn build_corpus_report(folder: &std::path::Path) -> Result<String, PdfDiffError>
     let total = paths.len();
     let mut parsed = 0usize;
     let mut failed = 0usize;
+    let mut partial = 0usize;
     for path in paths {
         let Ok(bytes) = std::fs::read(&path) else {
             failed += 1;
             continue;
         };
-        match pdf_core::PdfDocument::parse_with_config(&bytes, ParseConfig::default()) {
-            Ok(_) => parsed += 1,
+        match pdf_core::PdfDocument::parse_with_config(&bytes, config) {
+            Ok(document) => {
+                if document.diagnostics.is_empty() {
+                    parsed += 1;
+                } else {
+                    parsed += 1;
+                    partial += 1;
+                }
+            }
             Err(_) => failed += 1,
         }
     }
 
     Ok(format!(
-        "{{\n  \"folder\": \"{}\",\n  \"total\": {},\n  \"parsed\": {},\n  \"partial\": 0,\n  \"failed\": {}\n}}\n",
+        "{{\n  \"folder\": \"{}\",\n  \"total\": {},\n  \"parsed\": {},\n  \"partial\": {},\n  \"failed\": {}\n}}\n",
         folder.display(),
         total,
         parsed,
+        partial,
         failed
     ))
 }
@@ -220,18 +244,21 @@ fn render_inspect_report(
 ) -> String {
     let object_count = document.objects.len();
     let diagnostic_count = document.diagnostics.len();
+    let first_page_streams = document
+        .first_page_contents()
+        .map_or(0, |contents| contents.len());
     match format {
         ReportFormat::Json => format!(
             "{{\n  \"file\": \"{}\",\n  \"object_count\": {},\n  \"diagnostic_count\": {}\n}}\n",
             fingerprint, object_count, diagnostic_count
         ),
         ReportFormat::Md => format!(
-            "# PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n",
-            fingerprint, object_count, diagnostic_count
+            "# PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n",
+            fingerprint, object_count, diagnostic_count, first_page_streams
         ),
         ReportFormat::Html => format!(
-            "<!doctype html><meta charset=\"utf-8\"><pre># PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n</pre>",
-            fingerprint, object_count, diagnostic_count
+            "<!doctype html><meta charset=\"utf-8\"><pre># PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n</pre>",
+            fingerprint, object_count, diagnostic_count, first_page_streams
         ),
     }
 }
@@ -284,6 +311,15 @@ mod tests {
         let parsed = pdf_core::PdfDocument::parse(minimal_pdf("Hello").as_slice()).unwrap();
         let json = render_inspect_report("sample.pdf", &parsed, ReportFormat::Json);
         assert!(json.contains("\"object_count\""));
+    }
+
+    #[test]
+    fn extract_report_lists_text() {
+        let semantic =
+            semantic_document_from_pdf("sample", &minimal_pdf("Hello"), ParseConfig::default())
+                .expect("extract should succeed");
+        let markdown = render_extract_report(&semantic, ReportFormat::Md);
+        assert!(markdown.contains("- Hello"));
     }
 
     fn minimal_pdf(text: &str) -> Vec<u8> {
