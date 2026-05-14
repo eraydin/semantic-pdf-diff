@@ -65,6 +65,7 @@ pub fn build_semantic_document(
     let lines = cluster_lines(runs);
     let mut nodes = cluster_paragraphs(&lines);
     classify_heading_candidates(&mut nodes);
+    classify_table_candidates(&mut nodes);
     classify_list_candidates(&mut nodes);
     assign_semantic_anchors(&mut nodes);
 
@@ -213,6 +214,29 @@ fn is_heading_candidate(text: &str, height: f32, median_height: f32) -> bool {
         .next()
         .is_some_and(|character| character.is_uppercase() || character.is_ascii_digit());
     larger_than_body && heading_shape
+}
+
+fn classify_table_candidates(nodes: &mut [SemanticNode]) {
+    for node in nodes {
+        if node.kind != SemanticNodeKind::Paragraph {
+            continue;
+        }
+        if is_table_candidate(node) {
+            node.kind = SemanticNodeKind::TableCandidate;
+            node.confidence = 0.55;
+        }
+    }
+}
+
+fn is_table_candidate(node: &SemanticNode) -> bool {
+    let Some(text) = node.normalized_text.as_deref() else {
+        return false;
+    };
+    let tokens = text.split_whitespace().collect::<Vec<_>>();
+    node.source.len() >= 4
+        && tokens.len() >= 4
+        && tokens.len() <= node.source.len() + 2
+        && tokens.iter().all(|token| token.len() <= 16)
 }
 
 fn classify_list_candidates(nodes: &mut [SemanticNode]) {
@@ -559,6 +583,41 @@ mod tests {
         );
 
         assert_eq!(document.nodes[0].kind, SemanticNodeKind::ListCandidate);
+    }
+
+    #[test]
+    fn detects_simple_text_table_candidate() {
+        let runs = vec![
+            text_run("a1", "A1", 0, rect(10.0, 100.0, 20.0, 112.0)),
+            text_run("a2", "A2", 0, rect(70.0, 100.0, 80.0, 112.0)),
+            text_run("b1", "B1", 0, rect(10.0, 84.0, 20.0, 96.0)),
+            text_run("b2", "B2", 0, rect(70.0, 84.0, 80.0, 96.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 1);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
+        assert_eq!(document.nodes[0].confidence, 0.55);
+        assert_eq!(
+            document.nodes[0].normalized_text.as_deref(),
+            Some("A1 A2 B1 B2")
+        );
+    }
+
+    #[test]
+    fn keeps_single_run_short_text_as_paragraph_not_table() {
+        let document = build_semantic_document(
+            "fixture",
+            &[text_run(
+                "run",
+                "A1 A2 B1 B2",
+                0,
+                rect(10.0, 100.0, 120.0, 112.0),
+            )],
+            Vec::new(),
+        );
+
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::Paragraph);
     }
 
     fn text_run(id: &str, text: &str, page_index: usize, bbox: Rect) -> TextRun {
