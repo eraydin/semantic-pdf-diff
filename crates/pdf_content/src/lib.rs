@@ -22,6 +22,26 @@ pub enum ContentOp {
     MoveTextPosition {
         tx: f32,
         ty: f32,
+        set_leading: Option<f32>,
+        source: Provenance,
+    },
+    MoveToNextLine {
+        source: Provenance,
+    },
+    SetTextLeading {
+        leading: f32,
+        source: Provenance,
+    },
+    SetCharacterSpacing {
+        spacing: f32,
+        source: Provenance,
+    },
+    SetWordSpacing {
+        spacing: f32,
+        source: Provenance,
+    },
+    SetHorizontalScaling {
+        scale: f32,
         source: Provenance,
     },
     SetTextMatrix {
@@ -38,6 +58,27 @@ pub enum ContentOp {
         raw_bytes: Vec<u8>,
         source: Provenance,
     },
+    ShowAdjustedText {
+        text: String,
+        raw_bytes: Vec<u8>,
+        adjustments: Vec<f32>,
+        source: Provenance,
+    },
+    SaveGraphicsState {
+        source: Provenance,
+    },
+    RestoreGraphicsState {
+        source: Provenance,
+    },
+    ConcatMatrix {
+        a: f32,
+        b: f32,
+        c: f32,
+        d: f32,
+        e: f32,
+        f: f32,
+        source: Provenance,
+    },
     Unknown {
         operator: String,
         source: Provenance,
@@ -45,8 +86,8 @@ pub enum ContentOp {
 }
 
 #[must_use]
-pub fn parse_content_stream(_bytes: &[u8]) -> ContentProgram {
-    parse_content_stream_with_limits(_bytes, 0, None, ResourceLimits::default())
+pub fn parse_content_stream(bytes: &[u8]) -> ContentProgram {
+    parse_content_stream_with_limits(bytes, 0, None, ResourceLimits::default())
 }
 
 #[must_use]
@@ -132,11 +173,32 @@ fn build_operation(operator: &str, stack: &[Token], source: Provenance) -> Optio
             size: stack.last().and_then(Token::as_number)?,
             source,
         }),
-        "Td" | "TD" => Some(ContentOp::MoveTextPosition {
-            tx: stack
-                .get(stack.len().checked_sub(2)?)
-                .and_then(Token::as_number)?,
-            ty: stack.last().and_then(Token::as_number)?,
+        "Td" | "TD" => {
+            let ty = stack.last().and_then(Token::as_number)?;
+            Some(ContentOp::MoveTextPosition {
+                tx: stack
+                    .get(stack.len().checked_sub(2)?)
+                    .and_then(Token::as_number)?,
+                ty,
+                set_leading: if operator == "TD" { Some(-ty) } else { None },
+                source,
+            })
+        }
+        "T*" => Some(ContentOp::MoveToNextLine { source }),
+        "TL" => Some(ContentOp::SetTextLeading {
+            leading: stack.last().and_then(Token::as_number)?,
+            source,
+        }),
+        "Tc" => Some(ContentOp::SetCharacterSpacing {
+            spacing: stack.last().and_then(Token::as_number)?,
+            source,
+        }),
+        "Tw" => Some(ContentOp::SetWordSpacing {
+            spacing: stack.last().and_then(Token::as_number)?,
+            source,
+        }),
+        "Tz" => Some(ContentOp::SetHorizontalScaling {
+            scale: stack.last().and_then(Token::as_number)?,
             source,
         }),
         "Tm" => Some(ContentOp::SetTextMatrix {
@@ -159,22 +221,71 @@ fn build_operation(operator: &str, stack: &[Token], source: Provenance) -> Optio
             source,
         }),
         "Tj" => {
-            let text = stack.last().and_then(Token::as_literal_string)?;
+            let text = stack.last().and_then(Token::as_text)?;
             Some(ContentOp::ShowText {
-                raw_bytes: text.as_bytes().to_vec(),
-                text: text.to_owned(),
+                raw_bytes: text.raw_bytes,
+                text: text.text,
                 source,
             })
         }
+        "TJ" => {
+            let array = stack.last().and_then(Token::as_array)?;
+            let mut text = String::new();
+            let mut raw_bytes = Vec::new();
+            let mut adjustments = Vec::new();
+            for item in array {
+                if let Some(segment) = item.as_text() {
+                    text.push_str(&segment.text);
+                    raw_bytes.extend_from_slice(&segment.raw_bytes);
+                } else if let Some(adjustment) = item.as_number() {
+                    adjustments.push(adjustment);
+                }
+            }
+            Some(ContentOp::ShowAdjustedText {
+                text,
+                raw_bytes,
+                adjustments,
+                source,
+            })
+        }
+        "q" => Some(ContentOp::SaveGraphicsState { source }),
+        "Q" => Some(ContentOp::RestoreGraphicsState { source }),
+        "cm" => Some(ContentOp::ConcatMatrix {
+            a: stack
+                .get(stack.len().checked_sub(6)?)
+                .and_then(Token::as_number)?,
+            b: stack
+                .get(stack.len().checked_sub(5)?)
+                .and_then(Token::as_number)?,
+            c: stack
+                .get(stack.len().checked_sub(4)?)
+                .and_then(Token::as_number)?,
+            d: stack
+                .get(stack.len().checked_sub(3)?)
+                .and_then(Token::as_number)?,
+            e: stack
+                .get(stack.len().checked_sub(2)?)
+                .and_then(Token::as_number)?,
+            f: stack.last().and_then(Token::as_number)?,
+            source,
+        }),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TextOperand {
+    text: String,
+    raw_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     Number(f32),
     Name(String),
-    LiteralString(String),
+    LiteralString(Vec<u8>),
+    HexString(Vec<u8>),
+    Array(Vec<Token>),
     Operator(String),
 }
 
@@ -182,52 +293,95 @@ impl Token {
     fn as_number(&self) -> Option<f32> {
         match self {
             Self::Number(value) => Some(*value),
-            Self::Name(_) | Self::LiteralString(_) | Self::Operator(_) => None,
+            Self::Name(_)
+            | Self::LiteralString(_)
+            | Self::HexString(_)
+            | Self::Array(_)
+            | Self::Operator(_) => None,
         }
     }
 
     fn as_name(&self) -> Option<&str> {
         match self {
             Self::Name(value) => Some(value),
-            Self::Number(_) | Self::LiteralString(_) | Self::Operator(_) => None,
+            Self::Number(_)
+            | Self::LiteralString(_)
+            | Self::HexString(_)
+            | Self::Array(_)
+            | Self::Operator(_) => None,
         }
     }
 
-    fn as_literal_string(&self) -> Option<&str> {
+    fn as_text(&self) -> Option<TextOperand> {
         match self {
-            Self::LiteralString(value) => Some(value),
-            Self::Number(_) | Self::Name(_) | Self::Operator(_) => None,
+            Self::LiteralString(value) | Self::HexString(value) => Some(TextOperand {
+                text: String::from_utf8_lossy(value).into_owned(),
+                raw_bytes: value.clone(),
+            }),
+            Self::Number(_) | Self::Name(_) | Self::Array(_) | Self::Operator(_) => None,
+        }
+    }
+
+    fn as_array(&self) -> Option<&[Token]> {
+        match self {
+            Self::Array(value) => Some(value),
+            Self::Number(_)
+            | Self::Name(_)
+            | Self::LiteralString(_)
+            | Self::HexString(_)
+            | Self::Operator(_) => None,
         }
     }
 }
 
 fn tokenize(bytes: &[u8]) -> Vec<Token> {
-    let mut tokens = Vec::new();
     let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index].is_ascii_whitespace() {
-            index += 1;
+    tokenize_until(bytes, &mut index, None)
+}
+
+fn tokenize_until(bytes: &[u8], index: &mut usize, stop_byte: Option<u8>) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    while *index < bytes.len() {
+        if Some(bytes[*index]) == stop_byte {
+            *index += 1;
+            break;
+        }
+        if bytes[*index].is_ascii_whitespace() {
+            *index += 1;
             continue;
         }
-        match bytes[index] {
+        match bytes[*index] {
             b'(' => {
-                let (value, next) = parse_literal_string(bytes, index + 1);
+                let (value, next) = parse_literal_string(bytes, *index + 1);
                 tokens.push(Token::LiteralString(value));
-                index = next;
+                *index = next;
+            }
+            b'<' if bytes.get(*index + 1) != Some(&b'<') => {
+                let (value, next) = parse_hex_string(bytes, *index + 1);
+                tokens.push(Token::HexString(value));
+                *index = next;
+            }
+            b'[' => {
+                *index += 1;
+                tokens.push(Token::Array(tokenize_until(bytes, index, Some(b']'))));
             }
             b'/' => {
-                let (value, next) = parse_word(bytes, index + 1);
+                let (value, next) = parse_word(bytes, *index + 1);
                 tokens.push(Token::Name(value));
-                index = next;
+                *index = next;
+            }
+            b']' if stop_byte.is_none() => {
+                tokens.push(Token::Operator("]".into()));
+                *index += 1;
             }
             _ => {
-                let (word, next) = parse_word(bytes, index);
+                let (word, next) = parse_word(bytes, *index);
                 if let Ok(value) = word.parse::<f32>() {
                     tokens.push(Token::Number(value));
                 } else {
                     tokens.push(Token::Operator(word));
                 }
-                index = next;
+                *index = next;
             }
         }
     }
@@ -248,7 +402,48 @@ fn parse_word(bytes: &[u8], start: usize) -> (String, usize) {
     )
 }
 
-fn parse_literal_string(bytes: &[u8], start: usize) -> (String, usize) {
+fn parse_hex_string(bytes: &[u8], start: usize) -> (Vec<u8>, usize) {
+    let mut nybbles = Vec::new();
+    let mut index = start;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'>' => {
+                index += 1;
+                break;
+            }
+            byte if byte.is_ascii_whitespace() => {
+                index += 1;
+            }
+            byte => {
+                nybbles.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    if nybbles.len() % 2 == 1 {
+        nybbles.push(b'0');
+    }
+
+    let mut output = Vec::new();
+    for pair in nybbles.chunks(2) {
+        let high = hex_value(pair[0]).unwrap_or(0);
+        let low = hex_value(pair[1]).unwrap_or(0);
+        output.push((high << 4) | low);
+    }
+    (output, index)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_literal_string(bytes: &[u8], start: usize) -> (Vec<u8>, usize) {
     let mut output = Vec::new();
     let mut index = start;
     let mut depth = 1usize;
@@ -284,7 +479,7 @@ fn parse_literal_string(bytes: &[u8], start: usize) -> (String, usize) {
             }
         }
     }
-    (String::from_utf8_lossy(&output).into_owned(), index)
+    (output, index)
 }
 
 trait DiagnosticExt {
@@ -321,8 +516,73 @@ mod tests {
             ContentOp::SetFont { ref name, size, .. } if name == "F1" && size == 12.0
         ));
         assert!(matches!(
+            program.operations[2],
+            ContentOp::MoveTextPosition { tx, ty, set_leading: None, .. }
+                if tx == 72.0 && ty == 720.0
+        ));
+        assert!(matches!(
             program.operations[3],
-            ContentOp::ShowText { ref text, .. } if text == "Hello"
+            ContentOp::ShowText { ref text, ref raw_bytes, .. }
+                if text == "Hello" && raw_bytes == b"Hello"
+        ));
+    }
+
+    #[test]
+    fn parses_tj_array_text_and_adjustments() {
+        let program = parse_content_stream(b"BT [(Hel) -120 <6c6f>] TJ ET");
+
+        assert_eq!(program.diagnostics, Vec::new());
+        assert!(matches!(
+            program.operations[1],
+            ContentOp::ShowAdjustedText {
+                ref text,
+                ref raw_bytes,
+                ref adjustments,
+                ..
+            } if text == "Hello" && raw_bytes == b"Hello" && adjustments == &vec![-120.0]
+        ));
+    }
+
+    #[test]
+    fn parses_text_state_and_graphics_state_operators() {
+        let program = parse_content_stream(b"q 1 0 0 1 10 20 cm BT 14 TL T* 2 Tc 3 Tw 90 Tz ET Q");
+
+        assert_eq!(program.diagnostics, Vec::new());
+        assert!(matches!(
+            program.operations[0],
+            ContentOp::SaveGraphicsState { .. }
+        ));
+        assert!(matches!(
+            program.operations[1],
+            ContentOp::ConcatMatrix {
+                e: 10.0,
+                f: 20.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            program.operations[3],
+            ContentOp::SetTextLeading { leading: 14.0, .. }
+        ));
+        assert!(matches!(
+            program.operations[4],
+            ContentOp::MoveToNextLine { .. }
+        ));
+        assert!(matches!(
+            program.operations[5],
+            ContentOp::SetCharacterSpacing { spacing: 2.0, .. }
+        ));
+        assert!(matches!(
+            program.operations[6],
+            ContentOp::SetWordSpacing { spacing: 3.0, .. }
+        ));
+        assert!(matches!(
+            program.operations[7],
+            ContentOp::SetHorizontalScaling { scale: 90.0, .. }
+        ));
+        assert!(matches!(
+            program.operations[9],
+            ContentOp::RestoreGraphicsState { .. }
         ));
     }
 
