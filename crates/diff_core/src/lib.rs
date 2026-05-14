@@ -450,7 +450,7 @@ fn to_evidence(node: &SemanticNode) -> SemanticNodeEvidence {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pdf_semantic::{SemanticNode, SemanticNodeKind};
+    use pdf_semantic::{SemanticAnchor, SemanticNode, SemanticNodeKind};
     use spdfdiff_types::Provenance;
 
     #[test]
@@ -583,6 +583,7 @@ mod tests {
                     page_index: 0,
                     bbox: None,
                     normalized_text: Some((*text).into()),
+                    anchor: SemanticAnchor::unknown(),
                     source: vec![Provenance::unknown()],
                     confidence: 1.0,
                 })

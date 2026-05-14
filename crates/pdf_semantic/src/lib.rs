@@ -18,8 +18,17 @@ pub struct SemanticNode {
     pub page_index: usize,
     pub bbox: Option<Rect>,
     pub normalized_text: Option<String>,
+    pub anchor: SemanticAnchor,
     pub source: Vec<Provenance>,
     pub confidence: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticAnchor {
+    pub strong_text_hash: String,
+    pub weak_text_signature: String,
+    pub geometry_bucket: String,
+    pub heading_context: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +64,7 @@ pub fn build_semantic_document(
     let lines = cluster_lines(runs);
     let mut nodes = cluster_paragraphs(&lines);
     classify_heading_candidates(&mut nodes);
+    assign_semantic_anchors(&mut nodes);
 
     SemanticDocument {
         fingerprint: fingerprint.into(),
@@ -146,8 +156,21 @@ fn line_to_node(index: usize, line: &TextLine) -> SemanticNode {
         page_index: line.page_index,
         bbox: Some(line.bbox),
         normalized_text: Some(line.text.clone()),
+        anchor: SemanticAnchor::unknown(),
         source: line.source.clone(),
         confidence: 0.7,
+    }
+}
+
+impl SemanticAnchor {
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            strong_text_hash: "text:0000000000000000".into(),
+            weak_text_signature: "weak:0000000000000000".into(),
+            geometry_bucket: "page-unknown:x-unknown:y-unknown".into(),
+            heading_context: None,
+        }
     }
 }
 
@@ -188,6 +211,73 @@ fn is_heading_candidate(text: &str, height: f32, median_height: f32) -> bool {
         .next()
         .is_some_and(|character| character.is_uppercase() || character.is_ascii_digit());
     larger_than_body && heading_shape
+}
+
+fn assign_semantic_anchors(nodes: &mut [SemanticNode]) {
+    let mut current_heading_context = None;
+    for node in nodes {
+        node.anchor = build_anchor(node, current_heading_context.as_deref());
+        if node.kind == SemanticNodeKind::HeadingCandidate {
+            current_heading_context = Some(node.anchor.strong_text_hash.clone());
+        }
+    }
+}
+
+fn build_anchor(node: &SemanticNode, heading_context: Option<&str>) -> SemanticAnchor {
+    let text = node.normalized_text.as_deref().unwrap_or_default();
+    SemanticAnchor {
+        strong_text_hash: format!("text:{:016x}", stable_hash(normalize_anchor_text(text))),
+        weak_text_signature: format!("weak:{:016x}", stable_hash(weak_signature_text(text))),
+        geometry_bucket: geometry_bucket(node.page_index, node.bbox),
+        heading_context: heading_context.map(ToOwned::to_owned),
+    }
+}
+
+fn normalize_anchor_text(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn weak_signature_text(text: &str) -> String {
+    let tokens = normalize_anchor_text(text)
+        .split_whitespace()
+        .filter(|token| token.chars().any(char::is_alphabetic))
+        .take(8)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        normalize_anchor_text(text)
+    } else {
+        tokens.join(" ")
+    }
+}
+
+fn geometry_bucket(page_index: usize, bbox: Option<Rect>) -> String {
+    let Some(bbox) = bbox else {
+        return format!("page-{page_index}:x-unknown:y-unknown");
+    };
+    format!(
+        "page-{page_index}:x-{:04}:y-{:04}",
+        bucket_coordinate(bbox.x0),
+        bucket_coordinate(bbox.y0)
+    )
+}
+
+fn bucket_coordinate(value: f32) -> i32 {
+    (value / 50.0).floor() as i32
+}
+
+fn stable_hash(text: String) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 fn append_text(target: &mut String, next: &str) {
@@ -306,6 +396,82 @@ mod tests {
         assert_eq!(document.nodes[0].kind, SemanticNodeKind::HeadingCandidate);
         assert_eq!(document.nodes[0].confidence, 0.65);
         assert_eq!(document.nodes[1].kind, SemanticNodeKind::Paragraph);
+    }
+
+    #[test]
+    fn assigns_stable_semantic_anchors() {
+        let runs = vec![text_run(
+            "run1",
+            "Payment is due in 30 days",
+            0,
+            rect(72.0, 120.0, 180.0, 132.0),
+        )];
+        let first = build_semantic_document("first", &runs, Vec::new());
+        let second = build_semantic_document("second", &runs, Vec::new());
+
+        assert_eq!(first.nodes[0].anchor, second.nodes[0].anchor);
+        assert!(first.nodes[0].anchor.strong_text_hash.starts_with("text:"));
+        assert!(
+            first.nodes[0]
+                .anchor
+                .weak_text_signature
+                .starts_with("weak:")
+        );
+        assert_eq!(
+            first.nodes[0].anchor.geometry_bucket,
+            "page-0:x-0001:y-0002"
+        );
+    }
+
+    #[test]
+    fn text_edit_changes_strong_hash_but_keeps_weak_signature() {
+        let old = build_semantic_document(
+            "old",
+            &[text_run(
+                "old",
+                "Payment is due in 30 days",
+                0,
+                rect(72.0, 120.0, 180.0, 132.0),
+            )],
+            Vec::new(),
+        );
+        let new = build_semantic_document(
+            "new",
+            &[text_run(
+                "new",
+                "Payment is due in 15 days",
+                0,
+                rect(72.0, 120.0, 180.0, 132.0),
+            )],
+            Vec::new(),
+        );
+
+        assert_ne!(
+            old.nodes[0].anchor.strong_text_hash,
+            new.nodes[0].anchor.strong_text_hash
+        );
+        assert_eq!(
+            old.nodes[0].anchor.weak_text_signature,
+            new.nodes[0].anchor.weak_text_signature
+        );
+    }
+
+    #[test]
+    fn paragraph_anchor_keeps_heading_context() {
+        let document = build_semantic_document(
+            "fixture",
+            &[
+                text_run("heading", "1. Scope", 0, rect(10.0, 120.0, 80.0, 140.0)),
+                text_run("body", "Body text", 0, rect(10.0, 40.0, 80.0, 52.0)),
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(document.nodes[0].anchor.heading_context, None);
+        assert_eq!(
+            document.nodes[1].anchor.heading_context,
+            Some(document.nodes[0].anchor.strong_text_hash.clone())
+        );
     }
 
     fn text_run(id: &str, text: &str, page_index: usize, bbox: Rect) -> TextRun {
