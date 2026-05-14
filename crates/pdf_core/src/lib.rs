@@ -1669,7 +1669,9 @@ fn parse_stream(
         ));
     };
     let mut stream_data_end = stream_data_start + relative_endstream;
-    while stream_data_end > stream_data_start && matches!(bytes[stream_data_end - 1], b'\n' | b'\r')
+    while stream_data_end > stream_data_start
+        && stream_data_end <= bytes.len()
+        && matches!(bytes[stream_data_end - 1], b'\n' | b'\r')
     {
         stream_data_end -= 1;
     }
