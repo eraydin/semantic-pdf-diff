@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use pdf_semantic::{SemanticDocument, SemanticNode};
 use spdfdiff_types::{
     ChangeKind, ChangeSeverity, DiffDocument, SemanticChange, SemanticNodeEvidence,
@@ -90,6 +92,7 @@ pub fn diff_semantic_documents_with_classifier(
             new,
             old_start..old_end,
             new_start..new_end,
+            config,
             &mut document,
             classifier,
         );
@@ -97,6 +100,9 @@ pub fn diff_semantic_documents_with_classifier(
         new_start = new_end + 1;
     }
 
+    if config.detect_moves {
+        relabel_insert_delete_pairs_as_moves(&mut document, config, classifier);
+    }
     document
 }
 
@@ -134,17 +140,21 @@ fn emit_unmatched_range(
     new: &SemanticDocument,
     old_range: std::ops::Range<usize>,
     new_range: std::ops::Range<usize>,
+    config: DiffConfig,
     document: &mut DiffDocument,
     classifier: &impl SeverityClassifier,
 ) {
     let paired = old_range.len().min(new_range.len());
     for offset in 0..paired {
+        let old_node = &old.nodes[old_range.start + offset];
+        let new_node = &new.nodes[new_range.start + offset];
+        let reason = modified_reason_with_hunk(old_node, new_node, config);
         push_change(
             document,
             ChangeKind::Modified,
-            Some(&old.nodes[old_range.start + offset]),
-            Some(&new.nodes[new_range.start + offset]),
-            "paragraph text differs between exact-match anchors",
+            Some(old_node),
+            Some(new_node),
+            &reason,
             classifier,
         );
     }
@@ -221,6 +231,167 @@ fn comparable_text(node: &SemanticNode, config: DiffConfig) -> String {
     }
 }
 
+fn modified_reason_with_hunk(
+    old_node: &SemanticNode,
+    new_node: &SemanticNode,
+    config: DiffConfig,
+) -> String {
+    let old_text = old_node.normalized_text.as_deref().unwrap_or_default();
+    let new_text = new_node.normalized_text.as_deref().unwrap_or_default();
+    let old_tokens = normalized_tokens(old_text, config);
+    let new_tokens = normalized_tokens(new_text, config);
+
+    if old_tokens == new_tokens {
+        return "paragraph text differs between exact-match anchors".into();
+    }
+
+    let prefix_len = shared_prefix_len(&old_tokens, &new_tokens);
+    let old_suffix_start = shared_suffix_start(&old_tokens, &new_tokens, prefix_len);
+    let new_suffix_start = shared_suffix_start(&new_tokens, &old_tokens, prefix_len);
+
+    let old_hunk = old_tokens[prefix_len..old_suffix_start].join(" ");
+    let new_hunk = new_tokens[prefix_len..new_suffix_start].join(" ");
+    format!(
+        "paragraph text differs between exact-match anchors (old: \"{}\" -> new: \"{}\")",
+        old_hunk, new_hunk
+    )
+}
+
+fn normalized_tokens(text: &str, config: DiffConfig) -> Vec<String> {
+    let base = if config.ignore_whitespace {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        text.to_string()
+    };
+    let normalized = if config.ignore_case {
+        base.to_lowercase()
+    } else {
+        base
+    };
+    normalized
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn shared_prefix_len(left: &[String], right: &[String]) -> usize {
+    let mut index = 0;
+    while index < left.len() && index < right.len() && left[index] == right[index] {
+        index += 1;
+    }
+    index
+}
+
+fn shared_suffix_start(target: &[String], other: &[String], prefix_len: usize) -> usize {
+    let mut suffix_len = 0;
+    while target.len() > prefix_len + suffix_len
+        && other.len() > prefix_len + suffix_len
+        && target[target.len() - 1 - suffix_len] == other[other.len() - 1 - suffix_len]
+    {
+        suffix_len += 1;
+    }
+    target.len() - suffix_len
+}
+
+fn relabel_insert_delete_pairs_as_moves(
+    document: &mut DiffDocument,
+    config: DiffConfig,
+    classifier: &impl SeverityClassifier,
+) {
+    let mut deleted_candidates = document
+        .changes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, change)| (change.kind == ChangeKind::Deleted).then_some(index))
+        .collect::<Vec<_>>();
+    let mut consumed_deleted = BTreeSet::new();
+
+    for insert_index in 0..document.changes.len() {
+        if document.changes[insert_index].kind != ChangeKind::Inserted {
+            continue;
+        }
+        let Some(insert_text) = document.changes[insert_index]
+            .new_node
+            .as_ref()
+            .and_then(|node| node.text.as_ref())
+        else {
+            continue;
+        };
+        let insert_text = normalize_text_for_match(insert_text, config);
+
+        let Some((position, deleted_index)) =
+            deleted_candidates
+                .iter()
+                .enumerate()
+                .find_map(|(position, deleted_index)| {
+                    let deleted_text = document.changes[*deleted_index]
+                        .old_node
+                        .as_ref()
+                        .and_then(|node| node.text.as_ref())?;
+                    (normalize_text_for_match(deleted_text, config) == insert_text)
+                        .then_some((position, *deleted_index))
+                })
+        else {
+            continue;
+        };
+
+        let old_evidence = document.changes[deleted_index].old_node.clone();
+        let change = &mut document.changes[insert_index];
+        change.kind = ChangeKind::Moved;
+        change.old_node = old_evidence;
+        change.reason = "paragraph text moved to a different reading-order position".into();
+        change.severity = classifier.classify(change);
+        consumed_deleted.insert(deleted_index);
+        deleted_candidates.remove(position);
+    }
+
+    if consumed_deleted.is_empty() {
+        return;
+    }
+    let retained = document
+        .changes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, change)| {
+            (!consumed_deleted.contains(&index)).then_some(change.clone())
+        })
+        .collect::<Vec<_>>();
+    document.changes = retained;
+    renumber_and_recompute_summary(document);
+}
+
+fn normalize_text_for_match(text: &str, config: DiffConfig) -> String {
+    let text = if config.ignore_whitespace {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        text.to_string()
+    };
+    if config.ignore_case {
+        text.to_lowercase()
+    } else {
+        text
+    }
+}
+
+fn renumber_and_recompute_summary(document: &mut DiffDocument) {
+    document.summary.inserted = 0;
+    document.summary.deleted = 0;
+    document.summary.modified = 0;
+    document.summary.moved = 0;
+    document.summary.layout_changed = 0;
+    for (index, change) in document.changes.iter_mut().enumerate() {
+        change.id = format!("change-{index:04}");
+        match change.kind {
+            ChangeKind::Inserted => document.summary.inserted += 1,
+            ChangeKind::Deleted => document.summary.deleted += 1,
+            ChangeKind::Modified => document.summary.modified += 1,
+            ChangeKind::Moved => document.summary.moved += 1,
+            ChangeKind::LayoutChanged => document.summary.layout_changed += 1,
+            _ => {}
+        }
+    }
+}
+
 fn to_evidence(node: &SemanticNode) -> SemanticNodeEvidence {
     SemanticNodeEvidence {
         node_id: node.id.clone(),
@@ -247,6 +418,10 @@ mod tests {
         assert_eq!(diff.summary.modified, 1);
         assert_eq!(diff.changes[0].id, "change-0000");
         assert_eq!(diff.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(
+            diff.changes[0].reason,
+            "paragraph text differs between exact-match anchors (old: \"\" -> new: \"world\")"
+        );
         assert_ne!(diff.changes[0].severity, ChangeSeverity::Critical);
     }
 
@@ -283,6 +458,44 @@ mod tests {
             diff.changes[0].old_node.as_ref().unwrap().text.as_deref(),
             Some("Deleted")
         );
+    }
+
+    #[test]
+    fn detects_moved_paragraph_from_insert_delete_pair() {
+        let old = document_with_texts("old", &["Alpha", "Beta", "Gamma"]);
+        let new = document_with_texts("new", &["Beta", "Alpha", "Gamma"]);
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert_eq!(diff.summary.moved, 1);
+        assert_eq!(diff.summary.inserted, 0);
+        assert_eq!(diff.summary.deleted, 0);
+        assert_eq!(diff.changes.len(), 1);
+        assert_eq!(diff.changes[0].kind, ChangeKind::Moved);
+    }
+
+    struct MajorClassifier;
+
+    impl SeverityClassifier for MajorClassifier {
+        fn classify(&self, _change: &SemanticChange) -> ChangeSeverity {
+            ChangeSeverity::Major
+        }
+    }
+
+    #[test]
+    fn move_relabeling_respects_custom_classifier() {
+        let old = document_with_texts("old", &["Alpha", "Beta", "Gamma"]);
+        let new = document_with_texts("new", &["Beta", "Alpha", "Gamma"]);
+
+        let diff = diff_semantic_documents_with_classifier(
+            &old,
+            &new,
+            DiffConfig::default(),
+            &MajorClassifier,
+        );
+
+        assert_eq!(diff.changes[0].kind, ChangeKind::Moved);
+        assert_eq!(diff.changes[0].severity, ChangeSeverity::Major);
     }
 
     fn document_with_text(fingerprint: &str, text: &str) -> SemanticDocument {
