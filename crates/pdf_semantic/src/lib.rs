@@ -36,6 +36,7 @@ pub enum SemanticNodeKind {
     Page,
     HeadingCandidate,
     Paragraph,
+    ListCandidate,
     TableCandidate,
     FigureCandidate,
     UnknownBlock,
@@ -64,6 +65,7 @@ pub fn build_semantic_document(
     let lines = cluster_lines(runs);
     let mut nodes = cluster_paragraphs(&lines);
     classify_heading_candidates(&mut nodes);
+    classify_list_candidates(&mut nodes);
     assign_semantic_anchors(&mut nodes);
 
     SemanticDocument {
@@ -211,6 +213,59 @@ fn is_heading_candidate(text: &str, height: f32, median_height: f32) -> bool {
         .next()
         .is_some_and(|character| character.is_uppercase() || character.is_ascii_digit());
     larger_than_body && heading_shape
+}
+
+fn classify_list_candidates(nodes: &mut [SemanticNode]) {
+    for node in nodes {
+        if node.kind != SemanticNodeKind::Paragraph {
+            continue;
+        }
+        let Some(text) = node.normalized_text.as_deref() else {
+            continue;
+        };
+        if is_list_candidate(text) {
+            node.kind = SemanticNodeKind::ListCandidate;
+            node.confidence = 0.6;
+        }
+    }
+}
+
+fn is_list_candidate(text: &str) -> bool {
+    let text = text.trim_start();
+    is_bullet_list_marker(text) || is_numbered_list_marker(text)
+}
+
+fn is_bullet_list_marker(text: &str) -> bool {
+    text.strip_prefix('-')
+        .or_else(|| text.strip_prefix('*'))
+        .or_else(|| text.strip_prefix('+'))
+        .is_some_and(|remaining| remaining.starts_with(char::is_whitespace))
+}
+
+fn is_numbered_list_marker(text: &str) -> bool {
+    let mut chars = text.char_indices();
+    let mut digit_end = None;
+    for (index, character) in &mut chars {
+        if character.is_ascii_digit() {
+            digit_end = Some(index + character.len_utf8());
+        } else {
+            break;
+        }
+    }
+    let Some(digit_end) = digit_end else {
+        return false;
+    };
+    if digit_end > 3 {
+        return false;
+    }
+    let remaining = &text[digit_end..];
+    let Some(after_marker) = remaining
+        .strip_prefix('.')
+        .or_else(|| remaining.strip_prefix(')'))
+    else {
+        return false;
+    };
+    after_marker.starts_with(char::is_whitespace)
 }
 
 fn assign_semantic_anchors(nodes: &mut [SemanticNode]) {
@@ -472,6 +527,38 @@ mod tests {
             document.nodes[1].anchor.heading_context,
             Some(document.nodes[0].anchor.strong_text_hash.clone())
         );
+    }
+
+    #[test]
+    fn detects_basic_numbered_list_candidate() {
+        let document = build_semantic_document(
+            "fixture",
+            &[
+                text_run("item1", "1. First item", 0, rect(10.0, 120.0, 90.0, 132.0)),
+                text_run("body", "Body paragraph.", 0, rect(10.0, 40.0, 100.0, 52.0)),
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::ListCandidate);
+        assert_eq!(document.nodes[0].confidence, 0.6);
+        assert_eq!(document.nodes[1].kind, SemanticNodeKind::Paragraph);
+    }
+
+    #[test]
+    fn detects_basic_bullet_list_candidate() {
+        let document = build_semantic_document(
+            "fixture",
+            &[text_run(
+                "item",
+                "- Bullet item",
+                0,
+                rect(10.0, 120.0, 90.0, 132.0),
+            )],
+            Vec::new(),
+        );
+
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::ListCandidate);
     }
 
     fn text_run(id: &str, text: &str, page_index: usize, bbox: Rect) -> TextRun {
