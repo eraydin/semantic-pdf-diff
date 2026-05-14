@@ -53,7 +53,8 @@ pub fn build_semantic_document(
     diagnostics: Vec<Diagnostic>,
 ) -> SemanticDocument {
     let lines = cluster_lines(runs);
-    let nodes = cluster_paragraphs(&lines);
+    let mut nodes = cluster_paragraphs(&lines);
+    classify_heading_candidates(&mut nodes);
 
     SemanticDocument {
         fingerprint: fingerprint.into(),
@@ -148,6 +149,45 @@ fn line_to_node(index: usize, line: &TextLine) -> SemanticNode {
         source: line.source.clone(),
         confidence: 0.7,
     }
+}
+
+fn classify_heading_candidates(nodes: &mut [SemanticNode]) {
+    let mut heights = nodes
+        .iter()
+        .filter_map(|node| node.bbox.map(Rect::height))
+        .filter(|height| *height > 0.0)
+        .collect::<Vec<_>>();
+    if heights.len() < 2 {
+        return;
+    }
+    heights.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let median_height = heights[(heights.len() - 1) / 2];
+
+    for node in nodes {
+        let Some(text) = node.normalized_text.as_deref() else {
+            continue;
+        };
+        let Some(bbox) = node.bbox else {
+            continue;
+        };
+        if is_heading_candidate(text, bbox.height(), median_height) {
+            node.kind = SemanticNodeKind::HeadingCandidate;
+            node.confidence = 0.65;
+        }
+    }
+}
+
+fn is_heading_candidate(text: &str, height: f32, median_height: f32) -> bool {
+    let text = text.trim();
+    if text.is_empty() || text.len() > 80 || text.ends_with('.') {
+        return false;
+    }
+    let larger_than_body = height >= median_height * 1.2;
+    let heading_shape = text
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_uppercase() || character.is_ascii_digit());
+    larger_than_body && heading_shape
 }
 
 fn append_text(target: &mut String, next: &str) {
@@ -247,6 +287,25 @@ mod tests {
             document.nodes[1].normalized_text.as_deref(),
             Some("Second paragraph")
         );
+    }
+
+    #[test]
+    fn detects_controlled_heading_candidate() {
+        let runs = vec![
+            text_run("heading", "1. Scope", 0, rect(10.0, 120.0, 80.0, 140.0)),
+            text_run(
+                "body",
+                "This paragraph explains the scope.",
+                0,
+                rect(10.0, 40.0, 180.0, 52.0),
+            ),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 2);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::HeadingCandidate);
+        assert_eq!(document.nodes[0].confidence, 0.65);
+        assert_eq!(document.nodes[1].kind, SemanticNodeKind::Paragraph);
     }
 
     fn text_run(id: &str, text: &str, page_index: usize, bbox: Rect) -> TextRun {

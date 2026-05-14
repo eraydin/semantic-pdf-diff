@@ -4,5 +4,6 @@ Layout segmentation, semantic nodes, reading order, and semantic anchors.
 
 Current vertical-slice extraction clusters positioned text runs into deterministic
 paragraph nodes using page index, baseline proximity, x ordering, and vertical
-gap thresholds. Heading, list, table, and semantic-anchor heuristics remain
-later MVP work.
+gap thresholds. It can mark controlled larger short paragraphs as
+`HeadingCandidate`. List, table, and semantic-anchor heuristics remain later MVP
+work.
