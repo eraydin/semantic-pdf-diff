@@ -201,11 +201,11 @@ mod tests {
         assert_eq!(diff.summary.modified, 1);
         assert_eq!(
             diff.changes[0].old_node.as_ref().unwrap().text.as_deref(),
-            Some("world")
+            Some("Hello world")
         );
         assert_eq!(
             diff.changes[0].new_node.as_ref().unwrap().text.as_deref(),
-            Some("there")
+            Some("Hello there")
         );
     }
 
