@@ -153,22 +153,183 @@ fn emit_unmatched_range(
     document: &mut DiffDocument,
     classifier: &impl SeverityClassifier,
 ) {
-    let paired = old_range.len().min(new_range.len());
-    for offset in 0..paired {
-        let old_node = &old.nodes[old_range.start + offset];
-        let new_node = &new.nodes[new_range.start + offset];
+    let matches = fuzzy_node_matches(old, new, old_range.clone(), new_range.clone(), config);
+    let mut old_cursor = old_range.start;
+    let mut new_cursor = new_range.start;
+    for fuzzy_match in matches {
+        emit_unpaired_changes(
+            old,
+            new,
+            old_cursor..fuzzy_match.old_index,
+            new_cursor..fuzzy_match.new_index,
+            document,
+            classifier,
+        );
+
+        let old_node = &old.nodes[fuzzy_match.old_index];
+        let new_node = &new.nodes[fuzzy_match.new_index];
         let reason = modified_reason_with_hunk(old_node, new_node, config);
-        push_change(
+        push_change_with_confidence(
             document,
             ChangeKind::Modified,
             Some(old_node),
             Some(new_node),
-            &reason,
+            &format!("{reason}; fuzzy_match_score={:.3}", fuzzy_match.score),
+            fuzzy_match.score,
             classifier,
         );
+        old_cursor = fuzzy_match.old_index + 1;
+        new_cursor = fuzzy_match.new_index + 1;
     }
 
-    for old_index in old_range.start + paired..old_range.end {
+    emit_unpaired_changes(
+        old,
+        new,
+        old_cursor..old_range.end,
+        new_cursor..new_range.end,
+        document,
+        classifier,
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FuzzyMatch {
+    old_index: usize,
+    new_index: usize,
+    score: f32,
+}
+
+fn fuzzy_node_matches(
+    old: &SemanticDocument,
+    new: &SemanticDocument,
+    old_range: std::ops::Range<usize>,
+    new_range: std::ops::Range<usize>,
+    config: DiffConfig,
+) -> Vec<FuzzyMatch> {
+    let old_len = old_range.len();
+    let new_len = new_range.len();
+    let mut scores = vec![vec![0.0f32; new_len]; old_len];
+    for (old_offset, row) in scores.iter_mut().enumerate() {
+        for (new_offset, score) in row.iter_mut().enumerate() {
+            *score = fuzzy_match_score(
+                &old.nodes[old_range.start + old_offset],
+                &new.nodes[new_range.start + new_offset],
+                config,
+            );
+        }
+    }
+
+    let mut best = vec![vec![0.0f32; new_len + 1]; old_len + 1];
+    for old_offset in (0..old_len).rev() {
+        for new_offset in (0..new_len).rev() {
+            let match_score = if scores[old_offset][new_offset] >= config.min_match_score {
+                scores[old_offset][new_offset] + best[old_offset + 1][new_offset + 1]
+            } else {
+                -1.0
+            };
+            best[old_offset][new_offset] = match_score
+                .max(best[old_offset + 1][new_offset])
+                .max(best[old_offset][new_offset + 1]);
+        }
+    }
+
+    let mut matches = Vec::new();
+    let mut old_offset = 0;
+    let mut new_offset = 0;
+    while old_offset < old_len && new_offset < new_len {
+        let score = scores[old_offset][new_offset];
+        let match_score = score + best[old_offset + 1][new_offset + 1];
+        if score >= config.min_match_score
+            && approximately_equal(best[old_offset][new_offset], match_score)
+        {
+            matches.push(FuzzyMatch {
+                old_index: old_range.start + old_offset,
+                new_index: new_range.start + new_offset,
+                score,
+            });
+            old_offset += 1;
+            new_offset += 1;
+        } else if best[old_offset + 1][new_offset] >= best[old_offset][new_offset + 1] {
+            old_offset += 1;
+        } else {
+            new_offset += 1;
+        }
+    }
+    matches
+}
+
+fn approximately_equal(left: f32, right: f32) -> bool {
+    (left - right).abs() <= f32::EPSILON * 16.0
+}
+
+fn fuzzy_match_score(old_node: &SemanticNode, new_node: &SemanticNode, config: DiffConfig) -> f32 {
+    if old_node.page_index != new_node.page_index {
+        return 0.0;
+    }
+    let old_text = comparable_text(old_node, config);
+    let new_text = comparable_text(new_node, config);
+    let old_tokens = normalized_tokens(
+        old_node.normalized_text.as_deref().unwrap_or_default(),
+        config,
+    );
+    let new_tokens = normalized_tokens(
+        new_node.normalized_text.as_deref().unwrap_or_default(),
+        config,
+    );
+    let score = token_similarity(&old_tokens, &new_tokens);
+    if is_text_extension(&old_text, &new_text) {
+        score.max(0.85)
+    } else {
+        score
+    }
+}
+
+fn is_text_extension(left: &str, right: &str) -> bool {
+    if left.is_empty() || right.is_empty() || left == right {
+        return false;
+    }
+    left.starts_with(right) || right.starts_with(left)
+}
+
+fn token_similarity(old_tokens: &[String], new_tokens: &[String]) -> f32 {
+    if old_tokens.is_empty() && new_tokens.is_empty() {
+        return 1.0;
+    }
+    if old_tokens.is_empty() || new_tokens.is_empty() {
+        return 0.0;
+    }
+    let common = token_lcs_len(old_tokens, new_tokens);
+    let score = (2.0 * common as f32) / (old_tokens.len() + new_tokens.len()) as f32;
+    if old_tokens.len() == new_tokens.len() && common + 1 == old_tokens.len() {
+        score.max(0.8)
+    } else {
+        score
+    }
+}
+
+fn token_lcs_len(left: &[String], right: &[String]) -> usize {
+    let mut lengths = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+    for left_index in (0..left.len()).rev() {
+        for right_index in (0..right.len()).rev() {
+            lengths[left_index][right_index] = if left[left_index] == right[right_index] {
+                lengths[left_index + 1][right_index + 1] + 1
+            } else {
+                lengths[left_index + 1][right_index].max(lengths[left_index][right_index + 1])
+            };
+        }
+    }
+    lengths[0][0]
+}
+
+fn emit_unpaired_changes(
+    old: &SemanticDocument,
+    new: &SemanticDocument,
+    old_range: std::ops::Range<usize>,
+    new_range: std::ops::Range<usize>,
+    document: &mut DiffDocument,
+    classifier: &impl SeverityClassifier,
+) {
+    for old_index in old_range {
         push_change(
             document,
             ChangeKind::Deleted,
@@ -179,7 +340,7 @@ fn emit_unmatched_range(
         );
     }
 
-    for new_index in new_range.start + paired..new_range.end {
+    for new_index in new_range {
         push_change(
             document,
             ChangeKind::Inserted,
@@ -199,6 +360,18 @@ fn push_change(
     reason: &str,
     classifier: &impl SeverityClassifier,
 ) {
+    push_change_with_confidence(document, kind, old_node, new_node, reason, 0.9, classifier);
+}
+
+fn push_change_with_confidence(
+    document: &mut DiffDocument,
+    kind: ChangeKind,
+    old_node: Option<&SemanticNode>,
+    new_node: Option<&SemanticNode>,
+    reason: &str,
+    confidence: f32,
+    classifier: &impl SeverityClassifier,
+) {
     let kind_for_summary = kind.clone();
     let mut change = SemanticChange {
         id: format!("change-{:04}", document.changes.len()),
@@ -206,7 +379,7 @@ fn push_change(
         severity: ChangeSeverity::Info,
         old_node: old_node.map(to_evidence),
         new_node: new_node.map(to_evidence),
-        confidence: 0.9,
+        confidence,
         reason: reason.into(),
     };
     change.severity = classifier.classify(&change);
@@ -463,10 +636,12 @@ mod tests {
         assert_eq!(diff.summary.modified, 1);
         assert_eq!(diff.changes[0].id, "change-0000");
         assert_eq!(diff.changes[0].kind, ChangeKind::Modified);
-        assert_eq!(
-            diff.changes[0].reason,
-            "paragraph text differs between exact-match anchors (old: \"\" -> new: \"world\")"
+        assert!(
+            diff.changes[0]
+                .reason
+                .contains("old: \"\" -> new: \"world\"")
         );
+        assert!(diff.changes[0].reason.contains("fuzzy_match_score=0.850"));
         assert_ne!(diff.changes[0].severity, ChangeSeverity::Critical);
     }
 
@@ -503,6 +678,59 @@ mod tests {
             diff.changes[0].old_node.as_ref().unwrap().text.as_deref(),
             Some("Deleted")
         );
+    }
+
+    #[test]
+    fn fuzzy_matches_edited_paragraph_between_exact_anchors() {
+        let old = document_with_texts("old", &["Alpha", "Payment is due in 30 days", "Omega"]);
+        let new = document_with_texts("new", &["Alpha", "Payment is due in 15 days", "Omega"]);
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert_eq!(diff.summary.modified, 1);
+        assert_eq!(diff.summary.inserted, 0);
+        assert_eq!(diff.summary.deleted, 0);
+        assert_eq!(diff.changes[0].kind, ChangeKind::Modified);
+        assert!((diff.changes[0].confidence - 0.833).abs() < 0.001);
+        assert!(diff.changes[0].reason.contains("fuzzy_match_score=0.833"));
+        assert_eq!(
+            diff.changes[0].old_node.as_ref().unwrap().text.as_deref(),
+            Some("Payment is due in 30 days")
+        );
+        assert_eq!(
+            diff.changes[0].new_node.as_ref().unwrap().text.as_deref(),
+            Some("Payment is due in 15 days")
+        );
+    }
+
+    #[test]
+    fn leaves_low_confidence_unmatched_blocks_as_delete_insert() {
+        let old = document_with_texts("old", &["Alpha", "Cat dog", "Omega"]);
+        let new = document_with_texts("new", &["Alpha", "Invoice total", "Omega"]);
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert_eq!(diff.summary.modified, 0);
+        assert_eq!(diff.summary.deleted, 1);
+        assert_eq!(diff.summary.inserted, 1);
+        assert_eq!(diff.changes[0].kind, ChangeKind::Deleted);
+        assert_eq!(diff.changes[1].kind, ChangeKind::Inserted);
+    }
+
+    #[test]
+    fn fuzzy_matching_respects_minimum_score() {
+        let old = document_with_texts("old", &["Alpha", "Payment is due in 30 days", "Omega"]);
+        let new = document_with_texts("new", &["Alpha", "Payment is due in 15 days", "Omega"]);
+        let config = DiffConfig {
+            min_match_score: 0.95,
+            ..DiffConfig::default()
+        };
+
+        let diff = diff_semantic_documents(&old, &new, config);
+
+        assert_eq!(diff.summary.modified, 0);
+        assert_eq!(diff.summary.deleted, 1);
+        assert_eq!(diff.summary.inserted, 1);
     }
 
     #[test]
