@@ -47,6 +47,7 @@ pub struct PdfPage {
     pub page_index: usize,
     pub object_id: ObjectId,
     pub content_object_id: ObjectId,
+    pub content_object_ids: Vec<ObjectId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,19 +194,35 @@ impl PdfDocument {
 
     #[must_use]
     pub fn first_page_content(&self) -> Option<PageContent<'_>> {
+        self.first_page_contents()?.into_iter().next()
+    }
+
+    #[must_use]
+    pub fn first_page_contents(&self) -> Option<Vec<PageContent<'_>>> {
         let page = self.pages.first()?;
-        let object = self
-            .objects
+        let contents = page
+            .content_object_ids
             .iter()
-            .find(|object| object.id == page.content_object_id)?;
-        let stream = object.stream.as_ref()?;
-        Some(PageContent {
-            page_index: page.page_index,
-            page_object_id: page.object_id,
-            stream_object_id: object.id,
-            bytes: &stream.bytes,
-            byte_range: stream.byte_range,
-        })
+            .filter_map(|content_object_id| {
+                let object = self
+                    .objects
+                    .iter()
+                    .find(|object| object.id == *content_object_id)?;
+                let stream = object.stream.as_ref()?;
+                Some(PageContent {
+                    page_index: page.page_index,
+                    page_object_id: page.object_id,
+                    stream_object_id: object.id,
+                    bytes: &stream.bytes,
+                    byte_range: stream.byte_range,
+                })
+            })
+            .collect::<Vec<_>>();
+        if contents.is_empty() {
+            None
+        } else {
+            Some(contents)
+        }
     }
 }
 
@@ -1710,7 +1727,8 @@ fn resolve_pages(
         if !is_page_object(&object.body) {
             continue;
         }
-        let Some(content_object_id) = find_reference_after(&object.body, "/Contents") else {
+        let content_object_ids = find_content_references(&object.body);
+        let Some(content_object_id) = content_object_ids.first().copied() else {
             diagnostics.push(
                 Diagnostic::warning(
                     "MISSING_CONTENT_STREAM",
@@ -1724,6 +1742,7 @@ fn resolve_pages(
             page_index: pages.len(),
             object_id: object.id,
             content_object_id,
+            content_object_ids,
         });
     }
     if pages.len() > limits.max_pages {
@@ -1792,14 +1811,58 @@ fn is_page_object(body: &str) -> bool {
     body.contains("/Type /Page") && !body.contains("/Type /Pages")
 }
 
-fn find_reference_after(body: &str, key: &str) -> Option<ObjectId> {
-    let start = body.find(key)? + key.len();
-    let mut parts = body[start..].split_ascii_whitespace();
-    let number = parts.next()?.parse().ok()?;
-    let generation = parts.next()?.parse().ok()?;
-    if parts.next()? != "R" {
+fn find_content_references(body: &str) -> Vec<ObjectId> {
+    let Some(start) = body
+        .find("/Contents")
+        .map(|index| index + "/Contents".len())
+    else {
+        return Vec::new();
+    };
+    let tail = body[start..].trim_start();
+    if let Some(array_body) = tail
+        .strip_prefix('[')
+        .and_then(|remaining| remaining.split_once(']').map(|(array, _)| array))
+    {
+        return references_in_text(array_body);
+    }
+    first_reference_in_text(tail).into_iter().collect()
+}
+
+fn first_reference_in_text(text: &str) -> Option<ObjectId> {
+    let tokens = reference_tokens(text);
+    parse_reference_tokens(tokens.first()?, tokens.get(1)?, tokens.get(2)?)
+}
+
+fn references_in_text(text: &str) -> Vec<ObjectId> {
+    let tokens = reference_tokens(text);
+    let mut references = Vec::new();
+    let mut index = 0;
+    while index + 2 < tokens.len() {
+        if let Some(reference) =
+            parse_reference_tokens(&tokens[index], &tokens[index + 1], &tokens[index + 2])
+        {
+            references.push(reference);
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    references
+}
+
+fn reference_tokens(text: &str) -> Vec<String> {
+    text.replace(['[', ']'], " ")
+        .split_ascii_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn parse_reference_tokens(number: &str, generation: &str, marker: &str) -> Option<ObjectId> {
+    if marker != "R" {
         return None;
     }
+    let number = number.parse().ok()?;
+    let generation = generation.parse().ok()?;
     Some(ObjectId { number, generation })
 }
 
@@ -2318,6 +2381,32 @@ endobj
     }
 
     #[test]
+    fn resolves_first_page_content_stream_array_in_order() {
+        let document =
+            PdfDocument::parse(multi_content_stream_pdf()).expect("fixture should parse");
+        let contents = document
+            .first_page_contents()
+            .expect("page content streams should resolve");
+
+        assert_eq!(
+            document.pages[0].content_object_ids,
+            vec![
+                ObjectId {
+                    number: 4,
+                    generation: 0
+                },
+                ObjectId {
+                    number: 5,
+                    generation: 0
+                }
+            ]
+        );
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0].bytes, b"BT /F1 12 Tf 72 720 Td (Hello) Tj");
+        assert_eq!(contents[1].bytes, b"( world) Tj ET");
+    }
+
+    #[test]
     fn emits_diagnostic_for_page_without_contents() {
         let pdf = b"%PDF-1.7
 1 0 obj
@@ -2415,6 +2504,32 @@ endobj
 << /Length 38 >>
 stream
 BT /F1 12 Tf 72 720 Td (Hello) Tj ET
+endstream
+endobj
+"
+    }
+
+    fn multi_content_stream_pdf() -> &'static [u8] {
+        b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents [4 0 R 5 0 R] >>
+endobj
+4 0 obj
+<< /Length 35 >>
+stream
+BT /F1 12 Tf 72 720 Td (Hello) Tj
+endstream
+endobj
+5 0 obj
+<< /Length 13 >>
+stream
+( world) Tj ET
 endstream
 endobj
 "

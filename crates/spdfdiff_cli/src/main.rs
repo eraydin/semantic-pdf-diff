@@ -116,7 +116,7 @@ fn semantic_document_from_pdf(
     config: ParseConfig,
 ) -> Result<pdf_semantic::SemanticDocument, PdfDiffError> {
     let document = pdf_core::PdfDocument::parse_with_config(bytes, config)?;
-    let Some(content) = document.first_page_content() else {
+    let Some(contents) = document.first_page_contents() else {
         let mut semantic =
             pdf_semantic::build_semantic_document(fingerprint, &[], document.diagnostics);
         semantic
@@ -127,13 +127,22 @@ fn semantic_document_from_pdf(
             ));
         return Ok(semantic);
     };
-    let program = pdf_content::parse_content_stream_with_limits(
-        content.bytes,
-        content.page_index,
-        Some(content.stream_object_id),
-        config.limits,
-    );
-    let extraction = pdf_text::extract_text_runs(&program, content.page_index);
+    let page_index = contents[0].page_index;
+    let mut program = pdf_content::ContentProgram {
+        operations: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    for content in contents {
+        let mut stream_program = pdf_content::parse_content_stream_with_limits(
+            content.bytes,
+            content.page_index,
+            Some(content.stream_object_id),
+            config.limits,
+        );
+        program.operations.append(&mut stream_program.operations);
+        program.diagnostics.append(&mut stream_program.diagnostics);
+    }
+    let extraction = pdf_text::extract_text_runs(&program, page_index);
     let mut diagnostics = document.diagnostics;
     diagnostics.extend(extraction.diagnostics);
     Ok(pdf_semantic::build_semantic_document(
@@ -182,6 +191,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn diffs_text_across_multiple_content_streams() {
+        let old_pdf = multi_stream_pdf("world");
+        let new_pdf = multi_stream_pdf("there");
+        let diff = diff_pdf_bytes("old", &old_pdf, "new", &new_pdf)
+            .expect("multi-stream vertical slice should diff");
+
+        assert_eq!(diff.summary.modified, 1);
+        assert_eq!(
+            diff.changes[0].old_node.as_ref().unwrap().text.as_deref(),
+            Some("world")
+        );
+        assert_eq!(
+            diff.changes[0].new_node.as_ref().unwrap().text.as_deref(),
+            Some("there")
+        );
+    }
+
     fn minimal_pdf(text: &str) -> Vec<u8> {
         format!(
             "%PDF-1.7
@@ -202,6 +229,36 @@ endstream
 endobj
 ",
             text.len() + 32
+        )
+        .into_bytes()
+    }
+
+    fn multi_stream_pdf(second_text: &str) -> Vec<u8> {
+        format!(
+            "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents [4 0 R 5 0 R] >>
+endobj
+4 0 obj
+<< /Length 33 >>
+stream
+BT /F1 12 Tf 72 720 Td (Hello) Tj
+endstream
+endobj
+5 0 obj
+<< /Length {} >>
+stream
+({second_text}) Tj ET
+endstream
+endobj
+",
+            second_text.len() + 9
         )
         .into_bytes()
     }
