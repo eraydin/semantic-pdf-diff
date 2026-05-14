@@ -294,6 +294,8 @@ dependencies = [
  "pdf_core",
  "pdf_semantic",
  "pdf_text",
+ "serde",
+ "serde_json",
  "spdfdiff_types",
 ]
 
