@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use diff_core::{DiffConfig, diff_semantic_documents};
+use pdf_content::{ContentOp, ContentProgram};
 use serde::Serialize;
-use spdfdiff_types::{DiffDocument, ParseConfig, PdfDiffError};
+use spdfdiff_types::{DiffDocument, ObjectId, ParseConfig, PdfDiffError};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -292,7 +293,7 @@ fn semantic_document_from_pdf(
         return Ok(semantic);
     };
     let page_index = contents[0].page_index;
-    let mut program = pdf_content::ContentProgram {
+    let mut program = ContentProgram {
         operations: Vec::new(),
         diagnostics: Vec::new(),
     };
@@ -306,14 +307,212 @@ fn semantic_document_from_pdf(
         program.operations.append(&mut stream_program.operations);
         program.diagnostics.append(&mut stream_program.diagnostics);
     }
+    let applied_tounicode = apply_tounicode_maps(&mut program, &document);
     let extraction = pdf_text::extract_text_runs(&program, page_index);
     let mut diagnostics = document.diagnostics;
-    diagnostics.extend(extraction.diagnostics);
+    diagnostics.extend(
+        extraction
+            .diagnostics
+            .into_iter()
+            .filter(|diagnostic| !applied_tounicode || diagnostic.code != "MISSING_TOUNICODE"),
+    );
     Ok(pdf_semantic::build_semantic_document(
         fingerprint,
         &extraction.runs,
         diagnostics,
     ))
+}
+
+fn apply_tounicode_maps(program: &mut ContentProgram, document: &pdf_core::PdfDocument) -> bool {
+    let maps = font_tounicode_maps(document);
+    if maps.is_empty() {
+        return false;
+    }
+
+    let mut current_font: Option<String> = None;
+    let mut applied = false;
+    for operation in &mut program.operations {
+        match operation {
+            ContentOp::SetFont { name, .. } => {
+                current_font = Some(name.clone());
+            }
+            ContentOp::ShowText {
+                text, raw_bytes, ..
+            }
+            | ContentOp::ShowAdjustedText {
+                text, raw_bytes, ..
+            } => {
+                let Some(font_name) = current_font.as_deref() else {
+                    continue;
+                };
+                let Some(map) = maps.get(font_name) else {
+                    continue;
+                };
+                if let Some(decoded) = decode_with_tounicode(raw_bytes, map) {
+                    *text = decoded;
+                    applied = true;
+                }
+            }
+            ContentOp::BeginText { .. }
+            | ContentOp::EndText { .. }
+            | ContentOp::MoveTextPosition { .. }
+            | ContentOp::MoveToNextLine { .. }
+            | ContentOp::SetTextLeading { .. }
+            | ContentOp::SetCharacterSpacing { .. }
+            | ContentOp::SetWordSpacing { .. }
+            | ContentOp::SetHorizontalScaling { .. }
+            | ContentOp::SetTextMatrix { .. }
+            | ContentOp::SaveGraphicsState { .. }
+            | ContentOp::RestoreGraphicsState { .. }
+            | ContentOp::ConcatMatrix { .. }
+            | ContentOp::Unknown { .. } => {}
+        }
+    }
+
+    applied
+}
+
+fn font_tounicode_maps(
+    document: &pdf_core::PdfDocument,
+) -> BTreeMap<String, BTreeMap<Vec<u8>, String>> {
+    let objects_by_id = document
+        .objects
+        .iter()
+        .map(|object| (object.id, object))
+        .collect::<BTreeMap<_, _>>();
+    let mut font_to_cmap = BTreeMap::new();
+    for object in &document.objects {
+        if let Some(cmap_id) = reference_after_key(&object.body, "ToUnicode") {
+            font_to_cmap.insert(object.id, cmap_id);
+        }
+    }
+
+    let mut maps = BTreeMap::new();
+    for object in &document.objects {
+        for (font_name, font_object_id) in named_references(&object.body) {
+            let Some(cmap_object_id) = font_to_cmap.get(&font_object_id) else {
+                continue;
+            };
+            let Some(cmap_stream) = objects_by_id
+                .get(cmap_object_id)
+                .and_then(|object| object.stream.as_ref())
+            else {
+                continue;
+            };
+            let cmap = parse_tounicode_cmap(&cmap_stream.bytes);
+            if !cmap.is_empty() {
+                maps.insert(font_name, cmap);
+            }
+        }
+    }
+    maps
+}
+
+fn reference_after_key(body: &str, key: &str) -> Option<ObjectId> {
+    let start = body.find(&format!("/{key}"))? + key.len() + 1;
+    parse_reference_at(&body[start..])
+}
+
+fn named_references(body: &str) -> Vec<(String, ObjectId)> {
+    let tokens = body_tokens(body);
+    let mut references = Vec::new();
+    for index in 0..tokens.len().saturating_sub(3) {
+        let Some(name) = tokens[index].strip_prefix('/') else {
+            continue;
+        };
+        let Ok(number) = tokens[index + 1].parse::<u32>() else {
+            continue;
+        };
+        let Ok(generation) = tokens[index + 2].parse::<u16>() else {
+            continue;
+        };
+        if tokens[index + 3] == "R" {
+            references.push((name.to_owned(), ObjectId { number, generation }));
+        }
+    }
+    references
+}
+
+fn parse_reference_at(body: &str) -> Option<ObjectId> {
+    let tokens = body_tokens(body);
+    let number = tokens.first()?.parse().ok()?;
+    let generation = tokens.get(1)?.parse().ok()?;
+    if tokens.get(2)? != "R" {
+        return None;
+    }
+    Some(ObjectId { number, generation })
+}
+
+fn body_tokens(body: &str) -> Vec<String> {
+    body.replace("<<", " ")
+        .replace(">>", " ")
+        .replace('/', " /")
+        .replace(['[', ']'], " ")
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn parse_tounicode_cmap(bytes: &[u8]) -> BTreeMap<Vec<u8>, String> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let hex_tokens = line
+            .split_whitespace()
+            .filter_map(hex_token_bytes)
+            .collect::<Vec<_>>();
+        if hex_tokens.len() == 2 {
+            if let Some(decoded) = unicode_hex_to_string(&hex_tokens[1]) {
+                map.insert(hex_tokens[0].clone(), decoded);
+            }
+        }
+    }
+    map
+}
+
+fn hex_token_bytes(token: &str) -> Option<Vec<u8>> {
+    let token = token.strip_prefix('<')?.strip_suffix('>')?;
+    if token.is_empty() || token.len() % 2 != 0 {
+        return None;
+    }
+    (0..token.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&token[index..index + 2], 16).ok())
+        .collect()
+}
+
+fn unicode_hex_to_string(bytes: &[u8]) -> Option<String> {
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = String::new();
+    for chunk in bytes.chunks_exact(2) {
+        let code_unit = u16::from_be_bytes([chunk[0], chunk[1]]);
+        let character = char::from_u32(u32::from(code_unit))?;
+        out.push(character);
+    }
+    Some(out)
+}
+
+fn decode_with_tounicode(raw_bytes: &[u8], map: &BTreeMap<Vec<u8>, String>) -> Option<String> {
+    let mut decoded = String::new();
+    let mut index = 0;
+    while index < raw_bytes.len() {
+        let mut matched = None;
+        for width in (1..=4).rev() {
+            let end = index + width;
+            if end <= raw_bytes.len() {
+                if let Some(value) = map.get(&raw_bytes[index..end]) {
+                    matched = Some((width, value));
+                    break;
+                }
+            }
+        }
+        let (width, value) = matched?;
+        decoded.push_str(value);
+        index += width;
+    }
+    Some(decoded)
 }
 
 fn render_diff(document: &DiffDocument, format: ReportFormat) -> String {
@@ -444,6 +643,42 @@ mod tests {
                 .expect("extract should succeed");
         let markdown = render_extract_report(&semantic, ReportFormat::Md);
         assert!(markdown.contains("- Hello"));
+    }
+
+    #[test]
+    fn parses_and_applies_tounicode_cmap() {
+        let cmap =
+            parse_tounicode_cmap(b"2 beginbfchar\n<0026> <0043>\n<004f> <006c>\nendbfchar\n");
+
+        assert_eq!(
+            decode_with_tounicode(&[0x00, 0x26, 0x00, 0x4f], &cmap).as_deref(),
+            Some("Cl")
+        );
+    }
+
+    #[test]
+    fn finds_font_resource_references_for_tounicode_maps() {
+        let refs = named_references("<</LQYSYM 18 0 R/KFDXKX 22 0 R>>");
+
+        assert_eq!(
+            refs,
+            vec![
+                (
+                    "LQYSYM".into(),
+                    ObjectId {
+                        number: 18,
+                        generation: 0
+                    }
+                ),
+                (
+                    "KFDXKX".into(),
+                    ObjectId {
+                        number: 22,
+                        generation: 0
+                    }
+                )
+            ]
+        );
     }
 
     #[test]

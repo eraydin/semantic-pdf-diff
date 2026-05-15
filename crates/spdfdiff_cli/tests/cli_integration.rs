@@ -169,9 +169,9 @@ fn diff_command_completes_against_real_sample_pdfs() {
         "document_v1.pdf",
         "document_v2.pdf",
         "document-diff.json",
+        0,
+        0,
         1,
-        1,
-        2,
     );
     assert_real_sample_diff(
         &fixture,
@@ -252,10 +252,15 @@ fn assert_real_sample_diff(
             .len(),
         expected_changes
     );
-    assert_diagnostic_code_present(&report, "MISSING_TOUNICODE");
+    assert_diagnostic_code_absent(&report, "MISSING_TOUNICODE");
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_STREAM_FILTER");
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_OBJECT_STREAM");
     assert_diagnostic_code_absent(&report, "MISSING_PAGE_CONTENT");
+    assert!(
+        !fs::read_to_string(output_path)
+            .expect("diff JSON should be readable")
+            .contains("\\u0000")
+    );
 }
 
 #[test]
@@ -276,7 +281,7 @@ fn inspect_command_completes_against_real_sample_pdf() {
 }
 
 #[test]
-fn extract_command_completes_against_real_sample_pdf_with_degraded_diagnostics() {
+fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
     for sample in real_sample_pdf_names() {
         let pdf = real_sample_pdf(sample);
 
@@ -289,6 +294,87 @@ fn extract_command_completes_against_real_sample_pdf_with_degraded_diagnostics()
         assert!(report["paragraphs"].as_u64().unwrap_or_default() >= 1);
         assert!(report["diagnostic_count"].as_u64().unwrap_or_default() >= 1);
     }
+}
+
+#[test]
+fn generated_output_files_include_expected_semantic_sample_content() {
+    let fixture = TestFixture::new("semantic_sample_output_content");
+    let contract_v2 = real_sample_pdf("semantic_contract_v2.pdf");
+    let images_v2 = real_sample_pdf("semantic_images_v2.pdf");
+    let contract_extract = fixture.path("contract-v2.md");
+    let images_extract = fixture.path("images-v2.md");
+    let contract_diff = fixture.path("contract-diff.json");
+    let images_diff = fixture.path("images-diff.json");
+
+    assert_success(&run_spdfdiff([
+        "extract",
+        path_arg(&contract_v2).as_str(),
+        "--format",
+        "md",
+        "--output",
+        path_arg(&contract_extract).as_str(),
+    ]));
+    assert_success(&run_spdfdiff([
+        "extract",
+        path_arg(&images_v2).as_str(),
+        "--format",
+        "md",
+        "--output",
+        path_arg(&images_extract).as_str(),
+    ]));
+    assert_success(&run_spdfdiff([
+        "diff",
+        path_arg(&real_sample_pdf("semantic_contract_v1.pdf")).as_str(),
+        path_arg(&contract_v2).as_str(),
+        "--format",
+        "json",
+        "--output",
+        path_arg(&contract_diff).as_str(),
+    ]));
+    assert_success(&run_spdfdiff([
+        "diff",
+        path_arg(&real_sample_pdf("semantic_images_v1.pdf")).as_str(),
+        path_arg(&images_v2).as_str(),
+        "--format",
+        "json",
+        "--output",
+        path_arg(&images_diff).as_str(),
+    ]));
+
+    let contract_text =
+        fs::read_to_string(contract_extract).expect("contract extract should be written");
+    assert_readable_output_contains_all(
+        &contract_text,
+        &[
+            "TechCorp LLC",
+            "30 days written notice",
+            "15 days of invoice receipt",
+            "Annual Maintenance",
+            "50% of the total",
+        ],
+    );
+
+    let images_text = fs::read_to_string(images_extract).expect("image extract should be written");
+    assert_readable_output_contains_all(
+        &images_text,
+        &[
+            "Product Specification: The Widget",
+            "upgraded, reinforced",
+            "60Hz",
+            "24V",
+            "Internal Wiring",
+        ],
+    );
+
+    let contract_diff_text =
+        fs::read_to_string(contract_diff).expect("contract diff should be written");
+    assert_readable_output_contains_all(
+        &contract_diff_text,
+        &["TechCorp LLC", "$6,000.00", "Annual Maintenance"],
+    );
+
+    let images_diff_text = fs::read_to_string(images_diff).expect("image diff should be written");
+    assert_readable_output_contains_all(&images_diff_text, &["upgraded, reinforced", "24V"]);
 }
 
 #[test]
@@ -328,13 +414,13 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["files"][5]["file"], "semantic_contract_v2.pdf");
     assert_eq!(report["files"][6]["file"], "semantic_images_v1.pdf");
     assert_eq!(report["files"][7]["file"], "semantic_images_v2.pdf");
-    assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 8);
     assert!(
         report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"]
             .as_u64()
             .unwrap_or_default()
             >= 1
     );
+    assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_PAGE_CONTENT"].is_null());
@@ -393,18 +479,6 @@ fn read_json(path: &Path) -> Value {
         .expect("report should be valid JSON")
 }
 
-fn assert_diagnostic_code_present(report: &Value, code: &str) {
-    let diagnostics = report["diagnostics"]
-        .as_array()
-        .expect("diagnostics should be an array");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic["code"] == code),
-        "expected diagnostic code {code} in {diagnostics:?}"
-    );
-}
-
 fn assert_diagnostic_code_absent(report: &Value, code: &str) {
     let diagnostics = report["diagnostics"]
         .as_array()
@@ -415,6 +489,19 @@ fn assert_diagnostic_code_absent(report: &Value, code: &str) {
             .all(|diagnostic| diagnostic["code"] != code),
         "did not expect diagnostic code {code} in {diagnostics:?}"
     );
+}
+
+fn assert_readable_output_contains_all(output: &str, expected_terms: &[&str]) {
+    assert!(
+        !output.contains('\0') && !output.contains("\\u0000"),
+        "output should not contain embedded NUL text: {output}"
+    );
+    for expected in expected_terms {
+        assert!(
+            output.contains(expected),
+            "expected generated output to contain `{expected}` in:\n{output}"
+        );
+    }
 }
 
 struct TestFixture {
