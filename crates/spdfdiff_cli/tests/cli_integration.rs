@@ -182,6 +182,24 @@ fn diff_command_completes_against_real_sample_pdfs() {
         2,
         4,
     );
+    assert_real_sample_diff(
+        &fixture,
+        "semantic_contract_v1.pdf",
+        "semantic_contract_v2.pdf",
+        "semantic-contract-diff.json",
+        1,
+        1,
+        2,
+    );
+    assert_real_sample_diff(
+        &fixture,
+        "semantic_images_v1.pdf",
+        "semantic_images_v2.pdf",
+        "semantic-images-diff.json",
+        1,
+        2,
+        5,
+    );
 }
 
 fn assert_real_sample_diff(
@@ -220,6 +238,13 @@ fn assert_real_sample_diff(
     assert!(report["changes"].is_array());
     assert_eq!(report["summary"]["inserted"], expected_inserted);
     assert_eq!(report["summary"]["deleted"], expected_deleted);
+    assert!(
+        report["summary"]["modified"].as_u64().unwrap_or_default()
+            + report["summary"]["layout_changed"]
+                .as_u64()
+                .unwrap_or_default()
+            <= expected_changes as u64
+    );
     assert_eq!(
         report["changes"]
             .as_array()
@@ -291,15 +316,19 @@ fn corpus_command_completes_against_real_sample_pdfs() {
 
     let report = read_json(&output_path);
     assert_eq!(report["folder"], "real_corpus");
-    assert_eq!(report["total"], 4);
-    assert_eq!(report["parsed"], 4);
-    assert_eq!(report["partial"], 4);
+    assert_eq!(report["total"], 8);
+    assert_eq!(report["parsed"], 8);
+    assert_eq!(report["partial"], 8);
     assert_eq!(report["failed"], 0);
     assert_eq!(report["files"][0]["file"], "document_v1.pdf");
     assert_eq!(report["files"][1]["file"], "document_v2.pdf");
     assert_eq!(report["files"][2]["file"], "report_with_images_v1.pdf");
     assert_eq!(report["files"][3]["file"], "report_with_images_v2.pdf");
-    assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 4);
+    assert_eq!(report["files"][4]["file"], "semantic_contract_v1.pdf");
+    assert_eq!(report["files"][5]["file"], "semantic_contract_v2.pdf");
+    assert_eq!(report["files"][6]["file"], "semantic_images_v1.pdf");
+    assert_eq!(report["files"][7]["file"], "semantic_images_v2.pdf");
+    assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 8);
     assert!(
         report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"]
             .as_u64()
@@ -346,12 +375,16 @@ fn real_sample_pdf(name: &str) -> PathBuf {
     path
 }
 
-fn real_sample_pdf_names() -> [&'static str; 4] {
+fn real_sample_pdf_names() -> [&'static str; 8] {
     [
         "document_v1.pdf",
         "document_v2.pdf",
         "report_with_images_v1.pdf",
         "report_with_images_v2.pdf",
+        "semantic_contract_v1.pdf",
+        "semantic_contract_v2.pdf",
+        "semantic_images_v1.pdf",
+        "semantic_images_v2.pdf",
     ]
 }
 
