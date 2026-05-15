@@ -17,7 +17,8 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 
 - Preserve unknown operators as diagnostics, not silent drops.
 - Maintain text state and graphics state explicitly.
-- Start with MVP text operators: `BT`, `ET`, `Tf`, `Tj`, `TJ`, `Td`, `TD`, `Tm`, `T*`, `Tc`, `Tw`, `Tz`, `TL`, `q`, `Q`, `cm`.
+- Recognize MVP text operators: `BT`, `ET`, `Tf`, `Tj`, `TJ`, `Td`, `TD`, `Tm`, `T*`, `Tc`, `Tw`, `Tz`, `TL`, `q`, `Q`, `cm`.
+- Keep common non-text drawing, color, clipping, marked-content, and XObject operators out of `CONTENT_OPERATOR_UNKNOWN`; preserve them as recognized operations until layout/image semantics need them.
 - Do not implement semantic block grouping in this skill; emit data for `pdf_semantic`.
 
 ## Text Extraction Rules

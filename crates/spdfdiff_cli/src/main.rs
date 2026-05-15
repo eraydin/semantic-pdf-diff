@@ -365,6 +365,7 @@ fn apply_tounicode_maps(program: &mut ContentProgram, document: &pdf_core::PdfDo
             | ContentOp::SaveGraphicsState { .. }
             | ContentOp::RestoreGraphicsState { .. }
             | ContentOp::ConcatMatrix { .. }
+            | ContentOp::RecognizedNonText { .. }
             | ContentOp::Unknown { .. } => {}
         }
     }
@@ -522,7 +523,10 @@ fn render_diff(document: &DiffDocument, format: ReportFormat) -> String {
         ReportFormat::Md => diff_report::to_markdown(document),
         ReportFormat::Html => {
             let markdown = diff_report::to_markdown(document);
-            format!("<!doctype html><meta charset=\"utf-8\"><pre>{markdown}</pre>")
+            format!(
+                "<!doctype html><meta charset=\"utf-8\"><pre>{}</pre>",
+                escape_html(&markdown)
+            )
         }
     }
 }
@@ -553,7 +557,10 @@ fn render_inspect_report(
         ),
         ReportFormat::Html => format!(
             "<!doctype html><meta charset=\"utf-8\"><pre># PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n</pre>",
-            fingerprint, object_count, diagnostic_count, first_page_streams
+            escape_html(fingerprint),
+            object_count,
+            diagnostic_count,
+            first_page_streams
         ),
     }
 }
@@ -582,9 +589,19 @@ fn render_extract_report(
         }
         ReportFormat::Html => {
             let markdown = render_extract_report(document, ReportFormat::Md);
-            format!("<!doctype html><meta charset=\"utf-8\"><pre>{markdown}</pre>")
+            format!(
+                "<!doctype html><meta charset=\"utf-8\"><pre>{}</pre>",
+                escape_html(&markdown)
+            )
         }
     }
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]

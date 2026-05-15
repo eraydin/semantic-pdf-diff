@@ -25,6 +25,8 @@ pub fn to_markdown(document: &DiffDocument) -> String {
                 "- `{}` {:?} {:?}: {}\n",
                 change.id, change.kind, change.severity, change.reason
             ));
+            push_evidence_line(&mut output, "Old", change.old_node.as_ref());
+            push_evidence_line(&mut output, "New", change.new_node.as_ref());
         }
         output.push('\n');
     }
@@ -44,10 +46,31 @@ pub fn to_markdown(document: &DiffDocument) -> String {
     output
 }
 
+fn push_evidence_line(
+    output: &mut String,
+    label: &str,
+    evidence: Option<&spdfdiff_types::SemanticNodeEvidence>,
+) {
+    let Some(evidence) = evidence else {
+        return;
+    };
+    output.push_str(&format!(
+        "  - {label} page {} `{}`",
+        evidence.page + 1,
+        evidence.node_id
+    ));
+    if let Some(text) = &evidence.text {
+        output.push_str(&format!(": {text}"));
+    }
+    output.push('\n');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spdfdiff_types::{ChangeKind, ChangeSeverity, SemanticChange};
+    use spdfdiff_types::{
+        ChangeKind, ChangeSeverity, Provenance, SemanticChange, SemanticNodeEvidence,
+    };
 
     #[test]
     fn markdown_includes_summary_and_change_list() {
@@ -57,8 +80,20 @@ mod tests {
             id: "change-0000".into(),
             kind: ChangeKind::Modified,
             severity: ChangeSeverity::Major,
-            old_node: None,
-            new_node: None,
+            old_node: Some(SemanticNodeEvidence {
+                node_id: "old-node".into(),
+                page: 0,
+                bbox: None,
+                text: Some("Annual revenue was 10 million.".into()),
+                source: vec![Provenance::unknown()],
+            }),
+            new_node: Some(SemanticNodeEvidence {
+                node_id: "new-node".into(),
+                page: 0,
+                bbox: None,
+                text: Some("Annual revenue was 12 million.".into()),
+                source: vec![Provenance::unknown()],
+            }),
             confidence: 0.9,
             reason: "paragraph text differs".into(),
         });
@@ -67,5 +102,7 @@ mod tests {
 
         assert!(markdown.contains("| Modified | 1 |"));
         assert!(markdown.contains("`change-0000` Modified Major"));
+        assert!(markdown.contains("Old page 1 `old-node`: Annual revenue was 10 million."));
+        assert!(markdown.contains("New page 1 `new-node`: Annual revenue was 12 million."));
     }
 }

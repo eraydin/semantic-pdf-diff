@@ -79,6 +79,10 @@ pub enum ContentOp {
         f: f32,
         source: Provenance,
     },
+    RecognizedNonText {
+        operator: String,
+        source: Provenance,
+    },
     Unknown {
         operator: String,
         source: Provenance,
@@ -269,8 +273,67 @@ fn build_operation(operator: &str, stack: &[Token], source: Provenance) -> Optio
             f: stack.last().and_then(Token::as_number)?,
             source,
         }),
+        _ if is_recognized_non_text_operator(operator) => Some(ContentOp::RecognizedNonText {
+            operator: operator.to_owned(),
+            source,
+        }),
         _ => None,
     }
+}
+
+fn is_recognized_non_text_operator(operator: &str) -> bool {
+    matches!(
+        operator,
+        // Graphics state, path construction, painting, clipping, color, shading,
+        // XObject, and marked-content operators that are common in generated PDFs.
+        "w" | "J"
+            | "j"
+            | "M"
+            | "d"
+            | "ri"
+            | "i"
+            | "gs"
+            | "m"
+            | "l"
+            | "c"
+            | "v"
+            | "y"
+            | "h"
+            | "re"
+            | "S"
+            | "s"
+            | "f"
+            | "F"
+            | "f*"
+            | "B"
+            | "B*"
+            | "b"
+            | "b*"
+            | "n"
+            | "W"
+            | "W*"
+            | "CS"
+            | "cs"
+            | "SC"
+            | "SCN"
+            | "sc"
+            | "scn"
+            | "G"
+            | "g"
+            | "RG"
+            | "rg"
+            | "K"
+            | "k"
+            | "sh"
+            | "Do"
+            | "MP"
+            | "DP"
+            | "BMC"
+            | "BDC"
+            | "EMC"
+            | "BX"
+            | "EX"
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -583,6 +646,30 @@ mod tests {
         assert!(matches!(
             program.operations[9],
             ContentOp::RestoreGraphicsState { .. }
+        ));
+    }
+
+    #[test]
+    fn recognizes_common_non_text_drawing_operators_without_diagnostics() {
+        let program = parse_content_stream(b"0.1 0.2 0.3 rg 10 20 30 40 re f /Im1 Do");
+
+        assert_eq!(program.diagnostics, Vec::new());
+        assert_eq!(program.operations.len(), 4);
+        assert!(matches!(
+            program.operations[0],
+            ContentOp::RecognizedNonText { ref operator, .. } if operator == "rg"
+        ));
+        assert!(matches!(
+            program.operations[1],
+            ContentOp::RecognizedNonText { ref operator, .. } if operator == "re"
+        ));
+        assert!(matches!(
+            program.operations[2],
+            ContentOp::RecognizedNonText { ref operator, .. } if operator == "f"
+        ));
+        assert!(matches!(
+            program.operations[3],
+            ContentOp::RecognizedNonText { ref operator, .. } if operator == "Do"
         ));
     }
 

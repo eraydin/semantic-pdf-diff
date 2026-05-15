@@ -8,13 +8,17 @@ The current CLI entry point is `spdfdiff`.
 ## Current Capabilities
 
 The `spdfdiff diff` command currently compares extracted text from simple,
-digitally generated PDFs and writes JSON or Markdown reports.
+digitally generated PDFs and writes JSON, Markdown, or basic self-contained HTML
+reports.
 
 The CLI extraction path resolves simple font resource dictionaries with
 `/ToUnicode` CMap streams before building semantic text blocks. This covers the
 current sample PDFs that use Type0 fonts and hex `Tj`/`TJ` text. Broader font
 resource modeling, image payload diffing, style classification, and table-cell
 semantics remain incremental compatibility work rather than public-alpha claims.
+Common non-text drawing, color, clipping, marked-content, and XObject operators
+are recognized so visual PDF content does not create `CONTENT_OPERATOR_UNKNOWN`
+noise during text extraction.
 
 The `pdf_core` library crate also exposes parser APIs for:
 

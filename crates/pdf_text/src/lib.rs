@@ -138,6 +138,7 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
             ContentOp::BeginText { .. }
             | ContentOp::EndText { .. }
             | ContentOp::ConcatMatrix { .. }
+            | ContentOp::RecognizedNonText { .. }
             | ContentOp::Unknown { .. } => {}
         }
     }

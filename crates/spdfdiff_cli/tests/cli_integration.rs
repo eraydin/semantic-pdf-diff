@@ -292,7 +292,84 @@ fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
 
         assert_eq!(report["file"], path_arg(&pdf));
         assert!(report["paragraphs"].as_u64().unwrap_or_default() >= 1);
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() >= 1);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 1);
+    }
+}
+
+#[test]
+fn html_outputs_complete_against_real_sample_pdfs() {
+    let fixture = TestFixture::new("real_sample_html_outputs");
+
+    for (old_name, new_name, output_name) in real_sample_pdf_pairs() {
+        let output_path = fixture.path(output_name);
+        assert_success(&run_spdfdiff([
+            "diff",
+            path_arg(&real_sample_pdf(old_name)).as_str(),
+            path_arg(&real_sample_pdf(new_name)).as_str(),
+            "--format",
+            "html",
+            "--output",
+            path_arg(&output_path).as_str(),
+        ]));
+        let html = fs::read_to_string(output_path).expect("diff HTML should be written");
+        assert_self_contained_html(&html);
+        assert!(html.contains("# Semantic PDF Diff"));
+        if output_name == "semantic-contract-diff.html" {
+            assert_readable_output_contains_all(
+                &html,
+                &["TechCorp LLC", "$6,000.00", "Annual Maintenance"],
+            );
+        }
+        if output_name == "semantic-images-diff.html" {
+            assert_readable_output_contains_all(&html, &["upgraded, reinforced", "24V"]);
+        }
+    }
+
+    for sample in real_sample_pdf_names() {
+        let pdf = real_sample_pdf(sample);
+        let inspect_path = fixture.path(&format!("inspect-{sample}.html"));
+        assert_success(&run_spdfdiff([
+            "inspect",
+            path_arg(&pdf).as_str(),
+            "--format",
+            "html",
+            "--output",
+            path_arg(&inspect_path).as_str(),
+        ]));
+        let inspect_html =
+            fs::read_to_string(inspect_path).expect("inspect HTML should be written");
+        assert_self_contained_html(&inspect_html);
+        assert!(inspect_html.contains("# PDF Inspect"));
+
+        let extract_path = fixture.path(&format!("extract-{sample}.html"));
+        assert_success(&run_spdfdiff([
+            "extract",
+            path_arg(&pdf).as_str(),
+            "--format",
+            "html",
+            "--output",
+            path_arg(&extract_path).as_str(),
+        ]));
+        let extract_html =
+            fs::read_to_string(extract_path).expect("extract HTML should be written");
+        assert_self_contained_html(&extract_html);
+        assert!(extract_html.contains("# Extracted Text"));
+        if sample == "semantic_contract_v2.pdf" {
+            assert_readable_output_contains_all(
+                &extract_html,
+                &["TechCorp LLC", "Annual Maintenance", "50% of the total"],
+            );
+        }
+        if sample == "semantic_images_v2.pdf" {
+            assert_readable_output_contains_all(
+                &extract_html,
+                &[
+                    "Product Specification: The Widget",
+                    "upgraded, reinforced",
+                    "24V",
+                ],
+            );
+        }
     }
 }
 
@@ -404,7 +481,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 8);
     assert_eq!(report["parsed"], 8);
-    assert_eq!(report["partial"], 8);
+    assert_eq!(report["partial"], 1);
     assert_eq!(report["failed"], 0);
     assert_eq!(report["files"][0]["file"], "document_v1.pdf");
     assert_eq!(report["files"][1]["file"], "document_v2.pdf");
@@ -414,12 +491,8 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["files"][5]["file"], "semantic_contract_v2.pdf");
     assert_eq!(report["files"][6]["file"], "semantic_images_v1.pdf");
     assert_eq!(report["files"][7]["file"], "semantic_images_v2.pdf");
-    assert!(
-        report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"]
-            .as_u64()
-            .unwrap_or_default()
-            >= 1
-    );
+    assert!(report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"].is_null());
+    assert_eq!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"], 1);
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());
@@ -474,6 +547,27 @@ fn real_sample_pdf_names() -> [&'static str; 8] {
     ]
 }
 
+fn real_sample_pdf_pairs() -> [(&'static str, &'static str, &'static str); 4] {
+    [
+        ("document_v1.pdf", "document_v2.pdf", "document-diff.html"),
+        (
+            "report_with_images_v1.pdf",
+            "report_with_images_v2.pdf",
+            "image-report-diff.html",
+        ),
+        (
+            "semantic_contract_v1.pdf",
+            "semantic_contract_v2.pdf",
+            "semantic-contract-diff.html",
+        ),
+        (
+            "semantic_images_v1.pdf",
+            "semantic_images_v2.pdf",
+            "semantic-images-diff.html",
+        ),
+    ]
+}
+
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("JSON report should be written"))
         .expect("report should be valid JSON")
@@ -502,6 +596,14 @@ fn assert_readable_output_contains_all(output: &str, expected_terms: &[&str]) {
             "expected generated output to contain `{expected}` in:\n{output}"
         );
     }
+}
+
+fn assert_self_contained_html(output: &str) {
+    assert!(output.starts_with("<!doctype html>"));
+    assert!(
+        !output.contains("http://") && !output.contains("https://"),
+        "HTML output should not depend on external network resources: {output}"
+    );
 }
 
 struct TestFixture {
