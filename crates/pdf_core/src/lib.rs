@@ -1593,34 +1593,33 @@ fn parse_indirect_objects(
     bytes: &[u8],
     config: &ParseConfig,
 ) -> Result<Vec<PdfObject>, PdfDiffError> {
-    let text = String::from_utf8_lossy(bytes);
     let mut objects = Vec::new();
     let mut cursor = 0;
 
-    while let Some(relative_obj_start) = text[cursor..].find(" obj") {
-        let marker_start = cursor + relative_obj_start;
-        let Some(line_start) = text[..marker_start]
-            .rfind('\n')
-            .map_or(Some(0), |index| index.checked_add(1))
-        else {
-            break;
-        };
-        let header = text[line_start..marker_start].trim();
-        let Some((number, generation)) = parse_object_header(header) else {
-            cursor = marker_start + " obj".len();
+    while let Some(marker_start) = find_keyword(bytes, cursor, b" obj") {
+        let line_start = bytes[..marker_start]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let (header_bytes, _) = trim_ascii(&bytes[line_start..marker_start]);
+        let Ok(header) = std::str::from_utf8(header_bytes) else {
+            cursor = marker_start + b" obj".len();
             continue;
         };
-        let body_start = marker_start + " obj".len();
-        let Some(relative_end) = text[body_start..].find("endobj") else {
+        let Some((number, generation)) = parse_object_header(header) else {
+            cursor = marker_start + b" obj".len();
+            continue;
+        };
+        let body_start = marker_start + b" obj".len();
+        let Some(end_marker) = find_keyword(bytes, body_start, b"endobj") else {
             return Err(PdfDiffError::InvalidInput(format!(
                 "object {number} {generation} is missing endobj"
             )));
         };
-        let object_end = body_start + relative_end + "endobj".len();
-        let body = text[body_start..body_start + relative_end]
-            .trim()
-            .to_owned();
-        let stream = parse_stream(bytes, &text, body_start, body_start + relative_end, config)?;
+        let object_end = end_marker + b"endobj".len();
+        let (body_bytes, _) = trim_ascii(&bytes[body_start..end_marker]);
+        let body = String::from_utf8_lossy(body_bytes).into_owned();
+        let stream = parse_stream(bytes, body_start, end_marker, config)?;
         objects.push(PdfObject {
             id: ObjectId { number, generation },
             body,
@@ -1646,30 +1645,38 @@ fn parse_object_header(header: &str) -> Option<(u32, u16)> {
 
 fn parse_stream(
     bytes: &[u8],
-    text: &str,
     body_start: usize,
     body_end: usize,
     config: &ParseConfig,
 ) -> Result<Option<PdfStream>, PdfDiffError> {
-    let body = &text[body_start..body_end];
-    let Some(relative_stream_marker) = body.find("stream") else {
+    let Some(stream_marker) = find_keyword(bytes, body_start, b"stream") else {
         return Ok(None);
     };
-    let stream_marker = body_start + relative_stream_marker;
-    let stream_data_start = match bytes.get(stream_marker + "stream".len()) {
-        Some(b'\r') if bytes.get(stream_marker + "stream".len() + 1) == Some(&b'\n') => {
-            stream_marker + "stream".len() + 2
+    if stream_marker >= body_end {
+        return Ok(None);
+    }
+
+    let stream_data_start = match bytes.get(stream_marker + b"stream".len()) {
+        Some(b'\r') if bytes.get(stream_marker + b"stream".len() + 1) == Some(&b'\n') => {
+            stream_marker + b"stream".len() + 2
         }
-        Some(b'\n') => stream_marker + "stream".len() + 1,
-        _ => stream_marker + "stream".len(),
+        Some(b'\n') => stream_marker + b"stream".len() + 1,
+        _ => stream_marker + b"stream".len(),
     };
-    let Some(relative_endstream) = text[stream_data_start..body_end].find("endstream") else {
+    let Some(endstream_marker) = find_keyword(bytes, stream_data_start, b"endstream") else {
         return Err(PdfDiffError::InvalidInput(
             "stream is missing endstream marker".into(),
         ));
     };
-    let mut stream_data_end = stream_data_start + relative_endstream;
-    while stream_data_end > stream_data_start && matches!(bytes[stream_data_end - 1], b'\n' | b'\r')
+    if endstream_marker > body_end {
+        return Err(PdfDiffError::InvalidInput(
+            "stream is missing endstream marker".into(),
+        ));
+    }
+
+    let mut stream_data_end = endstream_marker;
+    while stream_data_end > stream_data_start
+        && matches!(bytes.get(stream_data_end - 1), Some(b'\n' | b'\r'))
     {
         stream_data_end -= 1;
     }
@@ -1688,8 +1695,12 @@ fn parse_stream(
             bytes: bytes[stream_data_start..stream_data_end].to_vec(),
             raw_bytes: bytes[stream_data_start..stream_data_end].to_vec(),
             byte_range: ByteRange::new(stream_data_start, stream_data_end),
-            declared_length: stream_length_from_body(body),
-            filter: stream_filter_from_body(body),
+            declared_length: stream_length_from_body(&String::from_utf8_lossy(
+                &bytes[body_start..stream_marker],
+            )),
+            filter: stream_filter_from_body(&String::from_utf8_lossy(
+                &bytes[body_start..stream_marker],
+            )),
             decoded: true,
         },
         *config,
@@ -2469,6 +2480,50 @@ endobj
                     number: 2,
                     generation: 0
                 })));
+    }
+
+    #[test]
+    fn parses_binary_stream_bytes_without_text_offset_panic() {
+        let mut pdf = b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 5 >>
+stream
+"
+        .to_vec();
+        pdf.extend_from_slice(&[0xff, 0xfe, b'A', b'\r', b'\n']);
+        pdf.extend_from_slice(
+            b"
+endstream
+endobj
+",
+        );
+
+        let document =
+            PdfDocument::parse(&pdf).expect("binary stream fixture should parse without panic");
+        let stream = document
+            .objects
+            .iter()
+            .find(|object| {
+                object.id
+                    == ObjectId {
+                        number: 4,
+                        generation: 0,
+                    }
+            })
+            .and_then(|object| object.stream.as_ref())
+            .expect("content stream should be parsed");
+
+        assert_eq!(stream.bytes, vec![0xff, 0xfe, b'A']);
+        assert!(stream.byte_range.end <= pdf.len());
     }
 
     #[test]
