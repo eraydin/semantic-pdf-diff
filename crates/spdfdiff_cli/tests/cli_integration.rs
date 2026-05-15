@@ -164,9 +164,38 @@ fn corpus_command_sorts_files_and_summarizes_partial_and_failed_inputs() {
 #[test]
 fn diff_command_completes_against_real_sample_pdfs() {
     let fixture = TestFixture::new("diff_command_real_samples");
-    let old_pdf = real_sample_pdf("document_v1.pdf");
-    let new_pdf = real_sample_pdf("document_v2.pdf");
-    let output_path = fixture.path("real-diff.json");
+    assert_real_sample_diff(
+        &fixture,
+        "document_v1.pdf",
+        "document_v2.pdf",
+        "document-diff.json",
+        1,
+        1,
+        2,
+    );
+    assert_real_sample_diff(
+        &fixture,
+        "report_with_images_v1.pdf",
+        "report_with_images_v2.pdf",
+        "image-report-diff.json",
+        2,
+        2,
+        4,
+    );
+}
+
+fn assert_real_sample_diff(
+    fixture: &TestFixture,
+    old_name: &str,
+    new_name: &str,
+    output_name: &str,
+    expected_inserted: u64,
+    expected_deleted: u64,
+    expected_changes: usize,
+) {
+    let old_pdf = real_sample_pdf(old_name);
+    let new_pdf = real_sample_pdf(new_name);
+    let output_path = fixture.path(output_name);
 
     let output = run_spdfdiff([
         "diff",
@@ -189,37 +218,52 @@ fn diff_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["new_fingerprint"], path_arg(&new_pdf));
     assert!(report["summary"].is_object());
     assert!(report["changes"].is_array());
-    assert_diagnostic_code_present(&report, "UNSUPPORTED_OBJECT_STREAM");
-    assert_diagnostic_code_present(&report, "MISSING_PAGE_CONTENT");
+    assert_eq!(report["summary"]["inserted"], expected_inserted);
+    assert_eq!(report["summary"]["deleted"], expected_deleted);
+    assert_eq!(
+        report["changes"]
+            .as_array()
+            .expect("changes should be an array")
+            .len(),
+        expected_changes
+    );
+    assert_diagnostic_code_present(&report, "MISSING_TOUNICODE");
+    assert_diagnostic_code_absent(&report, "UNSUPPORTED_STREAM_FILTER");
+    assert_diagnostic_code_absent(&report, "UNSUPPORTED_OBJECT_STREAM");
+    assert_diagnostic_code_absent(&report, "MISSING_PAGE_CONTENT");
 }
 
 #[test]
 fn inspect_command_completes_against_real_sample_pdf() {
-    let pdf = real_sample_pdf("document_v1.pdf");
+    for sample in real_sample_pdf_names() {
+        let pdf = real_sample_pdf(sample);
 
-    let output = run_spdfdiff(["inspect", path_arg(&pdf).as_str(), "--format", "json"]);
-    assert_success(&output);
-    let report: Value =
-        serde_json::from_slice(&output.stdout).expect("inspect stdout should be valid JSON");
+        let output = run_spdfdiff(["inspect", path_arg(&pdf).as_str(), "--format", "json"]);
+        assert_success(&output);
+        let report: Value =
+            serde_json::from_slice(&output.stdout).expect("inspect stdout should be valid JSON");
 
-    assert_eq!(report["file"], path_arg(&pdf));
-    assert!(report["object_count"].as_u64().unwrap_or_default() >= 1);
-    assert!(report["diagnostic_count"].as_u64().unwrap_or_default() >= 1);
-    assert_eq!(report["first_page_streams"], 0);
+        assert_eq!(report["file"], path_arg(&pdf));
+        assert!(report["object_count"].as_u64().unwrap_or_default() >= 20);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 1);
+        assert_eq!(report["first_page_streams"], 1);
+    }
 }
 
 #[test]
 fn extract_command_completes_against_real_sample_pdf_with_degraded_diagnostics() {
-    let pdf = real_sample_pdf("document_v1.pdf");
+    for sample in real_sample_pdf_names() {
+        let pdf = real_sample_pdf(sample);
 
-    let output = run_spdfdiff(["extract", path_arg(&pdf).as_str(), "--format", "json"]);
-    assert_success(&output);
-    let report: Value =
-        serde_json::from_slice(&output.stdout).expect("extract stdout should be valid JSON");
+        let output = run_spdfdiff(["extract", path_arg(&pdf).as_str(), "--format", "json"]);
+        assert_success(&output);
+        let report: Value =
+            serde_json::from_slice(&output.stdout).expect("extract stdout should be valid JSON");
 
-    assert_eq!(report["file"], path_arg(&pdf));
-    assert_eq!(report["paragraphs"], 0);
-    assert!(report["diagnostic_count"].as_u64().unwrap_or_default() >= 1);
+        assert_eq!(report["file"], path_arg(&pdf));
+        assert!(report["paragraphs"].as_u64().unwrap_or_default() >= 1);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() >= 1);
+    }
 }
 
 #[test]
@@ -227,16 +271,10 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     let fixture = TestFixture::new("corpus_command_real_samples");
     let corpus = fixture.path("real_corpus");
     fs::create_dir_all(&corpus).expect("real-sample corpus directory should be created");
-    fs::copy(
-        real_sample_pdf("document_v1.pdf"),
-        corpus.join("document_v1.pdf"),
-    )
-    .expect("first real sample should be copied");
-    fs::copy(
-        real_sample_pdf("document_v2.pdf"),
-        corpus.join("document_v2.pdf"),
-    )
-    .expect("second real sample should be copied");
+    for sample in real_sample_pdf_names() {
+        fs::copy(real_sample_pdf(sample), corpus.join(sample))
+            .expect("real sample should be copied");
+    }
     let output_path = fixture.path("real-corpus.json");
 
     let output = run_spdfdiff([
@@ -253,20 +291,24 @@ fn corpus_command_completes_against_real_sample_pdfs() {
 
     let report = read_json(&output_path);
     assert_eq!(report["folder"], "real_corpus");
-    assert_eq!(report["total"], 2);
-    assert_eq!(report["parsed"], 2);
-    assert_eq!(report["partial"], 2);
+    assert_eq!(report["total"], 4);
+    assert_eq!(report["parsed"], 4);
+    assert_eq!(report["partial"], 4);
     assert_eq!(report["failed"], 0);
     assert_eq!(report["files"][0]["file"], "document_v1.pdf");
     assert_eq!(report["files"][1]["file"], "document_v2.pdf");
-    assert_eq!(report["diagnostic_counts"]["MISSING_PAGE_CONTENT"], 2);
-    assert_eq!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"], 2);
+    assert_eq!(report["files"][2]["file"], "report_with_images_v1.pdf");
+    assert_eq!(report["files"][3]["file"], "report_with_images_v2.pdf");
+    assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 4);
     assert!(
-        report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"]
+        report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"]
             .as_u64()
             .unwrap_or_default()
             >= 1
     );
+    assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
+    assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());
+    assert!(report["diagnostic_counts"]["MISSING_PAGE_CONTENT"].is_null());
 }
 
 fn run_spdfdiff<const N: usize>(args: [&str; N]) -> Output {
@@ -304,6 +346,15 @@ fn real_sample_pdf(name: &str) -> PathBuf {
     path
 }
 
+fn real_sample_pdf_names() -> [&'static str; 4] {
+    [
+        "document_v1.pdf",
+        "document_v2.pdf",
+        "report_with_images_v1.pdf",
+        "report_with_images_v2.pdf",
+    ]
+}
+
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("JSON report should be written"))
         .expect("report should be valid JSON")
@@ -318,6 +369,18 @@ fn assert_diagnostic_code_present(report: &Value, code: &str) {
             .iter()
             .any(|diagnostic| diagnostic["code"] == code),
         "expected diagnostic code {code} in {diagnostics:?}"
+    );
+}
+
+fn assert_diagnostic_code_absent(report: &Value, code: &str) {
+    let diagnostics = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["code"] != code),
+        "did not expect diagnostic code {code} in {diagnostics:?}"
     );
 }
 

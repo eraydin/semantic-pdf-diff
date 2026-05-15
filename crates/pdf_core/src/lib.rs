@@ -173,7 +173,10 @@ impl PdfDocument {
     pub fn parse_with_config(bytes: &[u8], config: ParseConfig) -> Result<Self, PdfDiffError> {
         config.limits.check_file_size(bytes.len())?;
         let mut document = parse_header(bytes)?;
-        document.objects = parse_indirect_objects(bytes, &config)?;
+        document.objects = match parse_object_store(bytes, config) {
+            Ok(store) => pdf_objects_from_object_store(store.objects),
+            Err(_) => parse_indirect_objects(bytes, &config)?,
+        };
         if document.objects.len() > config.limits.max_objects {
             return Err(resource_limit_error(
                 "RESOURCE_LIMIT_OBJECT_COUNT",
@@ -1633,6 +1636,54 @@ fn parse_indirect_objects(
     Ok(objects)
 }
 
+fn pdf_objects_from_object_store(objects: Vec<ParsedIndirectObject>) -> Vec<PdfObject> {
+    objects
+        .into_iter()
+        .map(|object| PdfObject {
+            id: object.id,
+            body: primitive_to_pdf_syntax(&object.value),
+            stream: object.stream,
+            byte_range: object.byte_range,
+        })
+        .collect()
+}
+
+fn primitive_to_pdf_syntax(value: &PdfPrimitive) -> String {
+    match value {
+        PdfPrimitive::Null => "null".to_owned(),
+        PdfPrimitive::Boolean(value) => value.to_string(),
+        PdfPrimitive::Integer(value) => value.to_string(),
+        PdfPrimitive::Real(value) => value.to_string(),
+        PdfPrimitive::Name(name) => format!("/{name}"),
+        PdfPrimitive::LiteralString(bytes) => format!("({})", String::from_utf8_lossy(bytes)),
+        PdfPrimitive::HexString(bytes) => {
+            let mut out = String::from("<");
+            for byte in bytes {
+                out.push_str(&format!("{byte:02x}"));
+            }
+            out.push('>');
+            out
+        }
+        PdfPrimitive::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(primitive_to_pdf_syntax)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        PdfPrimitive::Dictionary(entries) => format!(
+            "<< {} >>",
+            entries
+                .iter()
+                .map(|(key, value)| format!("/{key} {}", primitive_to_pdf_syntax(value)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        PdfPrimitive::Reference(id) => format!("{} {} R", id.number, id.generation),
+    }
+}
+
 fn parse_object_header(header: &str) -> Option<(u32, u16)> {
     let mut parts = header.split_ascii_whitespace();
     let number = parts.next()?.parse().ok()?;
@@ -1709,23 +1760,56 @@ fn parse_stream(
 }
 
 fn stream_filter_from_body(body: &str) -> Option<String> {
-    let start = body.find("/Filter")? + "/Filter".len();
-    let mut parts = body[start..].split_ascii_whitespace();
-    let first = parts.next()?;
-    if let Some(name) = first.strip_prefix('/') {
-        return Some(name.to_owned());
+    let bytes = body.as_bytes();
+    let mut index = body.find("/Filter")? + "/Filter".len();
+    skip_ascii_whitespace_bytes(bytes, &mut index);
+    if bytes.get(index) == Some(&b'/') {
+        return parse_name_token(bytes, index + 1);
     }
-    if first == "[" {
-        return parts
-            .find_map(|part| part.strip_prefix('/'))
-            .map(ToOwned::to_owned);
+    if bytes.get(index) == Some(&b'[') {
+        index += 1;
+        while let Some(byte) = bytes.get(index) {
+            if *byte == b'/' {
+                return parse_name_token(bytes, index + 1);
+            }
+            if *byte == b']' {
+                break;
+            }
+            index += 1;
+        }
     }
     None
 }
 
 fn stream_length_from_body(body: &str) -> Option<usize> {
-    let start = body.find("/Length")? + "/Length".len();
-    body[start..].split_ascii_whitespace().next()?.parse().ok()
+    let bytes = body.as_bytes();
+    let mut index = body.find("/Length")? + "/Length".len();
+    skip_ascii_whitespace_bytes(bytes, &mut index);
+    let start = index;
+    while matches!(bytes.get(index), Some(byte) if byte.is_ascii_digit()) {
+        index += 1;
+    }
+    if start == index {
+        return None;
+    }
+    std::str::from_utf8(&bytes[start..index]).ok()?.parse().ok()
+}
+
+fn skip_ascii_whitespace_bytes(bytes: &[u8], index: &mut usize) {
+    while matches!(bytes.get(*index), Some(byte) if byte.is_ascii_whitespace()) {
+        *index += 1;
+    }
+}
+
+fn parse_name_token(bytes: &[u8], start: usize) -> Option<String> {
+    let mut end = start;
+    while matches!(bytes.get(end), Some(byte) if !is_delimiter_or_whitespace(*byte)) {
+        end += 1;
+    }
+    if start == end {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes[start..end]).into_owned())
 }
 
 fn resolve_pages(
@@ -1772,15 +1856,6 @@ fn resolve_pages(
 fn scan_unsupported_features(objects: &[PdfObject]) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for object in objects {
-        if object.body.contains("/Type /ObjStm") {
-            diagnostics.push(
-                Diagnostic::warning(
-                    "UNSUPPORTED_OBJECT_STREAM",
-                    "object streams are not part of the vertical-slice parser",
-                )
-                .with_object(object.id),
-            );
-        }
         if let Some(stream) = &object.stream {
             if let Some(declared_length) = stream.declared_length {
                 if declared_length != stream.raw_bytes.len() {
@@ -2146,6 +2221,35 @@ mod tests {
         assert_eq!(stream.raw_bytes, b"not deflated");
         assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
         assert!(!stream.decoded);
+    }
+
+    #[test]
+    fn parses_compact_stream_dictionary_metadata_without_xref() {
+        let compressed = flate_bytes(b"BT (compact) Tj ET");
+        let mut pdf = format!(
+            "%PDF-1.7\n1 0 obj\n<</Filter /FlateDecode/Length {}>>\nstream\n",
+            compressed.len()
+        )
+        .into_bytes();
+        pdf.extend_from_slice(&compressed);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let document = PdfDocument::parse(&pdf).expect("compact stream dictionary should parse");
+        let stream = document.objects[0]
+            .stream
+            .as_ref()
+            .expect("stream should be present");
+
+        assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
+        assert_eq!(stream.declared_length, Some(compressed.len()));
+        assert_eq!(stream.bytes, b"BT (compact) Tj ET");
+        assert!(stream.decoded);
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "UNSUPPORTED_STREAM_FILTER")
+        );
     }
 
     #[test]
