@@ -181,13 +181,7 @@ const REAL_SAMPLE_PAIRS: &[RealSamplePair] = &[
     },
 ];
 
-const SAMPLE_SCENARIO_MARKDOWN: &[&str] = &[
-    "semantic_diff_test_cases.md",
-    "semantic_diff_detailed_test_cases.md",
-    "semantic_diff_detailed_test_cases_v3.md",
-    "semantic_diff_detailed_test_cases_v4.md",
-    "semantic_diff_detailed_test_cases_v5.md",
-];
+const SAMPLE_SCENARIO_MARKDOWN: &[&str] = &["semantic_diff_test_cases.md"];
 
 #[test]
 fn diff_command_reports_text_changes_in_stdout_and_output_file() {
