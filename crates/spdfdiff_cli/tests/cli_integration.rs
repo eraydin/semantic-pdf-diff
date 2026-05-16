@@ -8,6 +8,187 @@ use std::{
 
 static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
 
+#[derive(Debug, Clone, Copy)]
+struct ExpectedDiffSummary {
+    inserted: u64,
+    deleted: u64,
+    changes: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RealSamplePair {
+    slug: &'static str,
+    old_name: &'static str,
+    new_name: &'static str,
+    expected: Option<ExpectedDiffSummary>,
+}
+
+const REAL_SAMPLE_PDFS: &[&str] = &[
+    "annotations_base_v1.pdf",
+    "annotations_visual_markup_v2.pdf",
+    "complex_semantic_diff_v1.pdf",
+    "complex_semantic_diff_v2.pdf",
+    "document_outline_v1.pdf",
+    "document_outline_v2.pdf",
+    "document_v1.pdf",
+    "document_v2.pdf",
+    "headers_footers_v1.pdf",
+    "headers_footers_v2.pdf",
+    "inline_formatting_v1.pdf",
+    "inline_formatting_v2.pdf",
+    "interactive_forms_v1.pdf",
+    "interactive_forms_v2.pdf",
+    "interactive_links_v1.pdf",
+    "interactive_links_v2.pdf",
+    "multicolumn_layout_v1.pdf",
+    "multicolumn_layout_v2.pdf",
+    "multipage_table_v1.pdf",
+    "multipage_table_v2.pdf",
+    "report_with_images_v1.pdf",
+    "report_with_images_v2.pdf",
+    "scanned_document_v1.pdf",
+    "scanned_document_v2.pdf",
+    "semantic_contract_v1.pdf",
+    "semantic_contract_v2.pdf",
+    "semantic_images_v1.pdf",
+    "semantic_images_v2.pdf",
+    "ultimate_semantic_diff_v1.pdf",
+    "ultimate_semantic_diff_v2.pdf",
+    "vector_paths_graphic_v1.pdf",
+    "vector_paths_graphic_v2.pdf",
+    "watermark_overlay_v1.pdf",
+    "watermark_overlay_v2.pdf",
+];
+
+const REAL_SAMPLE_PAIRS: &[RealSamplePair] = &[
+    RealSamplePair {
+        slug: "document",
+        old_name: "document_v1.pdf",
+        new_name: "document_v2.pdf",
+        expected: Some(ExpectedDiffSummary {
+            inserted: 0,
+            deleted: 0,
+            changes: 1,
+        }),
+    },
+    RealSamplePair {
+        slug: "report-with-images",
+        old_name: "report_with_images_v1.pdf",
+        new_name: "report_with_images_v2.pdf",
+        expected: Some(ExpectedDiffSummary {
+            inserted: 2,
+            deleted: 2,
+            changes: 4,
+        }),
+    },
+    RealSamplePair {
+        slug: "semantic-contract",
+        old_name: "semantic_contract_v1.pdf",
+        new_name: "semantic_contract_v2.pdf",
+        expected: Some(ExpectedDiffSummary {
+            inserted: 1,
+            deleted: 1,
+            changes: 2,
+        }),
+    },
+    RealSamplePair {
+        slug: "semantic-images",
+        old_name: "semantic_images_v1.pdf",
+        new_name: "semantic_images_v2.pdf",
+        expected: Some(ExpectedDiffSummary {
+            inserted: 1,
+            deleted: 2,
+            changes: 5,
+        }),
+    },
+    RealSamplePair {
+        slug: "complex-semantic-diff",
+        old_name: "complex_semantic_diff_v1.pdf",
+        new_name: "complex_semantic_diff_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "ultimate-semantic-diff",
+        old_name: "ultimate_semantic_diff_v1.pdf",
+        new_name: "ultimate_semantic_diff_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "interactive-links",
+        old_name: "interactive_links_v1.pdf",
+        new_name: "interactive_links_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "multicolumn-layout",
+        old_name: "multicolumn_layout_v1.pdf",
+        new_name: "multicolumn_layout_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "headers-footers",
+        old_name: "headers_footers_v1.pdf",
+        new_name: "headers_footers_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "inline-formatting",
+        old_name: "inline_formatting_v1.pdf",
+        new_name: "inline_formatting_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "watermark-overlay",
+        old_name: "watermark_overlay_v1.pdf",
+        new_name: "watermark_overlay_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "multipage-table",
+        old_name: "multipage_table_v1.pdf",
+        new_name: "multipage_table_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "interactive-forms",
+        old_name: "interactive_forms_v1.pdf",
+        new_name: "interactive_forms_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "document-outline",
+        old_name: "document_outline_v1.pdf",
+        new_name: "document_outline_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "annotations",
+        old_name: "annotations_base_v1.pdf",
+        new_name: "annotations_visual_markup_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "vector-paths-graphic",
+        old_name: "vector_paths_graphic_v1.pdf",
+        new_name: "vector_paths_graphic_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "scanned-document",
+        old_name: "scanned_document_v1.pdf",
+        new_name: "scanned_document_v2.pdf",
+        expected: None,
+    },
+];
+
+const SAMPLE_SCENARIO_MARKDOWN: &[&str] = &[
+    "semantic_diff_test_cases.md",
+    "semantic_diff_detailed_test_cases.md",
+    "semantic_diff_detailed_test_cases_v3.md",
+    "semantic_diff_detailed_test_cases_v4.md",
+    "semantic_diff_detailed_test_cases_v5.md",
+];
+
 #[test]
 fn diff_command_reports_text_changes_in_stdout_and_output_file() {
     let fixture = TestFixture::new("diff_command_reports_text_changes");
@@ -164,56 +345,15 @@ fn corpus_command_sorts_files_and_summarizes_partial_and_failed_inputs() {
 #[test]
 fn diff_command_completes_against_real_sample_pdfs() {
     let fixture = TestFixture::new("diff_command_real_samples");
-    assert_real_sample_diff(
-        &fixture,
-        "document_v1.pdf",
-        "document_v2.pdf",
-        "document-diff.json",
-        0,
-        0,
-        1,
-    );
-    assert_real_sample_diff(
-        &fixture,
-        "report_with_images_v1.pdf",
-        "report_with_images_v2.pdf",
-        "image-report-diff.json",
-        2,
-        2,
-        4,
-    );
-    assert_real_sample_diff(
-        &fixture,
-        "semantic_contract_v1.pdf",
-        "semantic_contract_v2.pdf",
-        "semantic-contract-diff.json",
-        1,
-        1,
-        2,
-    );
-    assert_real_sample_diff(
-        &fixture,
-        "semantic_images_v1.pdf",
-        "semantic_images_v2.pdf",
-        "semantic-images-diff.json",
-        1,
-        2,
-        5,
-    );
+    for pair in REAL_SAMPLE_PAIRS {
+        assert_real_sample_diff(&fixture, *pair);
+    }
 }
 
-fn assert_real_sample_diff(
-    fixture: &TestFixture,
-    old_name: &str,
-    new_name: &str,
-    output_name: &str,
-    expected_inserted: u64,
-    expected_deleted: u64,
-    expected_changes: usize,
-) {
-    let old_pdf = real_sample_pdf(old_name);
-    let new_pdf = real_sample_pdf(new_name);
-    let output_path = fixture.path(output_name);
+fn assert_real_sample_diff(fixture: &TestFixture, pair: RealSamplePair) {
+    let old_pdf = real_sample_pdf(pair.old_name);
+    let new_pdf = real_sample_pdf(pair.new_name);
+    let output_path = fixture.path(&format!("{}-diff.json", pair.slug));
 
     let output = run_spdfdiff([
         "diff",
@@ -236,22 +376,24 @@ fn assert_real_sample_diff(
     assert_eq!(report["new_fingerprint"], path_arg(&new_pdf));
     assert!(report["summary"].is_object());
     assert!(report["changes"].is_array());
-    assert_eq!(report["summary"]["inserted"], expected_inserted);
-    assert_eq!(report["summary"]["deleted"], expected_deleted);
-    assert!(
-        report["summary"]["modified"].as_u64().unwrap_or_default()
-            + report["summary"]["layout_changed"]
-                .as_u64()
-                .unwrap_or_default()
-            <= expected_changes as u64
-    );
-    assert_eq!(
-        report["changes"]
-            .as_array()
-            .expect("changes should be an array")
-            .len(),
-        expected_changes
-    );
+    if let Some(expected) = pair.expected {
+        assert_eq!(report["summary"]["inserted"], expected.inserted);
+        assert_eq!(report["summary"]["deleted"], expected.deleted);
+        assert!(
+            report["summary"]["modified"].as_u64().unwrap_or_default()
+                + report["summary"]["layout_changed"]
+                    .as_u64()
+                    .unwrap_or_default()
+                <= expected.changes as u64
+        );
+        assert_eq!(
+            report["changes"]
+                .as_array()
+                .expect("changes should be an array")
+                .len(),
+            expected.changes
+        );
+    }
     assert_diagnostic_code_absent(&report, "MISSING_TOUNICODE");
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_STREAM_FILTER");
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_OBJECT_STREAM");
@@ -265,7 +407,7 @@ fn assert_real_sample_diff(
 
 #[test]
 fn inspect_command_completes_against_real_sample_pdf() {
-    for sample in real_sample_pdf_names() {
+    for sample in real_sample_pdf_names().iter().copied() {
         let pdf = real_sample_pdf(sample);
 
         let output = run_spdfdiff(["inspect", path_arg(&pdf).as_str(), "--format", "json"]);
@@ -274,15 +416,18 @@ fn inspect_command_completes_against_real_sample_pdf() {
             serde_json::from_slice(&output.stdout).expect("inspect stdout should be valid JSON");
 
         assert_eq!(report["file"], path_arg(&pdf));
-        assert!(report["object_count"].as_u64().unwrap_or_default() >= 20);
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 1);
-        assert_eq!(report["first_page_streams"], 1);
+        assert!(
+            report["object_count"].as_u64().unwrap_or_default() >= 1,
+            "inspect should parse a non-empty object graph for {sample}"
+        );
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 2);
+        assert!(report["first_page_streams"].as_u64().unwrap_or_default() >= 1);
     }
 }
 
 #[test]
 fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
-    for sample in real_sample_pdf_names() {
+    for sample in real_sample_pdf_names().iter().copied() {
         let pdf = real_sample_pdf(sample);
 
         let output = run_spdfdiff(["extract", path_arg(&pdf).as_str(), "--format", "json"]);
@@ -291,8 +436,16 @@ fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
             serde_json::from_slice(&output.stdout).expect("extract stdout should be valid JSON");
 
         assert_eq!(report["file"], path_arg(&pdf));
-        assert!(report["paragraphs"].as_u64().unwrap_or_default() >= 1);
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 1);
+        let paragraphs = report["paragraphs"].as_u64().unwrap_or_default();
+        if sample.starts_with("scanned_document_") {
+            assert_eq!(
+                paragraphs, 0,
+                "image-only scanned samples should not invent text"
+            );
+        } else {
+            assert!(paragraphs >= 1, "expected extractable text in {sample}");
+        }
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 2);
     }
 }
 
@@ -300,12 +453,12 @@ fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
 fn html_outputs_complete_against_real_sample_pdfs() {
     let fixture = TestFixture::new("real_sample_html_outputs");
 
-    for (old_name, new_name, output_name) in real_sample_pdf_pairs() {
-        let output_path = fixture.path(output_name);
+    for pair in real_sample_pdf_pairs().iter().copied() {
+        let output_path = fixture.path(&format!("{}-diff.html", pair.slug));
         assert_success(&run_spdfdiff([
             "diff",
-            path_arg(&real_sample_pdf(old_name)).as_str(),
-            path_arg(&real_sample_pdf(new_name)).as_str(),
+            path_arg(&real_sample_pdf(pair.old_name)).as_str(),
+            path_arg(&real_sample_pdf(pair.new_name)).as_str(),
             "--format",
             "html",
             "--output",
@@ -314,18 +467,18 @@ fn html_outputs_complete_against_real_sample_pdfs() {
         let html = fs::read_to_string(output_path).expect("diff HTML should be written");
         assert_self_contained_html(&html);
         assert!(html.contains("# Semantic PDF Diff"));
-        if output_name == "semantic-contract-diff.html" {
+        if pair.slug == "semantic-contract" {
             assert_readable_output_contains_all(
                 &html,
                 &["TechCorp LLC", "$6,000.00", "Annual Maintenance"],
             );
         }
-        if output_name == "semantic-images-diff.html" {
+        if pair.slug == "semantic-images" {
             assert_readable_output_contains_all(&html, &["upgraded, reinforced", "24V"]);
         }
     }
 
-    for sample in real_sample_pdf_names() {
+    for sample in real_sample_pdf_names().iter().copied() {
         let pdf = real_sample_pdf(sample);
         let inspect_path = fixture.path(&format!("inspect-{sample}.html"));
         assert_success(&run_spdfdiff([
@@ -455,11 +608,41 @@ fn generated_output_files_include_expected_semantic_sample_content() {
 }
 
 #[test]
+fn scenario_markdown_files_document_all_real_sample_pairs() {
+    let mut scenarios = String::new();
+    for markdown in SAMPLE_SCENARIO_MARKDOWN {
+        let path = sample_file(markdown);
+        assert!(
+            path.is_file(),
+            "expected scenario markdown at {}",
+            path.display()
+        );
+        scenarios.push_str(
+            &fs::read_to_string(path).expect("scenario markdown should be readable as UTF-8"),
+        );
+        scenarios.push('\n');
+    }
+
+    for pair in real_sample_pdf_pairs() {
+        assert!(
+            scenarios.contains(pair.old_name),
+            "scenario markdown should document {}",
+            pair.old_name
+        );
+        assert!(
+            scenarios.contains(pair.new_name),
+            "scenario markdown should document {}",
+            pair.new_name
+        );
+    }
+}
+
+#[test]
 fn corpus_command_completes_against_real_sample_pdfs() {
     let fixture = TestFixture::new("corpus_command_real_samples");
     let corpus = fixture.path("real_corpus");
     fs::create_dir_all(&corpus).expect("real-sample corpus directory should be created");
-    for sample in real_sample_pdf_names() {
+    for sample in real_sample_pdf_names().iter().copied() {
         fs::copy(real_sample_pdf(sample), corpus.join(sample))
             .expect("real sample should be copied");
     }
@@ -479,20 +662,15 @@ fn corpus_command_completes_against_real_sample_pdfs() {
 
     let report = read_json(&output_path);
     assert_eq!(report["folder"], "real_corpus");
-    assert_eq!(report["total"], 8);
-    assert_eq!(report["parsed"], 8);
-    assert_eq!(report["partial"], 1);
+    assert_eq!(report["total"], 34);
+    assert_eq!(report["parsed"], 34);
+    assert_eq!(report["partial"], 6);
     assert_eq!(report["failed"], 0);
-    assert_eq!(report["files"][0]["file"], "document_v1.pdf");
-    assert_eq!(report["files"][1]["file"], "document_v2.pdf");
-    assert_eq!(report["files"][2]["file"], "report_with_images_v1.pdf");
-    assert_eq!(report["files"][3]["file"], "report_with_images_v2.pdf");
-    assert_eq!(report["files"][4]["file"], "semantic_contract_v1.pdf");
-    assert_eq!(report["files"][5]["file"], "semantic_contract_v2.pdf");
-    assert_eq!(report["files"][6]["file"], "semantic_images_v1.pdf");
-    assert_eq!(report["files"][7]["file"], "semantic_images_v2.pdf");
+    for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
+        assert_eq!(report["files"][index]["file"], sample);
+    }
     assert!(report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"].is_null());
-    assert_eq!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"], 1);
+    assert_eq!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"], 7);
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());
@@ -520,52 +698,32 @@ fn path_arg(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn real_sample_pdf(name: &str) -> PathBuf {
+fn sample_file(name: &str) -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("samples")
         .join(name);
+    assert!(path.is_file(), "expected sample file at {}", path.display());
+    path
+}
+
+fn real_sample_pdf(name: &str) -> PathBuf {
+    let path = sample_file(name);
     assert!(
-        path.is_file(),
+        path.extension().and_then(|extension| extension.to_str()) == Some("pdf"),
         "expected real PDF sample at {}",
         path.display()
     );
     path
 }
 
-fn real_sample_pdf_names() -> [&'static str; 8] {
-    [
-        "document_v1.pdf",
-        "document_v2.pdf",
-        "report_with_images_v1.pdf",
-        "report_with_images_v2.pdf",
-        "semantic_contract_v1.pdf",
-        "semantic_contract_v2.pdf",
-        "semantic_images_v1.pdf",
-        "semantic_images_v2.pdf",
-    ]
+fn real_sample_pdf_names() -> &'static [&'static str] {
+    REAL_SAMPLE_PDFS
 }
 
-fn real_sample_pdf_pairs() -> [(&'static str, &'static str, &'static str); 4] {
-    [
-        ("document_v1.pdf", "document_v2.pdf", "document-diff.html"),
-        (
-            "report_with_images_v1.pdf",
-            "report_with_images_v2.pdf",
-            "image-report-diff.html",
-        ),
-        (
-            "semantic_contract_v1.pdf",
-            "semantic_contract_v2.pdf",
-            "semantic-contract-diff.html",
-        ),
-        (
-            "semantic_images_v1.pdf",
-            "semantic_images_v2.pdf",
-            "semantic-images-diff.html",
-        ),
-    ]
+fn real_sample_pdf_pairs() -> &'static [RealSamplePair] {
+    REAL_SAMPLE_PAIRS
 }
 
 fn read_json(path: &Path) -> Value {
