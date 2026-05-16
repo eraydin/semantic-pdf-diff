@@ -278,3 +278,63 @@ operators rather than raster image XObjects.
 - There are no text operators or font dictionaries to extract.
 - Current text-layer-only behavior should report a diagnostic such as missing
   text layer; full semantic comparison would require OCR.
+
+## 18. Layered Redaction And Hidden Text
+
+**Files:** `layered_redaction_v1.pdf`, `layered_redaction_v2.pdf`
+
+**Purpose:** Test mixed visible text edits, redaction-style vector overlays, and
+tiny hidden text that remains extractable in the content stream.
+
+**Expected scenario triggers:**
+
+- Version 1 exposes `Customer SSN: 123-45-6789`; version 2 visibly replaces it
+  with `Customer SSN: REDACTED`.
+- Version 2 also leaves `123-45-6789 hidden legacy text` as very small white text
+  behind the redaction area. Current text extraction should preserve this
+  evidence instead of silently dropping it.
+- The case package changes from baseline to revised redaction package.
+- Patient risk changes from standard to elevated monitoring.
+- The approval lane inserts a Privacy review step.
+- Native rectangle/path painting creates a diagnostic-backed vector overlay
+  surface until full redaction-layer semantics exist.
+
+## 19. Tagged Table Reflow With MCID Markers
+
+**Files:** `tagged_table_reflow_v1.pdf`, `tagged_table_reflow_v2.pdf`
+
+**Purpose:** Exercise tagged-PDF structure markers, marked-content IDs, and
+logical table-row reordering in one controlled fixture.
+
+**Expected scenario triggers:**
+
+- The document declares a `StructTreeRoot` and content streams include
+  marked-content property names with `/MCID` identifiers.
+- The title changes from `Tagged Control Matrix Q1` to `Tagged Control Matrix
+  Q2`.
+- Row A changes from `Planned` to `Complete`.
+- Row C moves above Row B and changes from weekly to daily backups.
+- Row B changes from SRE-owned partial logging to Security-owned `MFA Required`
+  logging.
+- Row D, `Evidence Export`, is inserted in version 2.
+- Current behavior should emit tagged-PDF diagnostics while still extracting and
+  diffing the visible row text.
+
+## 20. Attachment, Link Target And Visible Evidence Bundle Changes
+
+**Files:** `attachment_link_bundle_v1.pdf`, `attachment_link_bundle_v2.pdf`
+
+**Purpose:** Combine visible evidence-package text edits with real link and
+file-attachment annotation dictionaries.
+
+**Expected scenario triggers:**
+
+- The visible call to action remains `Download evidence bundle`, but the link
+  annotation target changes from a v1 evidence URL to a v2 final URL.
+- The embedded-file style attachment label changes from
+  `control-evidence-v1.zip` to `control-evidence-v2.zip`.
+- The checksum changes from `sha256: AAA111` to `sha256: BBB222`.
+- Status text changes from draft/staging to final/production.
+- Current behavior should report the visible text changes and emit
+  `UNSUPPORTED_ANNOTATION_DIFF` for the annotation and attachment surfaces until
+  field-level annotation comparison is implemented.

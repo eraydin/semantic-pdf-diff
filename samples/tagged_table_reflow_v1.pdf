@@ -1,0 +1,51 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /StructParents 0 >>
+endobj
+4 0 obj
+<< /Length 417 >>
+stream
+BT /F1 16 Tf 72 742 Td (Tagged Control Matrix Q1) Tj ET
+/P /MCID0 BDC
+BT /F1 11 Tf 80 708 Td (Row A | Encryption | Planned | Owner: Platform) Tj ET
+EMC
+/P /MCID1 BDC
+BT /F1 11 Tf 80 684 Td (Row B | Logging | Partial | Owner: SRE) Tj ET
+EMC
+/P /MCID2 BDC
+BT /F1 11 Tf 80 660 Td (Row C | Backups | Weekly | Owner: IT) Tj ET
+EMC
+BT /F1 11 Tf 72 628 Td (Footer: logical row identity should survive physical reorder) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /StructTreeRoot /K [7 0 R] >>
+endobj
+7 0 obj
+<< /Type /StructElem /S /Document /P 6 0 R /K [0 1 2 3] >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000086 00000 n 
+0000000143 00000 n 
+0000000286 00000 n 
+0000000754 00000 n 
+0000000824 00000 n 
+0000000878 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+952
+%%EOF

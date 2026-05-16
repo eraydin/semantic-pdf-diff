@@ -26,6 +26,8 @@ struct RealSamplePair {
 const REAL_SAMPLE_PDFS: &[&str] = &[
     "annotations_base_v1.pdf",
     "annotations_visual_markup_v2.pdf",
+    "attachment_link_bundle_v1.pdf",
+    "attachment_link_bundle_v2.pdf",
     "complex_semantic_diff_v1.pdf",
     "complex_semantic_diff_v2.pdf",
     "document_outline_v1.pdf",
@@ -40,6 +42,8 @@ const REAL_SAMPLE_PDFS: &[&str] = &[
     "interactive_forms_v2.pdf",
     "interactive_links_v1.pdf",
     "interactive_links_v2.pdf",
+    "layered_redaction_v1.pdf",
+    "layered_redaction_v2.pdf",
     "multicolumn_layout_v1.pdf",
     "multicolumn_layout_v2.pdf",
     "multipage_table_v1.pdf",
@@ -52,6 +56,8 @@ const REAL_SAMPLE_PDFS: &[&str] = &[
     "semantic_contract_v2.pdf",
     "semantic_images_v1.pdf",
     "semantic_images_v2.pdf",
+    "tagged_table_reflow_v1.pdf",
+    "tagged_table_reflow_v2.pdf",
     "ultimate_semantic_diff_v1.pdf",
     "ultimate_semantic_diff_v2.pdf",
     "vector_paths_graphic_v1.pdf",
@@ -165,6 +171,24 @@ const REAL_SAMPLE_PAIRS: &[RealSamplePair] = &[
         slug: "annotations",
         old_name: "annotations_base_v1.pdf",
         new_name: "annotations_visual_markup_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "attachment-link-bundle",
+        old_name: "attachment_link_bundle_v1.pdf",
+        new_name: "attachment_link_bundle_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "layered-redaction",
+        old_name: "layered_redaction_v1.pdf",
+        new_name: "layered_redaction_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "tagged-table-reflow",
+        old_name: "tagged_table_reflow_v1.pdf",
+        new_name: "tagged_table_reflow_v2.pdf",
         expected: None,
     },
     RealSamplePair {
@@ -416,7 +440,12 @@ fn assert_real_sample_diff(fixture: &TestFixture, pair: RealSamplePair) {
             expected.changes
         );
     }
-    assert_diagnostic_code_absent(&report, "MISSING_TOUNICODE");
+    if !matches!(
+        pair.slug,
+        "attachment-link-bundle" | "layered-redaction" | "tagged-table-reflow"
+    ) {
+        assert_diagnostic_code_absent(&report, "MISSING_TOUNICODE");
+    }
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_STREAM_FILTER");
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_OBJECT_STREAM");
     assert_diagnostic_code_absent(&report, "MISSING_PAGE_CONTENT");
@@ -675,6 +704,31 @@ fn generated_reports_reflect_documented_scenario_expectations() {
         "document_outline_v2.pdf",
         &["Caching Layer", "API Specifications"],
     );
+    assert_diff_contains_all(
+        &fixture,
+        "layered-redaction",
+        "layered_redaction_v1.pdf",
+        "layered_redaction_v2.pdf",
+        &["REDACTED", "hidden legacy text", "Privacy review"],
+    );
+    assert_diff_contains_all(
+        &fixture,
+        "tagged-table-reflow",
+        "tagged_table_reflow_v1.pdf",
+        "tagged_table_reflow_v2.pdf",
+        &[
+            "Tagged Control Matrix Q2",
+            "MFA Required",
+            "Evidence Export",
+        ],
+    );
+    assert_diff_contains_all(
+        &fixture,
+        "attachment-link-bundle",
+        "attachment_link_bundle_v1.pdf",
+        "attachment_link_bundle_v2.pdf",
+        &["control-evidence-v2.zip", "sha256: BBB222", "production"],
+    );
 
     assert_diff_contains_all(
         &fixture,
@@ -699,6 +753,13 @@ fn generated_reports_reflect_documented_scenario_expectations() {
     );
     assert_diff_has_diagnostic(
         &fixture,
+        "attachment-link-bundle-diagnostic",
+        "attachment_link_bundle_v1.pdf",
+        "attachment_link_bundle_v2.pdf",
+        "UNSUPPORTED_ANNOTATION_DIFF",
+    );
+    assert_diff_has_diagnostic(
+        &fixture,
         "scanned-document",
         "scanned_document_v1.pdf",
         "scanned_document_v2.pdf",
@@ -710,6 +771,13 @@ fn generated_reports_reflect_documented_scenario_expectations() {
         "vector_paths_graphic_v1.pdf",
         "vector_paths_graphic_v2.pdf",
         "UNSUPPORTED_VECTOR_GRAPHIC_DIFF",
+    );
+    assert_diff_has_diagnostic(
+        &fixture,
+        "tagged-table-reflow-diagnostic",
+        "tagged_table_reflow_v1.pdf",
+        "tagged_table_reflow_v2.pdf",
+        "TAGGED_MCID_DETECTED",
     );
 }
 
@@ -768,9 +836,9 @@ fn corpus_command_completes_against_real_sample_pdfs() {
 
     let report = read_json(&output_path);
     assert_eq!(report["folder"], "real_corpus");
-    assert_eq!(report["total"], 34);
-    assert_eq!(report["parsed"], 34);
-    assert_eq!(report["partial"], 34);
+    assert_eq!(report["total"], 40);
+    assert_eq!(report["parsed"], 40);
+    assert_eq!(report["partial"], 40);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
@@ -780,18 +848,23 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["diagnostic_counts"]["MISSING_TEXT_LAYER"], 2);
     assert_eq!(
         report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"],
-        2
+        4
     );
     assert_eq!(
         report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"],
-        28
+        30
     );
     assert_eq!(
         report["diagnostic_counts"]["MISSING_TOUNICODE_CID_FONT"],
         32
     );
+    assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 6);
+    assert_eq!(report["diagnostic_counts"]["TAGGED_MCID_DETECTED"], 2);
+    assert_eq!(
+        report["diagnostic_counts"]["TAGGED_PDF_STRUCTURE_DETECTED"],
+        2
+    );
     assert!(report["diagnostic_counts"]["UNSUPPORTED_IMAGE_DIFF"].is_null());
-    assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_PAGE_CONTENT"].is_null());
