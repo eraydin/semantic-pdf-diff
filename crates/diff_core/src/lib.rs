@@ -1,9 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pdf_semantic::{SemanticDocument, SemanticNode};
 use spdfdiff_types::{
-    ChangeKind, ChangeSeverity, DiffDocument, SemanticChange, SemanticNodeEvidence,
+    ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, SemanticChange, SemanticNodeEvidence,
 };
+
+const DEFAULT_MAX_MATCH_MATRIX_CELLS: usize = 1_000_000;
+const DEFAULT_MAX_GREEDY_MATCH_CANDIDATES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiffConfig {
@@ -12,6 +15,8 @@ pub struct DiffConfig {
     pub detect_moves: bool,
     pub layout_tolerance_pt: f32,
     pub min_match_score: f32,
+    pub max_match_matrix_cells: usize,
+    pub max_greedy_match_candidates: usize,
 }
 
 impl Default for DiffConfig {
@@ -22,6 +27,8 @@ impl Default for DiffConfig {
             detect_moves: true,
             layout_tolerance_pt: 2.0,
             min_match_score: 0.8,
+            max_match_matrix_cells: DEFAULT_MAX_MATCH_MATRIX_CELLS,
+            max_greedy_match_candidates: DEFAULT_MAX_GREEDY_MATCH_CANDIDATES,
         }
     }
 }
@@ -81,7 +88,11 @@ pub fn diff_semantic_documents_with_classifier(
         .iter()
         .map(|node| comparable_text(node, config))
         .collect::<Vec<_>>();
-    let mut matches = exact_text_matches(&old_texts, &new_texts);
+    let exact_matches = exact_text_matches(&old_texts, &new_texts, config);
+    if let Some(diagnostic) = exact_matches.diagnostic {
+        document.diagnostics.push(diagnostic);
+    }
+    let mut matches = exact_matches.matches;
     matches.push((old.nodes.len(), new.nodes.len()));
 
     let mut old_start = 0;
@@ -115,7 +126,33 @@ pub fn diff_semantic_documents_with_classifier(
     document
 }
 
-fn exact_text_matches(old_texts: &[String], new_texts: &[String]) -> Vec<(usize, usize)> {
+#[derive(Debug, Clone, PartialEq)]
+struct ExactMatchResult {
+    matches: Vec<(usize, usize)>,
+    diagnostic: Option<Diagnostic>,
+}
+
+fn exact_text_matches(
+    old_texts: &[String],
+    new_texts: &[String],
+    config: DiffConfig,
+) -> ExactMatchResult {
+    let old_len = old_texts.len();
+    let new_len = new_texts.len();
+    if matrix_cell_count_exceeds_limit(old_len, new_len, config.max_match_matrix_cells) {
+        return ExactMatchResult {
+            matches: greedy_exact_text_matches(old_texts, new_texts),
+            diagnostic: Some(match_limit_diagnostic(
+                "EXACT_MATCH_LIMIT_EXCEEDED",
+                old_len,
+                new_len,
+                config.max_match_matrix_cells,
+                "exact text anchor matrix",
+                "greedy exact-anchor fallback",
+            )),
+        };
+    }
+
     let mut lengths = vec![vec![0usize; new_texts.len() + 1]; old_texts.len() + 1];
     for old_index in (0..old_texts.len()).rev() {
         for new_index in (0..new_texts.len()).rev() {
@@ -141,6 +178,37 @@ fn exact_text_matches(old_texts: &[String], new_texts: &[String]) -> Vec<(usize,
             new_index += 1;
         }
     }
+    ExactMatchResult {
+        matches,
+        diagnostic: None,
+    }
+}
+
+fn greedy_exact_text_matches(old_texts: &[String], new_texts: &[String]) -> Vec<(usize, usize)> {
+    let mut new_indices_by_text = BTreeMap::<&str, Vec<usize>>::new();
+    for (new_index, text) in new_texts.iter().enumerate() {
+        if !text.is_empty() {
+            new_indices_by_text
+                .entry(text.as_str())
+                .or_default()
+                .push(new_index);
+        }
+    }
+
+    let mut matches = Vec::new();
+    let mut last_new_index = None;
+    for (old_index, text) in old_texts.iter().enumerate() {
+        let Some(new_indices) = new_indices_by_text.get(text.as_str()) else {
+            continue;
+        };
+        let lower_bound = last_new_index.map_or(0, |index| index + 1);
+        let position = new_indices.partition_point(|index| *index < lower_bound);
+        let Some(new_index) = new_indices.get(position).copied() else {
+            continue;
+        };
+        matches.push((old_index, new_index));
+        last_new_index = Some(new_index);
+    }
     matches
 }
 
@@ -154,9 +222,12 @@ fn emit_unmatched_range(
     classifier: &impl SeverityClassifier,
 ) {
     let matches = fuzzy_node_matches(old, new, old_range.clone(), new_range.clone(), config);
+    if let Some(diagnostic) = matches.diagnostic {
+        document.diagnostics.push(diagnostic);
+    }
     let mut old_cursor = old_range.start;
     let mut new_cursor = new_range.start;
-    for fuzzy_match in matches {
+    for fuzzy_match in matches.matches {
         emit_unpaired_changes(
             old,
             new,
@@ -199,15 +270,35 @@ struct FuzzyMatch {
     score: f32,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct FuzzyMatchResult {
+    matches: Vec<FuzzyMatch>,
+    diagnostic: Option<Diagnostic>,
+}
+
 fn fuzzy_node_matches(
     old: &SemanticDocument,
     new: &SemanticDocument,
     old_range: std::ops::Range<usize>,
     new_range: std::ops::Range<usize>,
     config: DiffConfig,
-) -> Vec<FuzzyMatch> {
+) -> FuzzyMatchResult {
     let old_len = old_range.len();
     let new_len = new_range.len();
+    if matrix_cell_count_exceeds_limit(old_len, new_len, config.max_match_matrix_cells) {
+        return FuzzyMatchResult {
+            matches: greedy_fuzzy_node_matches(old, new, old_range, new_range, config),
+            diagnostic: Some(match_limit_diagnostic(
+                "FUZZY_MATCH_LIMIT_EXCEEDED",
+                old_len,
+                new_len,
+                config.max_match_matrix_cells,
+                "fuzzy node match matrix",
+                "bounded greedy fuzzy-match fallback",
+            )),
+        };
+    }
+
     let mut scores = vec![vec![0.0f32; new_len]; old_len];
     for (old_offset, row) in scores.iter_mut().enumerate() {
         for (new_offset, score) in row.iter_mut().enumerate() {
@@ -255,7 +346,81 @@ fn fuzzy_node_matches(
             new_offset += 1;
         }
     }
+    FuzzyMatchResult {
+        matches,
+        diagnostic: None,
+    }
+}
+
+fn greedy_fuzzy_node_matches(
+    old: &SemanticDocument,
+    new: &SemanticDocument,
+    old_range: std::ops::Range<usize>,
+    new_range: std::ops::Range<usize>,
+    config: DiffConfig,
+) -> Vec<FuzzyMatch> {
+    let mut matches = Vec::new();
+    let mut new_cursor = new_range.start;
+    let candidate_window = config.max_greedy_match_candidates.max(1);
+
+    for old_index in old_range {
+        if new_cursor >= new_range.end {
+            break;
+        }
+        let scan_end = new_cursor
+            .saturating_add(candidate_window)
+            .min(new_range.end);
+        let mut best_match = None;
+        for new_index in new_cursor..scan_end {
+            let score = fuzzy_match_score(&old.nodes[old_index], &new.nodes[new_index], config);
+            if score < config.min_match_score {
+                continue;
+            }
+            let should_replace = best_match
+                .as_ref()
+                .is_none_or(|current: &FuzzyMatch| score > current.score);
+            if should_replace {
+                best_match = Some(FuzzyMatch {
+                    old_index,
+                    new_index,
+                    score,
+                });
+                if approximately_equal(score, 1.0) {
+                    break;
+                }
+            }
+        }
+        if let Some(fuzzy_match) = best_match {
+            new_cursor = fuzzy_match.new_index + 1;
+            matches.push(fuzzy_match);
+        }
+    }
     matches
+}
+
+fn matrix_cell_count_exceeds_limit(old_len: usize, new_len: usize, limit: usize) -> bool {
+    old_len
+        .checked_mul(new_len)
+        .is_none_or(|cell_count| cell_count > limit)
+}
+
+fn match_limit_diagnostic(
+    code: &'static str,
+    old_len: usize,
+    new_len: usize,
+    limit: usize,
+    matrix_name: &'static str,
+    fallback_name: &'static str,
+) -> Diagnostic {
+    let cell_count = old_len
+        .checked_mul(new_len)
+        .map_or("overflow".to_owned(), |count| count.to_string());
+    Diagnostic::warning(
+        code,
+        format!(
+            "{matrix_name} requires {cell_count} cells for {old_len} old nodes and {new_len} new nodes, exceeding limit {limit}; using {fallback_name}"
+        ),
+    )
 }
 
 fn approximately_equal(left: f32, right: f32) -> bool {
@@ -734,6 +899,81 @@ mod tests {
     }
 
     #[test]
+    fn exact_matching_falls_back_when_matrix_limit_is_exceeded() {
+        let old = document_with_texts("old", &["Alpha", "Beta", "Gamma"]);
+        let new = document_with_texts("new", &["Inserted before", "Alpha", "Beta", "Gamma"]);
+        let config = DiffConfig {
+            max_match_matrix_cells: 1,
+            ..DiffConfig::default()
+        };
+
+        let diff = diff_semantic_documents(&old, &new, config);
+
+        assert_eq!(diff.summary.inserted, 1);
+        assert_eq!(diff.summary.deleted, 0);
+        assert_eq!(diff.summary.modified, 0);
+        assert!(
+            diff.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "EXACT_MATCH_LIMIT_EXCEEDED")
+        );
+    }
+
+    #[test]
+    fn fuzzy_matching_falls_back_when_matrix_limit_is_exceeded() {
+        let old = document_with_texts("old", &["Alpha", "Payment is due in 30 days", "Omega"]);
+        let new = document_with_texts("new", &["Alpha", "Payment is due in 15 days", "Omega"]);
+        let config = DiffConfig {
+            max_match_matrix_cells: 0,
+            ..DiffConfig::default()
+        };
+
+        let diff = diff_semantic_documents(&old, &new, config);
+
+        assert_eq!(diff.summary.modified, 1);
+        assert_eq!(diff.summary.inserted, 0);
+        assert_eq!(diff.summary.deleted, 0);
+        assert!(
+            diff.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "FUZZY_MATCH_LIMIT_EXCEEDED")
+        );
+    }
+
+    #[test]
+    fn bounded_matching_handles_many_unmatched_nodes_without_large_matrices() {
+        let old_texts = (0..600)
+            .map(|index| format!("Old paragraph {index} alpha beta"))
+            .collect::<Vec<_>>();
+        let new_texts = (0..600)
+            .map(|index| format!("New paragraph {index} gamma delta"))
+            .collect::<Vec<_>>();
+        let old = document_with_owned_texts("old", old_texts);
+        let new = document_with_owned_texts("new", new_texts);
+        let config = DiffConfig {
+            max_match_matrix_cells: 64,
+            max_greedy_match_candidates: 8,
+            ..DiffConfig::default()
+        };
+
+        let diff = diff_semantic_documents(&old, &new, config);
+
+        assert_eq!(diff.summary.modified, 0);
+        assert_eq!(diff.summary.deleted, 600);
+        assert_eq!(diff.summary.inserted, 600);
+        assert!(
+            diff.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "EXACT_MATCH_LIMIT_EXCEEDED")
+        );
+        assert!(
+            diff.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "FUZZY_MATCH_LIMIT_EXCEEDED")
+        );
+    }
+
+    #[test]
     fn detects_moved_paragraph_from_insert_delete_pair() {
         let old = document_with_texts("old", &["Alpha", "Beta", "Gamma"]);
         let new = document_with_texts("new", &["Beta", "Alpha", "Gamma"]);
@@ -800,17 +1040,24 @@ mod tests {
     }
 
     fn document_with_texts(fingerprint: &str, texts: &[&str]) -> SemanticDocument {
+        document_with_owned_texts(fingerprint, texts.iter().map(|text| (*text).to_owned()))
+    }
+
+    fn document_with_owned_texts(
+        fingerprint: &str,
+        texts: impl IntoIterator<Item = String>,
+    ) -> SemanticDocument {
         SemanticDocument {
             fingerprint: fingerprint.into(),
             nodes: texts
-                .iter()
+                .into_iter()
                 .enumerate()
                 .map(|(index, text)| SemanticNode {
                     id: format!("n{index:04}"),
                     kind: SemanticNodeKind::Paragraph,
                     page_index: 0,
                     bbox: None,
-                    normalized_text: Some((*text).into()),
+                    normalized_text: Some(text),
                     anchor: SemanticAnchor::unknown(),
                     source: vec![Provenance::unknown()],
                     confidence: 1.0,

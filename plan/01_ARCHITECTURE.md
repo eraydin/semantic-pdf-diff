@@ -261,6 +261,8 @@ pub struct DiffConfig {
     pub detect_moves: bool,
     pub layout_tolerance_pt: f32,
     pub min_match_score: f32,
+    pub max_match_matrix_cells: usize,
+    pub max_greedy_match_candidates: usize,
 }
 
 pub struct DiffDocument {
@@ -291,6 +293,8 @@ MVP responsibilities:
 - page-aware matching;
 - edit distance for paragraphs;
 - block move detection;
+- bounded exact and fuzzy match fallbacks with diagnostics when a comparison
+  would exceed configured matrix limits;
 - layout-only change detection;
 - confidence scoring;
 - severity classification.

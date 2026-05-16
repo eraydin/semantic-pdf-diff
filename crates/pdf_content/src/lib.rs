@@ -437,8 +437,17 @@ fn tokenize_until(bytes: &[u8], index: &mut usize, stop_byte: Option<u8>) -> Vec
                 tokens.push(Token::Operator("]".into()));
                 *index += 1;
             }
+            b')' | b'>' if stop_byte.is_none() => {
+                tokens.push(Token::Operator(char::from(bytes[*index]).to_string()));
+                *index += 1;
+            }
             _ => {
                 let (word, next) = parse_word(bytes, *index);
+                if next == *index {
+                    tokens.push(Token::Operator(char::from(bytes[*index]).to_string()));
+                    *index += 1;
+                    continue;
+                }
                 if let Ok(value) = word.parse::<f32>() {
                     tokens.push(Token::Number(value));
                 } else {
@@ -680,5 +689,25 @@ mod tests {
         assert_eq!(program.diagnostics.len(), 1);
         assert_eq!(program.diagnostics[0].code, "CONTENT_OPERATOR_UNKNOWN");
         assert_eq!(program.diagnostics[0].severity, DiagnosticSeverity::Warning);
+    }
+
+    #[test]
+    fn tokenizer_advances_over_unmatched_delimiters() {
+        let program = parse_content_stream(b") > ]");
+
+        assert_eq!(program.operations.len(), 3);
+        assert_eq!(program.diagnostics.len(), 3);
+        assert!(matches!(
+            program.operations[0],
+            ContentOp::Unknown { ref operator, .. } if operator == ")"
+        ));
+        assert!(matches!(
+            program.operations[1],
+            ContentOp::Unknown { ref operator, .. } if operator == ">"
+        ));
+        assert!(matches!(
+            program.operations[2],
+            ContentOp::Unknown { ref operator, .. } if operator == "]"
+        ));
     }
 }

@@ -24,6 +24,10 @@ silently treated as fully supported semantic diffs.
 Common non-text drawing, color, clipping, marked-content, and XObject operators
 are recognized so visual PDF content does not create `CONTENT_OPERATOR_UNKNOWN`
 noise during text extraction.
+Large exact-anchor and fuzzy block comparisons are resource-bounded; when a
+comparison would exceed configured matrix limits, the diff engine emits a stable
+diagnostic and uses deterministic fallback matching instead of allocating an
+unbounded matrix.
 
 The `pdf_core` library crate also exposes parser APIs for:
 

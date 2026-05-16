@@ -16,6 +16,8 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 ## Content Stream Rules
 
 - Preserve unknown operators as diagnostics, not silent drops.
+- Malformed standalone delimiters must always advance the tokenizer and emit
+  diagnostics; never let malformed content build unbounded token lists.
 - Maintain text state and graphics state explicitly.
 - Recognize MVP text operators: `BT`, `ET`, `Tf`, `Tj`, `TJ`, `Td`, `TD`, `Tm`, `T*`, `Tc`, `Tw`, `Tz`, `TL`, `q`, `Q`, `cm`.
 - Keep common non-text drawing, color, clipping, marked-content, and XObject operators out of `CONTENT_OPERATOR_UNKNOWN`; preserve them as recognized operations until layout/image semantics need them.

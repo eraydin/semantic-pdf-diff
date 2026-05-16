@@ -23,6 +23,8 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
 ## Diff Rules
 
 - Match using stable anchors before fuzzy matching.
+- Keep exact and fuzzy matching resource-bounded; emit stable diagnostics and
+  use deterministic fallback matching instead of allocating unbounded matrices.
 - Detect moved content separately from delete plus insert when confidence supports it.
 - Keep layout-only changes separate from text modifications.
 - The default engine classifier must never emit `Critical`; reserve that for caller-provided classifiers.
