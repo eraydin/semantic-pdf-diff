@@ -79,6 +79,14 @@ pub enum ContentOp {
         f: f32,
         source: Provenance,
     },
+    BeginMarkedContent {
+        tag: String,
+        mcid: Option<usize>,
+        source: Provenance,
+    },
+    EndMarkedContent {
+        source: Provenance,
+    },
     RecognizedNonText {
         operator: String,
         source: Provenance,
@@ -273,6 +281,23 @@ fn build_operation(operator: &str, stack: &[Token], source: Provenance) -> Optio
             f: stack.last().and_then(Token::as_number)?,
             source,
         }),
+        "BMC" => Some(ContentOp::BeginMarkedContent {
+            tag: stack.last().and_then(Token::as_name)?.to_owned(),
+            mcid: None,
+            source,
+        }),
+        "BDC" => Some(ContentOp::BeginMarkedContent {
+            tag: stack
+                .get(stack.len().checked_sub(2)?)
+                .and_then(Token::as_name)?
+                .to_owned(),
+            mcid: stack
+                .last()
+                .and_then(Token::as_dictionary)
+                .and_then(dictionary_mcid),
+            source,
+        }),
+        "EMC" => Some(ContentOp::EndMarkedContent { source }),
         _ if is_recognized_non_text_operator(operator) => Some(ContentOp::RecognizedNonText {
             operator: operator.to_owned(),
             source,
@@ -328,12 +353,16 @@ fn is_recognized_non_text_operator(operator: &str) -> bool {
             | "Do"
             | "MP"
             | "DP"
-            | "BMC"
-            | "BDC"
-            | "EMC"
             | "BX"
             | "EX"
     )
+}
+
+fn dictionary_mcid(entries: &[(String, Token)]) -> Option<usize> {
+    entries
+        .iter()
+        .find(|(key, _)| key == "MCID")
+        .and_then(|(_, value)| value.as_usize())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -349,6 +378,7 @@ enum Token {
     LiteralString(Vec<u8>),
     HexString(Vec<u8>),
     Array(Vec<Token>),
+    Dictionary(Vec<(String, Token)>),
     Operator(String),
 }
 
@@ -360,6 +390,7 @@ impl Token {
             | Self::LiteralString(_)
             | Self::HexString(_)
             | Self::Array(_)
+            | Self::Dictionary(_)
             | Self::Operator(_) => None,
         }
     }
@@ -371,6 +402,7 @@ impl Token {
             | Self::LiteralString(_)
             | Self::HexString(_)
             | Self::Array(_)
+            | Self::Dictionary(_)
             | Self::Operator(_) => None,
         }
     }
@@ -381,7 +413,11 @@ impl Token {
                 text: String::from_utf8_lossy(value).into_owned(),
                 raw_bytes: value.clone(),
             }),
-            Self::Number(_) | Self::Name(_) | Self::Array(_) | Self::Operator(_) => None,
+            Self::Number(_)
+            | Self::Name(_)
+            | Self::Array(_)
+            | Self::Dictionary(_)
+            | Self::Operator(_) => None,
         }
     }
 
@@ -392,6 +428,32 @@ impl Token {
             | Self::Name(_)
             | Self::LiteralString(_)
             | Self::HexString(_)
+            | Self::Dictionary(_)
+            | Self::Operator(_) => None,
+        }
+    }
+
+    fn as_dictionary(&self) -> Option<&[(String, Token)]> {
+        match self {
+            Self::Dictionary(value) => Some(value),
+            Self::Number(_)
+            | Self::Name(_)
+            | Self::LiteralString(_)
+            | Self::HexString(_)
+            | Self::Array(_)
+            | Self::Operator(_) => None,
+        }
+    }
+
+    fn as_usize(&self) -> Option<usize> {
+        match self {
+            Self::Number(value) if *value >= 0.0 && value.fract() == 0.0 => Some(*value as usize),
+            Self::Number(_)
+            | Self::Name(_)
+            | Self::LiteralString(_)
+            | Self::HexString(_)
+            | Self::Array(_)
+            | Self::Dictionary(_)
             | Self::Operator(_) => None,
         }
     }
@@ -422,6 +484,11 @@ fn tokenize_until(bytes: &[u8], index: &mut usize, stop_byte: Option<u8>) -> Vec
             b'<' if bytes.get(*index + 1) != Some(&b'<') => {
                 let (value, next) = parse_hex_string(bytes, *index + 1);
                 tokens.push(Token::HexString(value));
+                *index = next;
+            }
+            b'<' if bytes.get(*index + 1) == Some(&b'<') => {
+                let (value, next) = parse_inline_dictionary(bytes, *index + 2);
+                tokens.push(Token::Dictionary(value));
                 *index = next;
             }
             b'[' => {
@@ -458,6 +525,75 @@ fn tokenize_until(bytes: &[u8], index: &mut usize, stop_byte: Option<u8>) -> Vec
         }
     }
     tokens
+}
+
+fn parse_inline_dictionary(bytes: &[u8], start: usize) -> (Vec<(String, Token)>, usize) {
+    let mut entries = Vec::new();
+    let mut index = start;
+    loop {
+        index = skip_ascii_whitespace(bytes, index);
+        if index >= bytes.len() {
+            break;
+        }
+        if bytes.get(index) == Some(&b'>') && bytes.get(index + 1) == Some(&b'>') {
+            index += 2;
+            break;
+        }
+        if bytes.get(index) != Some(&b'/') {
+            index += 1;
+            continue;
+        }
+        let (key, next) = parse_word(bytes, index + 1);
+        index = skip_ascii_whitespace(bytes, next);
+        let (value, next) = parse_dictionary_value(bytes, index);
+        entries.push((key, value));
+        index = next;
+    }
+    (entries, index)
+}
+
+fn parse_dictionary_value(bytes: &[u8], start: usize) -> (Token, usize) {
+    match bytes.get(start).copied() {
+        Some(b'/') => {
+            let (value, next) = parse_word(bytes, start + 1);
+            (Token::Name(value), next)
+        }
+        Some(b'(') => {
+            let (value, next) = parse_literal_string(bytes, start + 1);
+            (Token::LiteralString(value), next)
+        }
+        Some(b'<') if bytes.get(start + 1) != Some(&b'<') => {
+            let (value, next) = parse_hex_string(bytes, start + 1);
+            (Token::HexString(value), next)
+        }
+        Some(b'<') if bytes.get(start + 1) == Some(&b'<') => {
+            let (value, next) = parse_inline_dictionary(bytes, start + 2);
+            (Token::Dictionary(value), next)
+        }
+        Some(b'[') => {
+            let mut index = start + 1;
+            (
+                Token::Array(tokenize_until(bytes, &mut index, Some(b']'))),
+                index,
+            )
+        }
+        Some(_) => {
+            let (word, next) = parse_word(bytes, start);
+            if let Ok(value) = word.parse::<f32>() {
+                (Token::Number(value), next)
+            } else {
+                (Token::Operator(word), next)
+            }
+        }
+        None => (Token::Operator(String::new()), start),
+    }
+}
+
+fn skip_ascii_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    index
 }
 
 fn parse_word(bytes: &[u8], start: usize) -> (String, usize) {
@@ -679,6 +815,25 @@ mod tests {
         assert!(matches!(
             program.operations[3],
             ContentOp::RecognizedNonText { ref operator, .. } if operator == "Do"
+        ));
+    }
+
+    #[test]
+    fn parses_marked_content_with_mcid() {
+        let program = parse_content_stream(b"/P << /MCID 7 >> BDC BT (Tagged) Tj ET EMC");
+
+        assert_eq!(program.diagnostics, Vec::new());
+        assert!(matches!(
+            program.operations[0],
+            ContentOp::BeginMarkedContent {
+                ref tag,
+                mcid: Some(7),
+                ..
+            } if tag == "P"
+        ));
+        assert!(matches!(
+            program.operations[4],
+            ContentOp::EndMarkedContent { .. }
         ));
     }
 

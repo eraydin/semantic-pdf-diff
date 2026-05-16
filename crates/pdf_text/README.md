@@ -5,7 +5,8 @@ Font decoding, `/ToUnicode` handling, positioned glyphs, and text-run grouping.
 Current vertical-slice extraction consumes `Tj` and `TJ` text operations,
 tracks simple text position, leading, character spacing, word spacing, and
 horizontal scaling, and emits `MISSING_TOUNICODE` when it falls back to literal
-or hex string bytes.
+or hex string bytes. Text runs also preserve the current marked-content tag and
+`/MCID` when the content stream provides one.
 
 The current CLI performs a narrow `/ToUnicode` CMap application step before
 calling `pdf_text` when a page resource font maps to a decoded CMap stream.

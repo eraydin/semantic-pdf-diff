@@ -21,6 +21,9 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 - Maintain text state and graphics state explicitly.
 - Recognize MVP text operators: `BT`, `ET`, `Tf`, `Tj`, `TJ`, `Td`, `TD`, `Tm`, `T*`, `Tc`, `Tw`, `Tz`, `TL`, `q`, `Q`, `cm`.
 - Keep common non-text drawing, color, clipping, marked-content, and XObject operators out of `CONTENT_OPERATOR_UNKNOWN`; preserve them as recognized operations until layout/image semantics need them.
+- Preserve controlled marked-content tag and `/MCID` evidence from
+  `BMC`/`BDC`/`EMC` so `pdf_text` and `pdf_semantic` can map text runs to
+  tagged-PDF structure elements.
 - Do not implement semantic block grouping in this skill; emit data for `pdf_semantic`.
 
 ## Text Extraction Rules
@@ -36,6 +39,7 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 - Implement selected fallback encodings only when safe and diagnostic-backed.
 - Keep glyph positions approximate but deterministic.
 - Preserve original text and normalized text separately.
+- Preserve current marked-content tag and `/MCID` on text runs when present.
 - Do not invent text or silently hide low-confidence extraction.
 
 ## Verification

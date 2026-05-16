@@ -71,9 +71,11 @@ High-precision semantic diffs for accessible/tagged PDFs, with fallback to layou
 
 Current compatibility-gate progress: simple `/StructTreeRoot` trees are parsed
 into deterministic structure elements with structure type names and MCID
-references, and CLI inspect/extract JSON reports expose summaries. Parent tree
-resolution, MCID-to-text mapping, and tagged reading-order replacement remain
-future Phase 2 work.
+references, controlled `/ParentTree` entries are summarized, CLI
+inspect/extract JSON reports expose tagged summaries, and explicit MCID-to-text
+matches can produce high-confidence tagged semantic nodes in structure order.
+Full parent-tree use and broader tagged-PDF coverage remain future Phase 2
+work.
 
 ## Phase 3 — Advanced layout and table diff
 

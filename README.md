@@ -35,9 +35,12 @@ comparison would exceed configured matrix limits, the diff engine emits a stable
 diagnostic and uses deterministic fallback matching instead of allocating an
 unbounded matrix.
 Incremental-update markers, xref recovery, CID/Type0 fonts without `/ToUnicode`,
-simple tagged-PDF structure trees, and marked-content IDs are surfaced as
-stable diagnostics and extract/inspect summaries so hardening gaps stay visible
-in corpus output.
+simple tagged-PDF structure trees, parent-tree entries, and marked-content IDs
+are surfaced as stable diagnostics and extract/inspect summaries so hardening
+gaps stay visible in corpus output. When structure elements map cleanly to
+marked-content text runs, semantic extraction builds high-confidence tagged
+nodes in tagged reading order before falling back to layout heuristics for
+unmapped text.
 
 The `pdf_core` library crate also exposes parser APIs for:
 
@@ -47,8 +50,8 @@ The `pdf_core` library crate also exposes parser APIs for:
 - classic xref tables and trailers;
 - controlled `/Type /XRef` streams with `/W` and `/Index`;
 - controlled `/Type /ObjStm` object streams through `ObjectStore`;
-- simple `/StructTreeRoot` structure trees with structure types and MCID
-  references;
+- simple `/StructTreeRoot` structure trees with structure types, parent-tree
+  entries, and MCID references;
 - resource limits for file size, object count, reference depth, stream bytes,
   decoded stream bytes, content operators, and page count.
 

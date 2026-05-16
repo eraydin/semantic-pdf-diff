@@ -11,6 +11,8 @@ deterministic semantic anchors: strong normalized-text hash, weak text signature
 geometry bucket, and optional heading context.
 
 `SemanticDocument` can also carry a tagged-structure summary when `pdf_core`
-successfully parses a simple `/StructTreeRoot`. This is evidence for later
-tagged reading-order work; text-node construction still falls back to layout
-heuristics until MCID-to-text mapping is explicit and confidence-bearing.
+successfully parses a simple `/StructTreeRoot`. When structure elements map to
+text runs through explicit `/MCID` values, semantic extraction builds
+high-confidence tagged nodes in structure order and maps common structure types
+to heading/list/table/figure candidates. Unmapped text still falls back to
+layout heuristics.

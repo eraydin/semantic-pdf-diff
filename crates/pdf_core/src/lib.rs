@@ -54,6 +54,7 @@ pub struct PdfPage {
 pub struct TaggedStructure {
     pub root_object_id: Option<ObjectId>,
     pub roots: Vec<TaggedStructureElement>,
+    pub parent_tree: Vec<TaggedParentTreeEntry>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -63,6 +64,12 @@ pub struct TaggedStructureElement {
     pub structure_type: String,
     pub mcids: Vec<usize>,
     pub children: Vec<TaggedStructureElement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedParentTreeEntry {
+    pub struct_parent: usize,
+    pub element_object_ids: Vec<ObjectId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,15 +284,18 @@ impl PdfDocument {
             return TaggedStructure {
                 root_object_id: None,
                 roots: Vec::new(),
+                parent_tree: Vec::new(),
                 diagnostics,
             };
         };
         let mut seen = Vec::new();
         let parsed =
             parse_structure_reference(self, root_object_id, config, 0, &mut seen, &mut diagnostics);
+        let parent_tree = parse_parent_tree(self, root_object_id, config, &mut diagnostics);
         TaggedStructure {
             root_object_id: Some(root_object_id),
             roots: parsed.elements,
+            parent_tree,
             diagnostics,
         }
     }
@@ -508,6 +518,183 @@ fn parse_structure_dictionary(
     }
 
     children
+}
+
+fn parse_parent_tree(
+    document: &PdfDocument,
+    root_object_id: ObjectId,
+    config: ParseConfig,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<TaggedParentTreeEntry> {
+    let Some(root_object) = document
+        .objects
+        .iter()
+        .find(|object| object.id == root_object_id)
+    else {
+        return Vec::new();
+    };
+    let Ok(root_value) =
+        parse_primitive(root_object.body.as_bytes(), config).map(|parsed| parsed.value)
+    else {
+        return Vec::new();
+    };
+    let Some(parent_tree_value) = dictionary_value(&root_value, "ParentTree") else {
+        return Vec::new();
+    };
+    let mut seen = Vec::new();
+    let mut entries = parse_parent_tree_value(
+        document,
+        parent_tree_value,
+        config,
+        0,
+        &mut seen,
+        diagnostics,
+    );
+    entries.sort_by_key(|entry| entry.struct_parent);
+    entries.dedup_by_key(|entry| entry.struct_parent);
+    entries
+}
+
+fn parse_parent_tree_value(
+    document: &PdfDocument,
+    value: &PdfPrimitive,
+    config: ParseConfig,
+    depth: usize,
+    seen: &mut Vec<ObjectId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<TaggedParentTreeEntry> {
+    match value {
+        PdfPrimitive::Reference(object_id) => {
+            if depth > config.limits.max_indirect_depth || seen.contains(object_id) {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "TAGGED_PARENT_TREE_LIMIT",
+                        "tagged parent tree exceeded reference limits or contained a cycle",
+                    )
+                    .with_object(*object_id),
+                );
+                return Vec::new();
+            }
+            let Some(object) = document
+                .objects
+                .iter()
+                .find(|object| object.id == *object_id)
+            else {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "TAGGED_PARENT_TREE_MISSING_OBJECT",
+                        format!(
+                            "tagged parent tree references missing object {}",
+                            object_id.number
+                        ),
+                    )
+                    .with_object(*object_id),
+                );
+                return Vec::new();
+            };
+            let Ok(parsed) =
+                parse_primitive(object.body.as_bytes(), config).map(|parsed| parsed.value)
+            else {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "TAGGED_PARENT_TREE_MALFORMED",
+                        format!(
+                            "tagged parent tree object {} could not be parsed",
+                            object_id.number
+                        ),
+                    )
+                    .with_object(*object_id),
+                );
+                return Vec::new();
+            };
+            seen.push(*object_id);
+            let entries =
+                parse_parent_tree_value(document, &parsed, config, depth + 1, seen, diagnostics);
+            seen.pop();
+            entries
+        }
+        PdfPrimitive::Dictionary(_) => {
+            parse_parent_tree_dictionary(document, value, config, depth + 1, seen, diagnostics)
+        }
+        PdfPrimitive::Null
+        | PdfPrimitive::Boolean(_)
+        | PdfPrimitive::Integer(_)
+        | PdfPrimitive::Real(_)
+        | PdfPrimitive::Name(_)
+        | PdfPrimitive::LiteralString(_)
+        | PdfPrimitive::HexString(_)
+        | PdfPrimitive::Array(_) => Vec::new(),
+    }
+}
+
+fn parse_parent_tree_dictionary(
+    document: &PdfDocument,
+    value: &PdfPrimitive,
+    config: ParseConfig,
+    depth: usize,
+    seen: &mut Vec<ObjectId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<TaggedParentTreeEntry> {
+    let mut entries = dictionary_value(value, "Nums")
+        .map(parse_parent_tree_nums)
+        .unwrap_or_default();
+    if let Some(PdfPrimitive::Array(kids)) = dictionary_value(value, "Kids") {
+        for kid in kids {
+            entries.extend(parse_parent_tree_value(
+                document,
+                kid,
+                config,
+                depth + 1,
+                seen,
+                diagnostics,
+            ));
+        }
+    }
+    entries
+}
+
+fn parse_parent_tree_nums(value: &PdfPrimitive) -> Vec<TaggedParentTreeEntry> {
+    let PdfPrimitive::Array(items) = value else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for pair in items.chunks(2) {
+        let [PdfPrimitive::Integer(key), value] = pair else {
+            continue;
+        };
+        let Ok(struct_parent) = usize::try_from(*key) else {
+            continue;
+        };
+        let element_object_ids = parent_tree_value_object_ids(value);
+        if !element_object_ids.is_empty() {
+            entries.push(TaggedParentTreeEntry {
+                struct_parent,
+                element_object_ids,
+            });
+        }
+    }
+    entries
+}
+
+fn parent_tree_value_object_ids(value: &PdfPrimitive) -> Vec<ObjectId> {
+    match value {
+        PdfPrimitive::Reference(object_id) => vec![*object_id],
+        PdfPrimitive::Array(items) => items
+            .iter()
+            .filter_map(|item| match item {
+                PdfPrimitive::Reference(object_id) => Some(*object_id),
+                _ => None,
+            })
+            .collect(),
+        PdfPrimitive::Null
+        | PdfPrimitive::Boolean(_)
+        | PdfPrimitive::Integer(_)
+        | PdfPrimitive::Real(_)
+        | PdfPrimitive::Name(_)
+        | PdfPrimitive::LiteralString(_)
+        | PdfPrimitive::HexString(_)
+        | PdfPrimitive::Dictionary(_) => Vec::new(),
+    }
 }
 
 fn append_incremental_update_diagnostics(bytes: &[u8], diagnostics: &mut Vec<Diagnostic>) {
@@ -3231,6 +3418,22 @@ endobj
         assert_eq!(structure.roots[0].mcids, vec![0]);
         assert_eq!(structure.roots[1].structure_type, "P");
         assert_eq!(structure.roots[1].mcids, vec![1]);
+        assert_eq!(
+            structure.parent_tree,
+            vec![TaggedParentTreeEntry {
+                struct_parent: 0,
+                element_object_ids: vec![
+                    ObjectId {
+                        number: 7,
+                        generation: 0
+                    },
+                    ObjectId {
+                        number: 8,
+                        generation: 0
+                    }
+                ],
+            }]
+        );
         assert!(structure.diagnostics.is_empty());
     }
 
@@ -3241,6 +3444,7 @@ endobj
 
         assert_eq!(structure.root_object_id, None);
         assert!(structure.roots.is_empty());
+        assert!(structure.parent_tree.is_empty());
         assert!(structure.diagnostics.is_empty());
     }
 
@@ -3282,7 +3486,7 @@ BT /H1 << /MCID 0 >> BDC (Title) Tj EMC /P << /MCID 1 >> BDC (Body) Tj EMC ET
 endstream
 endobj
 6 0 obj
-<< /Type /StructTreeRoot /K [7 0 R 8 0 R] >>
+<< /Type /StructTreeRoot /K [7 0 R 8 0 R] /ParentTree << /Nums [0 [7 0 R 8 0 R]] >> >>
 endobj
 7 0 obj
 << /Type /StructElem /S /H1 /P 6 0 R /K 0 >>

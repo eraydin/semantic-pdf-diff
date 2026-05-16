@@ -19,8 +19,8 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
 - Prefer `Candidate`-style node kinds or `UnknownBlock` over false confidence.
 - Preserve page spans, bounding boxes, normalized text, style hints, provenance, and confidence.
 - Tagged-PDF structure and marked-content IDs are compatibility-gate surfaces:
-  parse simple structure trees and keep diagnostics stable, while only using
-  tagged reading order when MCID mapping is explicit and confidence-bearing.
+  parse simple structure trees, keep diagnostics stable, and use tagged reading
+  order only when MCID-to-text mapping is explicit and confidence-bearing.
 
 ## Diff Rules
 

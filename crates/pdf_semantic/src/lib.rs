@@ -37,8 +37,17 @@ pub struct TaggedStructureSummary {
     pub root_object_id: Option<ObjectId>,
     pub element_count: usize,
     pub mcid_count: usize,
+    pub parent_tree_entries: usize,
     pub structure_types: Vec<String>,
+    pub elements: Vec<TaggedStructureElementSummary>,
     pub confidence: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaggedStructureElementSummary {
+    pub structure_type: String,
+    pub mcids: Vec<usize>,
+    pub children: Vec<TaggedStructureElementSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,19 +81,156 @@ pub fn build_semantic_document(
     runs: &[TextRun],
     diagnostics: Vec<Diagnostic>,
 ) -> SemanticDocument {
-    let lines = cluster_lines(runs);
-    let mut nodes = cluster_paragraphs(&lines);
-    classify_heading_candidates(&mut nodes);
-    classify_table_candidates(&mut nodes);
-    classify_list_candidates(&mut nodes);
+    build_semantic_document_with_tagged_structure(fingerprint, runs, diagnostics, None)
+}
+
+#[must_use]
+pub fn build_semantic_document_with_tagged_structure(
+    fingerprint: impl Into<String>,
+    runs: &[TextRun],
+    diagnostics: Vec<Diagnostic>,
+    tagged_structure: Option<TaggedStructureSummary>,
+) -> SemanticDocument {
+    let tagged_nodes = tagged_structure
+        .as_ref()
+        .map_or_else(Vec::new, |structure| {
+            build_tagged_nodes_from_runs(runs, &structure.elements)
+        });
+    let mut nodes = if tagged_nodes.is_empty() {
+        build_layout_nodes(runs)
+    } else {
+        let mapped_mcids = tagged_structure
+            .as_ref()
+            .map_or_else(Vec::new, |structure| {
+                structure_mcid_list(&structure.elements)
+            });
+        let unmatched_runs = runs
+            .iter()
+            .filter(|run| {
+                run.marked_content
+                    .as_ref()
+                    .and_then(|marked| marked.mcid)
+                    .is_none_or(|mcid| !mapped_mcids.contains(&mcid))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut nodes = tagged_nodes;
+        nodes.extend(build_layout_nodes(&unmatched_runs));
+        reindex_nodes(&mut nodes);
+        nodes
+    };
     assign_semantic_anchors(&mut nodes);
 
     SemanticDocument {
         fingerprint: fingerprint.into(),
         nodes,
         diagnostics,
-        tagged_structure: None,
+        tagged_structure,
     }
+}
+
+fn build_layout_nodes(runs: &[TextRun]) -> Vec<SemanticNode> {
+    let lines = cluster_lines(runs);
+    let mut nodes = cluster_paragraphs(&lines);
+    classify_heading_candidates(&mut nodes);
+    classify_table_candidates(&mut nodes);
+    classify_list_candidates(&mut nodes);
+    nodes
+}
+
+fn build_tagged_nodes_from_runs(
+    runs: &[TextRun],
+    elements: &[TaggedStructureElementSummary],
+) -> Vec<SemanticNode> {
+    let mut nodes = Vec::new();
+    append_tagged_nodes_from_elements(runs, elements, &mut nodes);
+    nodes
+}
+
+fn append_tagged_nodes_from_elements(
+    runs: &[TextRun],
+    elements: &[TaggedStructureElementSummary],
+    nodes: &mut Vec<SemanticNode>,
+) {
+    for element in elements {
+        if let Some(node) = tagged_element_to_node(nodes.len(), runs, element) {
+            nodes.push(node);
+        }
+        append_tagged_nodes_from_elements(runs, &element.children, nodes);
+    }
+}
+
+fn tagged_element_to_node(
+    index: usize,
+    runs: &[TextRun],
+    element: &TaggedStructureElementSummary,
+) -> Option<SemanticNode> {
+    if element.mcids.is_empty() {
+        return None;
+    }
+    let element_runs = runs
+        .iter()
+        .filter(|run| {
+            run.marked_content
+                .as_ref()
+                .and_then(|marked| marked.mcid)
+                .is_some_and(|mcid| element.mcids.contains(&mcid))
+        })
+        .collect::<Vec<_>>();
+    if element_runs.is_empty() {
+        return None;
+    }
+    let mut text = String::new();
+    let mut source = Vec::new();
+    let mut bbox = element_runs[0].bbox;
+    for run in element_runs {
+        append_text(&mut text, &run.normalized_text);
+        bbox = union_rect(bbox, run.bbox);
+        source.push(run.source.clone());
+    }
+    Some(SemanticNode {
+        id: format!("tag{index:04}"),
+        kind: tagged_structure_kind(&element.structure_type),
+        page_index: source
+            .first()
+            .and_then(|source| source.page_index)
+            .unwrap_or(0),
+        bbox: Some(bbox),
+        normalized_text: Some(text),
+        anchor: SemanticAnchor::unknown(),
+        source,
+        confidence: 0.9,
+    })
+}
+
+fn tagged_structure_kind(structure_type: &str) -> SemanticNodeKind {
+    match structure_type {
+        "H" | "H1" | "H2" | "H3" | "H4" | "H5" | "H6" => SemanticNodeKind::HeadingCandidate,
+        "L" | "LI" | "Lbl" | "LBody" => SemanticNodeKind::ListCandidate,
+        "Table" | "TR" | "TH" | "TD" | "THead" | "TBody" | "TFoot" => {
+            SemanticNodeKind::TableCandidate
+        }
+        "Figure" | "Formula" | "Form" => SemanticNodeKind::FigureCandidate,
+        "P" | "Span" => SemanticNodeKind::Paragraph,
+        _ => SemanticNodeKind::UnknownBlock,
+    }
+}
+
+fn reindex_nodes(nodes: &mut [SemanticNode]) {
+    for (index, node) in nodes.iter_mut().enumerate() {
+        node.id = format!("n{index:04}");
+    }
+}
+
+fn structure_mcid_list(elements: &[TaggedStructureElementSummary]) -> Vec<usize> {
+    let mut mcids = Vec::new();
+    for element in elements {
+        mcids.extend(element.mcids.iter().copied());
+        mcids.extend(structure_mcid_list(&element.children));
+    }
+    mcids.sort_unstable();
+    mcids.dedup();
+    mcids
 }
 
 impl SemanticDocument {
@@ -639,6 +785,67 @@ mod tests {
         assert_eq!(document.nodes[0].kind, SemanticNodeKind::Paragraph);
     }
 
+    #[test]
+    fn prefers_tagged_structure_nodes_when_mcids_map_to_text_runs() {
+        let runs = vec![
+            tagged_text_run(
+                "body",
+                "Body first",
+                0,
+                rect(10.0, 40.0, 80.0, 52.0),
+                "P",
+                1,
+            ),
+            tagged_text_run(
+                "heading",
+                "Tagged Heading",
+                0,
+                rect(10.0, 120.0, 120.0, 132.0),
+                "H1",
+                0,
+            ),
+        ];
+        let tagged_structure = TaggedStructureSummary {
+            root_object_id: None,
+            element_count: 2,
+            mcid_count: 2,
+            parent_tree_entries: 1,
+            structure_types: vec!["H1".to_owned(), "P".to_owned()],
+            elements: vec![
+                TaggedStructureElementSummary {
+                    structure_type: "H1".to_owned(),
+                    mcids: vec![0],
+                    children: Vec::new(),
+                },
+                TaggedStructureElementSummary {
+                    structure_type: "P".to_owned(),
+                    mcids: vec![1],
+                    children: Vec::new(),
+                },
+            ],
+            confidence: 0.9,
+        };
+        let document = build_semantic_document_with_tagged_structure(
+            "fixture",
+            &runs,
+            Vec::new(),
+            Some(tagged_structure),
+        );
+
+        assert_eq!(document.nodes.len(), 2);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::HeadingCandidate);
+        assert_eq!(
+            document.nodes[0].normalized_text.as_deref(),
+            Some("Tagged Heading")
+        );
+        assert_eq!(document.nodes[0].confidence, 0.9);
+        assert_eq!(document.nodes[1].kind, SemanticNodeKind::Paragraph);
+        assert_eq!(
+            document.nodes[1].normalized_text.as_deref(),
+            Some("Body first")
+        );
+    }
+
     fn text_run(id: &str, text: &str, page_index: usize, bbox: Rect) -> TextRun {
         TextRun {
             id: id.into(),
@@ -650,6 +857,24 @@ mod tests {
                 page_index: Some(page_index),
                 ..Provenance::unknown()
             },
+            marked_content: None,
+        }
+    }
+
+    fn tagged_text_run(
+        id: &str,
+        text: &str,
+        page_index: usize,
+        bbox: Rect,
+        tag: &str,
+        mcid: usize,
+    ) -> TextRun {
+        TextRun {
+            marked_content: Some(pdf_text::MarkedContentRef {
+                tag: tag.to_owned(),
+                mcid: Some(mcid),
+            }),
+            ..text_run(id, text, page_index, bbox)
         }
     }
 

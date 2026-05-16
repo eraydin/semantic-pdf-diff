@@ -20,6 +20,13 @@ pub struct TextRun {
     pub glyphs: Vec<GlyphToken>,
     pub bbox: Rect,
     pub source: Provenance,
+    pub marked_content: Option<MarkedContentRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedContentRef {
+    pub tag: String,
+    pub mcid: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +67,7 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
     let mut runs = Vec::new();
     let mut diagnostics = program.diagnostics.clone();
     let mut emitted_missing_tounicode = false;
+    let mut marked_content_stack: Vec<MarkedContentRef> = Vec::new();
 
     for operation in &program.operations {
         match operation {
@@ -125,6 +133,7 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
                     text,
                     raw_bytes,
                     source.clone(),
+                    marked_content_stack.last().cloned(),
                     &mut state,
                 );
             }
@@ -135,6 +144,15 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
                 if let Some(saved) = graphics_stack.pop() {
                     state = saved;
                 }
+            }
+            ContentOp::BeginMarkedContent { tag, mcid, .. } => {
+                marked_content_stack.push(MarkedContentRef {
+                    tag: tag.clone(),
+                    mcid: *mcid,
+                });
+            }
+            ContentOp::EndMarkedContent { .. } => {
+                marked_content_stack.pop();
             }
             ContentOp::BeginText { .. }
             | ContentOp::EndText { .. }
@@ -153,6 +171,7 @@ fn emit_run(
     text: &str,
     raw_bytes: &[u8],
     source: Provenance,
+    marked_content: Option<MarkedContentRef>,
     state: &mut TextState,
 ) {
     let width = estimate_text_width(text, *state);
@@ -187,6 +206,7 @@ fn emit_run(
         glyphs: vec![glyph],
         bbox,
         source,
+        marked_content,
     });
     state.x += width;
 }
@@ -305,5 +325,20 @@ mod tests {
 
         assert!(estimate_text_width("WWW", state) > estimate_text_width("iii", state));
         assert!(estimate_text_width("A A", state) < estimate_text_width("AAA", state));
+    }
+
+    #[test]
+    fn preserves_marked_content_mcid_on_text_runs() {
+        let program = parse_content_stream(b"/P << /MCID 3 >> BDC BT (Tagged) Tj ET EMC");
+        let extraction = extract_text_runs(&program, 0);
+
+        assert_eq!(extraction.runs.len(), 1);
+        assert_eq!(
+            extraction.runs[0].marked_content,
+            Some(MarkedContentRef {
+                tag: "P".to_owned(),
+                mcid: Some(3),
+            })
+        );
     }
 }

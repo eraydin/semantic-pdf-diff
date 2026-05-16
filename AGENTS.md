@@ -79,9 +79,9 @@ minimal_old.pdf + minimal_new.pdf
   tables/trailers, no-filter, `FlateDecode`, `ASCIIHexDecode`, and
   `RunLengthDecode` streams, controlled `/Type /XRef` streams, controlled
   `/Type /ObjStm` extraction through `ObjectStore`, embedded object provenance,
-  simple `/StructTreeRoot` structure-tree parsing with structure types and MCID
-  references, encrypted-PDF rejection, and resource-limit enforcement for
-  parser-owned limits.
+  simple `/StructTreeRoot` structure-tree parsing with structure types,
+  parent-tree entries, and MCID references, encrypted-PDF rejection, and
+  resource-limit enforcement for parser-owned limits.
 - This is still a `compatibility-gate` parser foundation, not a public-alpha
   compatibility claim. Public-alpha still requires corpus metrics, documented
   unsupported cases, and broader extraction/report evidence.

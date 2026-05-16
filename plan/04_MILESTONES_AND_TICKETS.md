@@ -619,10 +619,11 @@ Implemented compatibility-gate behavior:
 
 - simple `/StructTreeRoot` trees are parsed into deterministic structure
   elements with structure type names and MCID references;
+- controlled `/ParentTree` number-tree entries are parsed and summarized;
 - inspect/extract JSON reports include tagged-structure summaries when present;
-- content-stream `/MCID` markers emit stable diagnostics;
-- tagged reading order remains diagnostic-backed unless explicit MCID mapping is
-  available with confidence.
+- content-stream `/MCID` markers are preserved on text runs;
+- tagged reading order is used for mapped semantic nodes when explicit MCID
+  mapping is available with confidence.
 
 #### M8-T4 — Fuzzing and malformed PDFs
 

@@ -208,6 +208,7 @@ struct TaggedStructureReport {
     root_object: Option<String>,
     element_count: usize,
     mcid_count: usize,
+    parent_tree_entries: usize,
     structure_types: Vec<String>,
     diagnostics: Vec<String>,
 }
@@ -375,16 +376,16 @@ fn semantic_document_from_document(
 ) -> pdf_semantic::SemanticDocument {
     let extraction = extract_text_runs_from_document(document, config);
     let tagged_structure = document.tagged_structure(config);
-    let semantic = pdf_semantic::build_semantic_document(
+    let tagged_summary = tagged_structure
+        .root_object_id
+        .is_some()
+        .then(|| semantic_tagged_structure_summary(&tagged_structure));
+    pdf_semantic::build_semantic_document_with_tagged_structure(
         fingerprint,
         &extraction.runs,
         extraction.diagnostics,
-    );
-    if tagged_structure.root_object_id.is_some() {
-        semantic.with_tagged_structure(semantic_tagged_structure_summary(&tagged_structure))
-    } else {
-        semantic
-    }
+        tagged_summary,
+    )
 }
 
 struct ExtractedTextRuns {
@@ -556,13 +557,28 @@ fn semantic_tagged_structure_summary(
         root_object_id: structure.root_object_id,
         element_count: tagged_element_count(&structure.roots),
         mcid_count: tagged_mcid_count(&structure.roots),
+        parent_tree_entries: structure.parent_tree.len(),
         structure_types,
+        elements: semantic_tagged_elements(&structure.roots),
         confidence: if structure.diagnostics.is_empty() {
             0.8
         } else {
             0.5
         },
     }
+}
+
+fn semantic_tagged_elements(
+    elements: &[pdf_core::TaggedStructureElement],
+) -> Vec<pdf_semantic::TaggedStructureElementSummary> {
+    elements
+        .iter()
+        .map(|element| pdf_semantic::TaggedStructureElementSummary {
+            structure_type: element.structure_type.clone(),
+            mcids: element.mcids.clone(),
+            children: semantic_tagged_elements(&element.children),
+        })
+        .collect()
 }
 
 fn tagged_structure_report(structure: &pdf_core::TaggedStructure) -> TaggedStructureReport {
@@ -577,6 +593,7 @@ fn tagged_structure_report(structure: &pdf_core::TaggedStructure) -> TaggedStruc
             .map(|object_id| format!("{} {} R", object_id.number, object_id.generation)),
         element_count: tagged_element_count(&structure.roots),
         mcid_count: tagged_mcid_count(&structure.roots),
+        parent_tree_entries: structure.parent_tree.len(),
         structure_types,
         diagnostics: structure
             .diagnostics
@@ -596,6 +613,7 @@ fn tagged_structure_report_from_semantic(
             .map(|object_id| format!("{} {} R", object_id.number, object_id.generation)),
         element_count: summary.element_count,
         mcid_count: summary.mcid_count,
+        parent_tree_entries: summary.parent_tree_entries,
         structure_types: summary.structure_types.clone(),
         diagnostics: Vec::new(),
     }
@@ -1084,6 +1102,8 @@ fn apply_tounicode_maps(
             | ContentOp::SaveGraphicsState { .. }
             | ContentOp::RestoreGraphicsState { .. }
             | ContentOp::ConcatMatrix { .. }
+            | ContentOp::BeginMarkedContent { .. }
+            | ContentOp::EndMarkedContent { .. }
             | ContentOp::RecognizedNonText { .. }
             | ContentOp::Unknown { .. } => {}
         }
