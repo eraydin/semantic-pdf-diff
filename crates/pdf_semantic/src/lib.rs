@@ -1,5 +1,5 @@
 use pdf_text::TextRun;
-use spdfdiff_types::{Diagnostic, Provenance, Rect};
+use spdfdiff_types::{Diagnostic, ObjectId, Provenance, Rect};
 
 const LINE_BASELINE_TOLERANCE: f32 = 3.0;
 const PARAGRAPH_GAP_MULTIPLIER: f32 = 1.8;
@@ -9,6 +9,7 @@ pub struct SemanticDocument {
     pub fingerprint: String,
     pub nodes: Vec<SemanticNode>,
     pub diagnostics: Vec<Diagnostic>,
+    pub tagged_structure: Option<TaggedStructureSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +30,15 @@ pub struct SemanticAnchor {
     pub weak_text_signature: String,
     pub geometry_bucket: String,
     pub heading_context: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaggedStructureSummary {
+    pub root_object_id: Option<ObjectId>,
+    pub element_count: usize,
+    pub mcid_count: usize,
+    pub structure_types: Vec<String>,
+    pub confidence: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +83,15 @@ pub fn build_semantic_document(
         fingerprint: fingerprint.into(),
         nodes,
         diagnostics,
+        tagged_structure: None,
+    }
+}
+
+impl SemanticDocument {
+    #[must_use]
+    pub fn with_tagged_structure(mut self, tagged_structure: TaggedStructureSummary) -> Self {
+        self.tagged_structure = Some(tagged_structure);
+        self
     }
 }
 

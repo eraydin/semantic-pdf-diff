@@ -26,6 +26,9 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   reports compare image XObject payloads by deterministic stream hash and should
   emit stable unsupported-feature diagnostics for native vector graphic
   comparison, annotation/link comparison, and image-only PDFs that require OCR.
+- Inspect and extract JSON reports include simple tagged-structure summaries
+  when `pdf_core` parses `/StructTreeRoot`; this is evidence only until tagged
+  reading order is confidence-backed.
 
 ## CLI Rules
 

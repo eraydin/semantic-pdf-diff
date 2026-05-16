@@ -1204,6 +1204,7 @@ mod tests {
                 })
                 .collect(),
             diagnostics: Vec::new(),
+            tagged_structure: None,
         }
     }
 

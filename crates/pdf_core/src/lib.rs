@@ -50,6 +50,21 @@ pub struct PdfPage {
     pub content_object_ids: Vec<ObjectId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedStructure {
+    pub root_object_id: Option<ObjectId>,
+    pub roots: Vec<TaggedStructureElement>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedStructureElement {
+    pub object_id: Option<ObjectId>,
+    pub structure_type: String,
+    pub mcids: Vec<usize>,
+    pub children: Vec<TaggedStructureElement>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedIndirectObject {
     pub id: ObjectId,
@@ -254,6 +269,245 @@ impl PdfDocument {
             })
             .collect()
     }
+
+    #[must_use]
+    pub fn tagged_structure(&self, config: ParseConfig) -> TaggedStructure {
+        let mut diagnostics = Vec::new();
+        let Some(root_object_id) = struct_tree_root_id(self, config, &mut diagnostics) else {
+            return TaggedStructure {
+                root_object_id: None,
+                roots: Vec::new(),
+                diagnostics,
+            };
+        };
+        let mut seen = Vec::new();
+        let parsed =
+            parse_structure_reference(self, root_object_id, config, 0, &mut seen, &mut diagnostics);
+        TaggedStructure {
+            root_object_id: Some(root_object_id),
+            roots: parsed.elements,
+            diagnostics,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StructureParseResult {
+    elements: Vec<TaggedStructureElement>,
+    mcids: Vec<usize>,
+}
+
+fn struct_tree_root_id(
+    document: &PdfDocument,
+    config: ParseConfig,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<ObjectId> {
+    for object in &document.objects {
+        let Ok(value) = parse_primitive(object.body.as_bytes(), config).map(|parsed| parsed.value)
+        else {
+            continue;
+        };
+        if !matches!(
+            dictionary_value(&value, "Type"),
+            Some(PdfPrimitive::Name(name)) if name == "Catalog"
+        ) {
+            continue;
+        }
+        match dictionary_value(&value, "StructTreeRoot") {
+            Some(PdfPrimitive::Reference(id)) => return Some(*id),
+            Some(_) => diagnostics.push(
+                Diagnostic::warning(
+                    "TAGGED_STRUCTURE_MALFORMED",
+                    "catalog /StructTreeRoot is not an indirect reference",
+                )
+                .with_object(object.id),
+            ),
+            None => {}
+        }
+    }
+    None
+}
+
+fn parse_structure_reference(
+    document: &PdfDocument,
+    object_id: ObjectId,
+    config: ParseConfig,
+    depth: usize,
+    seen: &mut Vec<ObjectId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> StructureParseResult {
+    if depth > config.limits.max_indirect_depth {
+        diagnostics.push(
+            Diagnostic::warning(
+                "TAGGED_STRUCTURE_DEPTH_LIMIT",
+                format!(
+                    "tagged structure exceeds reference depth limit of {}",
+                    config.limits.max_indirect_depth
+                ),
+            )
+            .with_object(object_id),
+        );
+        return StructureParseResult::default();
+    }
+    if seen.contains(&object_id) {
+        diagnostics.push(
+            Diagnostic::warning(
+                "TAGGED_STRUCTURE_CYCLE",
+                format!(
+                    "tagged structure contains a cycle at object {}",
+                    object_id.number
+                ),
+            )
+            .with_object(object_id),
+        );
+        return StructureParseResult::default();
+    }
+    let Some(object) = document
+        .objects
+        .iter()
+        .find(|object| object.id == object_id)
+    else {
+        diagnostics.push(
+            Diagnostic::warning(
+                "TAGGED_STRUCTURE_MISSING_OBJECT",
+                format!(
+                    "tagged structure references missing object {}",
+                    object_id.number
+                ),
+            )
+            .with_object(object_id),
+        );
+        return StructureParseResult::default();
+    };
+    let value = match parse_primitive(object.body.as_bytes(), config).map(|parsed| parsed.value) {
+        Ok(value) => value,
+        Err(error) => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "TAGGED_STRUCTURE_MALFORMED",
+                    format!(
+                        "tagged structure object {} could not be parsed: {error}",
+                        object_id.number
+                    ),
+                )
+                .with_object(object_id),
+            );
+            return StructureParseResult::default();
+        }
+    };
+    seen.push(object_id);
+    let result = parse_structure_value(
+        document,
+        &value,
+        Some(object_id),
+        config,
+        depth + 1,
+        seen,
+        diagnostics,
+    );
+    seen.pop();
+    result
+}
+
+fn parse_structure_value(
+    document: &PdfDocument,
+    value: &PdfPrimitive,
+    object_id: Option<ObjectId>,
+    config: ParseConfig,
+    depth: usize,
+    seen: &mut Vec<ObjectId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> StructureParseResult {
+    match value {
+        PdfPrimitive::Reference(id) => {
+            parse_structure_reference(document, *id, config, depth, seen, diagnostics)
+        }
+        PdfPrimitive::Array(items) => {
+            let mut result = StructureParseResult::default();
+            for item in items {
+                let child =
+                    parse_structure_value(document, item, None, config, depth, seen, diagnostics);
+                result.elements.extend(child.elements);
+                result.mcids.extend(child.mcids);
+            }
+            result
+        }
+        PdfPrimitive::Integer(mcid) => match usize::try_from(*mcid) {
+            Ok(mcid) => StructureParseResult {
+                elements: Vec::new(),
+                mcids: vec![mcid],
+            },
+            Err(_) => {
+                if let Some(object_id) = object_id {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "TAGGED_STRUCTURE_MALFORMED",
+                            "tagged structure contains a negative MCID",
+                        )
+                        .with_object(object_id),
+                    );
+                }
+                StructureParseResult::default()
+            }
+        },
+        PdfPrimitive::Dictionary(_) => {
+            parse_structure_dictionary(document, value, object_id, config, depth, seen, diagnostics)
+        }
+        PdfPrimitive::Null
+        | PdfPrimitive::Boolean(_)
+        | PdfPrimitive::Real(_)
+        | PdfPrimitive::Name(_)
+        | PdfPrimitive::LiteralString(_)
+        | PdfPrimitive::HexString(_) => StructureParseResult::default(),
+    }
+}
+
+fn parse_structure_dictionary(
+    document: &PdfDocument,
+    value: &PdfPrimitive,
+    object_id: Option<ObjectId>,
+    config: ParseConfig,
+    depth: usize,
+    seen: &mut Vec<ObjectId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> StructureParseResult {
+    if let Some(PdfPrimitive::Integer(mcid)) = dictionary_value(value, "MCID") {
+        return match usize::try_from(*mcid) {
+            Ok(mcid) => StructureParseResult {
+                elements: Vec::new(),
+                mcids: vec![mcid],
+            },
+            Err(_) => StructureParseResult::default(),
+        };
+    }
+
+    let children = dictionary_value(value, "K")
+        .map(|children| {
+            parse_structure_value(
+                document,
+                children,
+                None,
+                config,
+                depth + 1,
+                seen,
+                diagnostics,
+            )
+        })
+        .unwrap_or_default();
+
+    if let Some(PdfPrimitive::Name(structure_type)) = dictionary_value(value, "S") {
+        return StructureParseResult {
+            elements: vec![TaggedStructureElement {
+                object_id,
+                structure_type: structure_type.clone(),
+                mcids: children.mcids,
+                children: children.elements,
+            }],
+            mcids: Vec::new(),
+        };
+    }
+
+    children
 }
 
 fn append_incremental_update_diagnostics(bytes: &[u8], diagnostics: &mut Vec<Diagnostic>) {
@@ -2960,6 +3214,36 @@ endobj
         ));
     }
 
+    #[test]
+    fn parses_simple_tagged_structure_tree() {
+        let document = PdfDocument::parse(tagged_pdf()).expect("tagged fixture should parse");
+        let structure = document.tagged_structure(ParseConfig::default());
+
+        assert_eq!(
+            structure.root_object_id,
+            Some(ObjectId {
+                number: 6,
+                generation: 0
+            })
+        );
+        assert_eq!(structure.roots.len(), 2);
+        assert_eq!(structure.roots[0].structure_type, "H1");
+        assert_eq!(structure.roots[0].mcids, vec![0]);
+        assert_eq!(structure.roots[1].structure_type, "P");
+        assert_eq!(structure.roots[1].mcids, vec![1]);
+        assert!(structure.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reports_missing_tagged_structure_as_empty_summary() {
+        let document = PdfDocument::parse(minimal_pdf()).expect("fixture should parse");
+        let structure = document.tagged_structure(ParseConfig::default());
+
+        assert_eq!(structure.root_object_id, None);
+        assert!(structure.roots.is_empty());
+        assert!(structure.diagnostics.is_empty());
+    }
+
     fn minimal_pdf() -> &'static [u8] {
         b"%PDF-1.7
 1 0 obj
@@ -2976,6 +3260,35 @@ endobj
 stream
 BT /F1 12 Tf 72 720 Td (Hello) Tj ET
 endstream
+endobj
+"
+    }
+
+    fn tagged_pdf() -> &'static [u8] {
+        b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /StructParents 0 >>
+endobj
+4 0 obj
+<< /Length 66 >>
+stream
+BT /H1 << /MCID 0 >> BDC (Title) Tj EMC /P << /MCID 1 >> BDC (Body) Tj EMC ET
+endstream
+endobj
+6 0 obj
+<< /Type /StructTreeRoot /K [7 0 R 8 0 R] >>
+endobj
+7 0 obj
+<< /Type /StructElem /S /H1 /P 6 0 R /K 0 >>
+endobj
+8 0 obj
+<< /Type /StructElem /S /P /P 6 0 R /K 1 >>
 endobj
 "
     }

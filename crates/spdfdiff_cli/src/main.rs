@@ -191,6 +191,7 @@ struct InspectReport<'a> {
     object_count: usize,
     diagnostic_count: usize,
     first_page_streams: usize,
+    tagged_structure: TaggedStructureReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,6 +199,17 @@ struct ExtractReport<'a> {
     file: &'a str,
     paragraphs: usize,
     diagnostic_count: usize,
+    tagged_structure: Option<TaggedStructureReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TaggedStructureReport {
+    detected: bool,
+    root_object: Option<String>,
+    element_count: usize,
+    mcid_count: usize,
+    structure_types: Vec<String>,
+    diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -362,7 +374,17 @@ fn semantic_document_from_document(
     config: ParseConfig,
 ) -> pdf_semantic::SemanticDocument {
     let extraction = extract_text_runs_from_document(document, config);
-    pdf_semantic::build_semantic_document(fingerprint, &extraction.runs, extraction.diagnostics)
+    let tagged_structure = document.tagged_structure(config);
+    let semantic = pdf_semantic::build_semantic_document(
+        fingerprint,
+        &extraction.runs,
+        extraction.diagnostics,
+    );
+    if tagged_structure.root_object_id.is_some() {
+        semantic.with_tagged_structure(semantic_tagged_structure_summary(&tagged_structure))
+    } else {
+        semantic
+    }
 }
 
 struct ExtractedTextRuns {
@@ -497,12 +519,18 @@ fn append_tagged_pdf_diagnostics(
     document: &pdf_core::PdfDocument,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if document_has_token(document, "/StructTreeRoot") {
+    let tagged_structure = document.tagged_structure(ParseConfig::default());
+    if tagged_structure.root_object_id.is_some() {
         diagnostics.push(Diagnostic::info(
             "TAGGED_PDF_STRUCTURE_DETECTED",
-            "simple tagged PDF structure was detected; untagged layout heuristics remain the fallback when MCID mapping is incomplete",
+            format!(
+                "parsed tagged PDF structure with {} elements and {} MCID references; untagged layout heuristics remain the fallback when MCID mapping is incomplete",
+                tagged_element_count(&tagged_structure.roots),
+                tagged_mcid_count(&tagged_structure.roots)
+            ),
         ));
     }
+    diagnostics.extend(tagged_structure.diagnostics);
     let mcid_count = document
         .objects
         .iter()
@@ -514,6 +542,86 @@ fn append_tagged_pdf_diagnostics(
             "TAGGED_MCID_DETECTED",
             format!("detected {mcid_count} marked-content IDs available for semantic node mapping"),
         ));
+    }
+}
+
+fn semantic_tagged_structure_summary(
+    structure: &pdf_core::TaggedStructure,
+) -> pdf_semantic::TaggedStructureSummary {
+    let mut structure_types = Vec::new();
+    collect_tagged_structure_types(&structure.roots, &mut structure_types);
+    structure_types.sort();
+    structure_types.dedup();
+    pdf_semantic::TaggedStructureSummary {
+        root_object_id: structure.root_object_id,
+        element_count: tagged_element_count(&structure.roots),
+        mcid_count: tagged_mcid_count(&structure.roots),
+        structure_types,
+        confidence: if structure.diagnostics.is_empty() {
+            0.8
+        } else {
+            0.5
+        },
+    }
+}
+
+fn tagged_structure_report(structure: &pdf_core::TaggedStructure) -> TaggedStructureReport {
+    let mut structure_types = Vec::new();
+    collect_tagged_structure_types(&structure.roots, &mut structure_types);
+    structure_types.sort();
+    structure_types.dedup();
+    TaggedStructureReport {
+        detected: structure.root_object_id.is_some(),
+        root_object: structure
+            .root_object_id
+            .map(|object_id| format!("{} {} R", object_id.number, object_id.generation)),
+        element_count: tagged_element_count(&structure.roots),
+        mcid_count: tagged_mcid_count(&structure.roots),
+        structure_types,
+        diagnostics: structure
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.clone())
+            .collect(),
+    }
+}
+
+fn tagged_structure_report_from_semantic(
+    summary: &pdf_semantic::TaggedStructureSummary,
+) -> TaggedStructureReport {
+    TaggedStructureReport {
+        detected: summary.root_object_id.is_some(),
+        root_object: summary
+            .root_object_id
+            .map(|object_id| format!("{} {} R", object_id.number, object_id.generation)),
+        element_count: summary.element_count,
+        mcid_count: summary.mcid_count,
+        structure_types: summary.structure_types.clone(),
+        diagnostics: Vec::new(),
+    }
+}
+
+fn tagged_element_count(elements: &[pdf_core::TaggedStructureElement]) -> usize {
+    elements
+        .iter()
+        .map(|element| 1 + tagged_element_count(&element.children))
+        .sum()
+}
+
+fn tagged_mcid_count(elements: &[pdf_core::TaggedStructureElement]) -> usize {
+    elements
+        .iter()
+        .map(|element| element.mcids.len() + tagged_mcid_count(&element.children))
+        .sum()
+}
+
+fn collect_tagged_structure_types(
+    elements: &[pdf_core::TaggedStructureElement],
+    structure_types: &mut Vec<String>,
+) {
+    for element in elements {
+        structure_types.push(element.structure_type.clone());
+        collect_tagged_structure_types(&element.children, structure_types);
     }
 }
 
@@ -1389,26 +1497,36 @@ fn render_inspect_report(
     let first_page_streams = document
         .first_page_contents()
         .map_or(0, |contents| contents.len());
+    let tagged_structure =
+        tagged_structure_report(&document.tagged_structure(ParseConfig::default()));
     let report = InspectReport {
         file: fingerprint,
         object_count,
         diagnostic_count,
         first_page_streams,
+        tagged_structure: tagged_structure.clone(),
     };
     match format {
         ReportFormat::Json => {
             to_json_pretty(&report).unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"))
         }
         ReportFormat::Md => format!(
-            "# PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n",
-            fingerprint, object_count, diagnostic_count, first_page_streams
+            "# PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n- Tagged structure: {} elements, {} MCIDs\n",
+            fingerprint,
+            object_count,
+            diagnostic_count,
+            first_page_streams,
+            tagged_structure.element_count,
+            tagged_structure.mcid_count
         ),
         ReportFormat::Html => format!(
-            "<!doctype html><meta charset=\"utf-8\"><pre># PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n</pre>",
+            "<!doctype html><meta charset=\"utf-8\"><pre># PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n- Tagged structure: {} elements, {} MCIDs\n</pre>",
             escape_html(fingerprint),
             object_count,
             diagnostic_count,
-            first_page_streams
+            first_page_streams,
+            tagged_structure.element_count,
+            tagged_structure.mcid_count
         ),
     }
 }
@@ -1423,11 +1541,21 @@ fn render_extract_report(
                 file: &document.fingerprint,
                 paragraphs: document.nodes.len(),
                 diagnostic_count: document.diagnostics.len(),
+                tagged_structure: document
+                    .tagged_structure
+                    .as_ref()
+                    .map(tagged_structure_report_from_semantic),
             };
             to_json_pretty(&report).unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"))
         }
         ReportFormat::Md => {
             let mut out = format!("# Extracted Text\n\nFile: `{}`\n\n", document.fingerprint);
+            if let Some(tagged_structure) = &document.tagged_structure {
+                out.push_str(&format!(
+                    "Tagged structure: {} elements, {} MCIDs\n\n",
+                    tagged_structure.element_count, tagged_structure.mcid_count
+                ));
+            }
             for node in &document.nodes {
                 if let Some(text) = &node.normalized_text {
                     out.push_str(&format!("- {}\n", text));
@@ -1592,6 +1720,13 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "TAGGED_MCID_DETECTED")
         );
+        let tagged_structure = semantic
+            .tagged_structure
+            .as_ref()
+            .expect("simple structure tree should be parsed");
+        assert_eq!(tagged_structure.element_count, 1);
+        assert_eq!(tagged_structure.mcid_count, 1);
+        assert_eq!(tagged_structure.structure_types, vec!["P".to_owned()]);
     }
 
     #[test]
@@ -1609,6 +1744,18 @@ mod tests {
         let parsed = pdf_core::PdfDocument::parse(minimal_pdf("Hello").as_slice()).unwrap();
         let json = render_inspect_report("sample.pdf", &parsed, ReportFormat::Json);
         assert!(json.contains("\"object_count\""));
+    }
+
+    #[test]
+    fn inspect_report_includes_tagged_structure_summary() {
+        let parsed = pdf_core::PdfDocument::parse(tagged_pdf().as_slice()).unwrap();
+        let json = render_inspect_report("tagged.pdf", &parsed, ReportFormat::Json);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON should parse");
+
+        assert_eq!(value["tagged_structure"]["detected"], true);
+        assert_eq!(value["tagged_structure"]["element_count"], 1);
+        assert_eq!(value["tagged_structure"]["mcid_count"], 1);
+        assert_eq!(value["tagged_structure"]["structure_types"][0], "P");
     }
 
     #[test]

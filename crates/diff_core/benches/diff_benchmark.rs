@@ -28,6 +28,7 @@ fn fifty_page_semantic_document(fingerprint: &str, changed: bool) -> SemanticDoc
         fingerprint: fingerprint.to_owned(),
         nodes,
         diagnostics: Vec::new(),
+        tagged_structure: None,
     }
 }
 

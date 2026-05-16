@@ -617,7 +617,10 @@ Acceptance:
 
 Implemented compatibility-gate behavior:
 
-- `/StructTreeRoot` and content-stream `/MCID` markers emit stable diagnostics;
+- simple `/StructTreeRoot` trees are parsed into deterministic structure
+  elements with structure type names and MCID references;
+- inspect/extract JSON reports include tagged-structure summaries when present;
+- content-stream `/MCID` markers emit stable diagnostics;
 - tagged reading order remains diagnostic-backed unless explicit MCID mapping is
   available with confidence.
 
