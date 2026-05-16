@@ -26,6 +26,9 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 ## Text Extraction Rules
 
 - Prefer `/ToUnicode`; preserve raw bytes when Unicode mapping is missing.
+- CID/Type0 fonts without `/ToUnicode` must produce stable diagnostics; width
+  estimates should remain deterministic and use simple character-shape
+  heuristics instead of a single fixed glyph width.
 - Current CLI extraction applies simple page-resource `/ToUnicode` CMaps before
   calling `pdf_text`; when expanding this, move resource-aware font decoding
   into `pdf_text` instead of duplicating ad hoc mapping logic elsewhere.

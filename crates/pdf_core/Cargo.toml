@@ -11,5 +11,8 @@ description = "Low-level PDF parsing primitives for semantic PDF diffing."
 flate2.workspace = true
 spdfdiff_types.workspace = true
 
+[features]
+fuzzing = []
+
 [lints]
 workspace = true

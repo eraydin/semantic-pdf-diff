@@ -173,9 +173,20 @@ impl PdfDocument {
     pub fn parse_with_config(bytes: &[u8], config: ParseConfig) -> Result<Self, PdfDiffError> {
         config.limits.check_file_size(bytes.len())?;
         let mut document = parse_header(bytes)?;
+        append_incremental_update_diagnostics(bytes, &mut document.diagnostics);
         document.objects = match parse_object_store(bytes, config) {
             Ok(store) => pdf_objects_from_object_store(store.objects),
-            Err(_) => parse_indirect_objects(bytes, &config)?,
+            Err(error) => {
+                if has_xref_surface(bytes) {
+                    document.diagnostics.push(Diagnostic::warning(
+                        "XREF_RECOVERY_USED",
+                        format!(
+                            "xref/object-store parsing failed ({error}); recovered by scanning indirect objects"
+                        ),
+                    ));
+                }
+                parse_indirect_objects(bytes, &config)?
+            }
         };
         if document.objects.len() > config.limits.max_objects {
             return Err(resource_limit_error(
@@ -238,6 +249,38 @@ impl PdfDocument {
             })
             .collect()
     }
+}
+
+fn append_incremental_update_diagnostics(bytes: &[u8], diagnostics: &mut Vec<Diagnostic>) {
+    let revision_count = keyword_count(bytes, b"startxref");
+    if revision_count > 1 {
+        diagnostics.push(Diagnostic::info(
+            "INCREMENTAL_UPDATE_DETECTED",
+            format!(
+                "PDF contains {revision_count} startxref sections; the latest revision was selected"
+            ),
+        ));
+    }
+    if bytes
+        .windows(b"/Prev".len())
+        .any(|window| window == b"/Prev")
+    {
+        diagnostics.push(Diagnostic::info(
+            "PRIOR_REVISION_PRESENT",
+            "xref trailer contains /Prev; prior revision data is present but not reported separately",
+        ));
+    }
+}
+
+fn keyword_count(bytes: &[u8], keyword: &[u8]) -> usize {
+    bytes
+        .windows(keyword.len())
+        .filter(|window| *window == keyword)
+        .count()
+}
+
+fn has_xref_surface(bytes: &[u8]) -> bool {
+    keyword_count(bytes, b"startxref") > 0 || keyword_count(bytes, b"xref") > 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2489,6 +2532,50 @@ endobj
     }
 
     #[test]
+    fn reports_incremental_update_markers_and_selects_latest_startxref() {
+        let mut bytes = classic_xref_pdf().bytes;
+        let previous_xref_offset = locate_startxref(&bytes).expect("first xref should exist");
+        let second_xref_offset = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 /Prev {previous_xref_offset} >>\nstartxref\n{second_xref_offset}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+
+        let document = PdfDocument::parse(&bytes)
+            .expect("incremental fixture should recover by scanning objects");
+
+        assert!(document.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "INCREMENTAL_UPDATE_DETECTED"
+                && diagnostic.message.contains("latest revision")
+        }));
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "PRIOR_REVISION_PRESENT")
+        );
+    }
+
+    #[test]
+    fn reports_recovery_when_xref_is_damaged() {
+        let mut bytes = classic_xref_pdf().bytes;
+        let marker = find_last_keyword(&bytes, b"startxref").expect("startxref should exist");
+        bytes[marker + b"startxref".len() + 1] = b'x';
+
+        let document = PdfDocument::parse(&bytes).expect("object scan should recover fixture");
+
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "XREF_RECOVERY_USED")
+        );
+        assert!(!document.objects.is_empty());
+    }
+
+    #[test]
     fn resolves_first_page_content_stream() {
         let document = PdfDocument::parse(minimal_pdf()).expect("fixture should parse");
         let content = document
@@ -2947,5 +3034,26 @@ endobj
             .iter()
             .find(|(entry_key, _)| entry_key == key)
             .map(|(_, entry_value)| entry_value)
+    }
+
+    #[cfg(feature = "fuzzing")]
+    mod fuzzing {
+        use super::*;
+
+        #[test]
+        fn parser_fuzz_target_handles_malformed_inputs_without_panic() {
+            let cases: &[&[u8]] = &[
+                b"",
+                b"%PDF-1.7\nxref",
+                b"%PDF-1.7\n1 0 obj\n<< /Length 999999999 >>\nstream\nx",
+                b"%PDF-1.7\n1 0 obj\n[ /Name (unterminated",
+                b"%PDF-1.7\nstartxref\n999999\n%%EOF",
+            ];
+
+            for case in cases {
+                let _ = PdfDocument::parse(case);
+                let _ = parse_primitive(case, ParseConfig::default());
+            }
+        }
     }
 }

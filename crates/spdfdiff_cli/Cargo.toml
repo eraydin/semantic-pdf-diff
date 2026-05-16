@@ -23,5 +23,8 @@ serde.workspace = true
 serde_json.workspace = true
 spdfdiff_types.workspace = true
 
+[features]
+fuzzing = []
+
 [lints]
 workspace = true

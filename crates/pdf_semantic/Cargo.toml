@@ -11,5 +11,8 @@ description = "Semantic document model construction from positioned text."
 pdf_text.workspace = true
 spdfdiff_types.workspace = true
 
+[features]
+fuzzing = []
+
 [lints]
 workspace = true

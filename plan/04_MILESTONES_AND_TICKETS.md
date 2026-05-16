@@ -569,6 +569,13 @@ Acceptance:
 - reports prior revisions where practical;
 - recovers from selected damaged xref tables without regressing strict parsing.
 
+Implemented compatibility-gate behavior:
+
+- latest `startxref` is selected by the parser;
+- repeated `startxref` and trailer `/Prev` markers emit stable diagnostics;
+- xref/object-store failures recover through indirect-object scanning with
+  `XREF_RECOVERY_USED` when an xref surface was actually present.
+
 #### M8-T2 — Better font handling
 
 Acceptance:
@@ -576,6 +583,11 @@ Acceptance:
 - supports more CID font cases;
 - better glyph widths;
 - better missing-ToUnicode diagnostics.
+
+Implemented compatibility-gate behavior:
+
+- CID/Type0 fonts without `/ToUnicode` emit `MISSING_TOUNICODE_CID_FONT`;
+- glyph width estimation uses deterministic character-shape heuristics.
 
 #### M8-T3 — Tagged PDF structure
 
@@ -585,6 +597,12 @@ Acceptance:
 - maps MCIDs to semantic nodes;
 - uses tagged reading order when confidence is high.
 
+Implemented compatibility-gate behavior:
+
+- `/StructTreeRoot` and content-stream `/MCID` markers emit stable diagnostics;
+- tagged reading order remains diagnostic-backed unless explicit MCID mapping is
+  available with confidence.
+
 #### M8-T4 — Fuzzing and malformed PDFs
 
 Acceptance:
@@ -593,6 +611,11 @@ Acceptance:
 - fuzz target for content tokenizer;
 - no known panic on malformed fixture set.
 
+Implemented compatibility-gate behavior:
+
+- `cargo test --workspace --features fuzzing` enables parser and content
+  tokenizer malformed-input fuzz-target tests.
+
 #### M8-T5 — Benchmark target
 
 Acceptance:
@@ -600,3 +623,10 @@ Acceptance:
 - reports timing for parse/extract/semantic/diff/report phases;
 - tracks memory usage where possible;
 - 50-page synthetic benchmark under target threshold.
+
+Implemented compatibility-gate behavior:
+
+- `spdfdiff benchmark --pages 50 --output benchmark.json` reports phase timings,
+  threshold result, diagnostics, summary, and memory sample when a safe
+  platform probe is available;
+- `diff_core` includes a Criterion benchmark for 50-page semantic documents.

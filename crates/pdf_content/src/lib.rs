@@ -710,4 +710,24 @@ mod tests {
             ContentOp::Unknown { ref operator, .. } if operator == "]"
         ));
     }
+
+    #[cfg(feature = "fuzzing")]
+    mod fuzzing {
+        use super::*;
+
+        #[test]
+        fn content_tokenizer_fuzz_target_handles_malformed_inputs_without_panic() {
+            let cases: &[&[u8]] = &[
+                b"",
+                b") > ] <<",
+                b"BT /F1 12 Tf [(unterminated",
+                b"q 1 0 0 1 0 0 cm /Im1 Do Q",
+                b"BT <zzzz> Tj ET",
+            ];
+
+            for case in cases {
+                let _ = parse_content_stream_with_limits(case, 0, None, ResourceLimits::default());
+            }
+        }
+    }
 }

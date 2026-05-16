@@ -10,5 +10,8 @@ description = "PDF content stream tokenizer and interpreter."
 [dependencies]
 spdfdiff_types.workspace = true
 
+[features]
+fuzzing = []
+
 [lints]
 workspace = true

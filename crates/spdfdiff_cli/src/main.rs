@@ -8,6 +8,7 @@ use spdfdiff_types::{
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Debug, Parser)]
 #[command(name = "spdfdiff", version, about = "Semantic PDF diff CLI")]
@@ -45,6 +46,12 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    Benchmark {
+        #[arg(long, default_value_t = 50)]
+        pages: usize,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -76,9 +83,9 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
             let new_bytes = std::fs::read(&new_pdf)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
             let document = diff_pdf_bytes(
-                &old_pdf.to_string_lossy(),
+                &display_file_name(&old_pdf),
                 &old_bytes,
-                &new_pdf.to_string_lossy(),
+                &display_file_name(&new_pdf),
                 &new_bytes,
             )?;
             let rendered = render_diff(&document, format);
@@ -92,7 +99,7 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
             let bytes = std::fs::read(&file)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
             let parsed = pdf_core::PdfDocument::parse_with_config(&bytes, ParseConfig::default())?;
-            let rendered = render_inspect_report(&file.to_string_lossy(), &parsed, format);
+            let rendered = render_inspect_report(&display_file_name(&file), &parsed, format);
             write_or_print(rendered, output)?;
         }
         Command::Extract {
@@ -103,7 +110,7 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
             let bytes = std::fs::read(&file)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
             let semantic = semantic_document_from_pdf(
-                &file.to_string_lossy(),
+                &display_file_name(&file),
                 &bytes,
                 ParseConfig::default(),
             )?;
@@ -113,6 +120,12 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
         Command::Corpus { folder, output } => {
             let report = build_corpus_report(&folder, ParseConfig::default())?;
             std::fs::write(&output, report)
+                .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+        }
+        Command::Benchmark { pages, output } => {
+            let report = run_synthetic_benchmark(pages)?;
+            let rendered = to_json_pretty(&report)?;
+            std::fs::write(&output, rendered)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
         }
     }
@@ -160,6 +173,28 @@ struct ExtractReport<'a> {
     file: &'a str,
     paragraphs: usize,
     diagnostic_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchmarkReport {
+    pages: usize,
+    target_total_ms: u128,
+    under_target: bool,
+    timings_ms: BenchmarkTimings,
+    peak_memory_bytes: Option<u64>,
+    memory_note: String,
+    summary: spdfdiff_types::DiffSummary,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchmarkTimings {
+    parse: u128,
+    extract: u128,
+    semantic: u128,
+    diff: u128,
+    report: u128,
+    total: u128,
 }
 
 fn build_corpus_report(folder: &Path, config: ParseConfig) -> Result<String, PdfDiffError> {
@@ -300,17 +335,31 @@ fn semantic_document_from_document(
     document: &pdf_core::PdfDocument,
     config: ParseConfig,
 ) -> pdf_semantic::SemanticDocument {
+    let extraction = extract_text_runs_from_document(document, config);
+    pdf_semantic::build_semantic_document(fingerprint, &extraction.runs, extraction.diagnostics)
+}
+
+struct ExtractedTextRuns {
+    runs: Vec<pdf_text::TextRun>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn extract_text_runs_from_document(
+    document: &pdf_core::PdfDocument,
+    config: ParseConfig,
+) -> ExtractedTextRuns {
     let contents = document.page_contents();
     if contents.is_empty() {
-        let mut semantic =
-            pdf_semantic::build_semantic_document(fingerprint, &[], document.diagnostics.clone());
-        semantic
-            .diagnostics
-            .push(spdfdiff_types::Diagnostic::warning(
-                "MISSING_PAGE_CONTENT",
-                "no page content stream was available for extraction",
-            ));
-        return semantic;
+        let mut diagnostics = document.diagnostics.clone();
+        diagnostics.push(spdfdiff_types::Diagnostic::warning(
+            "MISSING_PAGE_CONTENT",
+            "no page content stream was available for extraction",
+        ));
+        append_unsupported_feature_diagnostics(document, true, false, &mut diagnostics);
+        return ExtractedTextRuns {
+            runs: Vec::new(),
+            diagnostics,
+        };
     }
     let mut programs: Vec<(usize, ContentProgram)> = Vec::new();
     for content in &contents {
@@ -355,7 +404,7 @@ fn semantic_document_from_document(
         has_vector_graphics,
         &mut diagnostics,
     );
-    pdf_semantic::build_semantic_document(fingerprint, &runs, diagnostics)
+    ExtractedTextRuns { runs, diagnostics }
 }
 
 fn append_unsupported_feature_diagnostics(
@@ -389,6 +438,53 @@ fn append_unsupported_feature_diagnostics(
         diagnostics.push(Diagnostic::warning(
             "UNSUPPORTED_FORM_FIELD_DIFF",
             "interactive form field comparison is not implemented",
+        ));
+    }
+
+    append_font_diagnostics(document, diagnostics);
+    append_tagged_pdf_diagnostics(document, diagnostics);
+}
+
+fn append_font_diagnostics(document: &pdf_core::PdfDocument, diagnostics: &mut Vec<Diagnostic>) {
+    let cid_missing_count = document
+        .objects
+        .iter()
+        .filter(|object| {
+            (document_has_object_token(object, "/Subtype /Type0")
+                || document_has_object_token(object, "/CIDFontType"))
+                && !document_has_object_token(object, "/ToUnicode")
+        })
+        .count();
+    if cid_missing_count > 0 {
+        diagnostics.push(Diagnostic::warning(
+            "MISSING_TOUNICODE_CID_FONT",
+            format!(
+                "{cid_missing_count} CID/Type0 font objects have no ToUnicode map; extraction falls back to literal bytes with lower confidence"
+            ),
+        ));
+    }
+}
+
+fn append_tagged_pdf_diagnostics(
+    document: &pdf_core::PdfDocument,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if document_has_token(document, "/StructTreeRoot") {
+        diagnostics.push(Diagnostic::info(
+            "TAGGED_PDF_STRUCTURE_DETECTED",
+            "simple tagged PDF structure was detected; untagged layout heuristics remain the fallback when MCID mapping is incomplete",
+        ));
+    }
+    let mcid_count = document
+        .objects
+        .iter()
+        .filter_map(|object| object.stream.as_ref())
+        .map(|stream| byte_pattern_count(&stream.bytes, b"/MCID"))
+        .sum::<usize>();
+    if mcid_count > 0 {
+        diagnostics.push(Diagnostic::info(
+            "TAGGED_MCID_DETECTED",
+            format!("detected {mcid_count} marked-content IDs available for semantic node mapping"),
         ));
     }
 }
@@ -515,7 +611,18 @@ fn document_has_token(document: &pdf_core::PdfDocument, token: &str) -> bool {
     document
         .objects
         .iter()
-        .any(|object| object.body.contains(token))
+        .any(|object| document_has_object_token(object, token))
+}
+
+fn document_has_object_token(object: &pdf_core::PdfObject, token: &str) -> bool {
+    object.body.contains(token)
+}
+
+fn byte_pattern_count(bytes: &[u8], pattern: &[u8]) -> usize {
+    bytes
+        .windows(pattern.len())
+        .filter(|window| *window == pattern)
+        .count()
 }
 
 fn program_has_vector_graphics(program: &ContentProgram) -> bool {
@@ -746,6 +853,137 @@ fn decode_with_tounicode(raw_bytes: &[u8], map: &BTreeMap<Vec<u8>, String>) -> O
     Some(decoded)
 }
 
+fn run_synthetic_benchmark(pages: usize) -> Result<BenchmarkReport, PdfDiffError> {
+    const TARGET_TOTAL_MS: u128 = 5_000;
+    let total_start = Instant::now();
+    let old_bytes = synthetic_text_pdf(pages, None);
+    let new_bytes = synthetic_text_pdf(pages, Some((pages / 2, "revised")));
+    let config = ParseConfig::default();
+
+    let parse_start = Instant::now();
+    let old_document = pdf_core::PdfDocument::parse_with_config(&old_bytes, config)?;
+    let new_document = pdf_core::PdfDocument::parse_with_config(&new_bytes, config)?;
+    let parse = parse_start.elapsed().as_millis();
+
+    let extract_start = Instant::now();
+    let old_extraction = extract_text_runs_from_document(&old_document, config);
+    let new_extraction = extract_text_runs_from_document(&new_document, config);
+    let extract = extract_start.elapsed().as_millis();
+
+    let semantic_start = Instant::now();
+    let old_semantic = pdf_semantic::build_semantic_document(
+        "benchmark-old",
+        &old_extraction.runs,
+        old_extraction.diagnostics,
+    );
+    let new_semantic = pdf_semantic::build_semantic_document(
+        "benchmark-new",
+        &new_extraction.runs,
+        new_extraction.diagnostics,
+    );
+    let semantic = semantic_start.elapsed().as_millis();
+
+    let diff_start = Instant::now();
+    let diff = diff_semantic_documents(&old_semantic, &new_semantic, DiffConfig::default());
+    let diff_ms = diff_start.elapsed().as_millis();
+
+    let report_start = Instant::now();
+    let _rendered = render_diff(&diff, ReportFormat::Json);
+    let report = report_start.elapsed().as_millis();
+    let total = total_start.elapsed().as_millis();
+
+    Ok(BenchmarkReport {
+        pages,
+        target_total_ms: TARGET_TOTAL_MS,
+        under_target: total <= TARGET_TOTAL_MS,
+        timings_ms: BenchmarkTimings {
+            parse,
+            extract,
+            semantic,
+            diff: diff_ms,
+            report,
+            total,
+        },
+        peak_memory_bytes: current_process_memory_bytes(),
+        memory_note: if current_process_memory_bytes().is_some() {
+            "current process memory sample".into()
+        } else {
+            "memory usage is unavailable without a platform-specific safe probe".into()
+        },
+        summary: diff.summary,
+        diagnostics: diff
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.clone())
+            .collect(),
+    })
+}
+
+fn current_process_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let rss_kb = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .or_else(|| status.lines().find_map(|line| line.strip_prefix("VmRSS:")))?
+            .split_whitespace()
+            .next()?
+            .parse::<u64>()
+            .ok()?;
+        Some(rss_kb * 1024)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+fn synthetic_text_pdf(pages: usize, replacement: Option<(usize, &str)>) -> Vec<u8> {
+    let page_count = pages.max(1);
+    let mut objects = Vec::<String>::new();
+    let page_ids = (0..page_count)
+        .map(|index| 3 + (index * 2))
+        .collect::<Vec<_>>();
+    let kids = page_ids
+        .iter()
+        .map(|object_id| format!("{object_id} 0 R"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    objects.push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".into());
+    objects.push(format!(
+        "2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {page_count} >>\nendobj\n"
+    ));
+
+    for page_index in 0..page_count {
+        let page_object_id = 3 + (page_index * 2);
+        let content_object_id = page_object_id + 1;
+        let text = replacement
+            .filter(|(target_page, _)| *target_page == page_index)
+            .map_or_else(
+                || format!("Benchmark page {page_index} stable paragraph"),
+                |(_, replacement_text)| {
+                    format!("Benchmark page {page_index} stable paragraph {replacement_text}")
+                },
+            );
+        let content = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
+        objects.push(format!(
+            "{page_object_id} 0 obj\n<< /Type /Page /Parent 2 0 R /Contents {content_object_id} 0 R >>\nendobj\n"
+        ));
+        objects.push(format!(
+            "{content_object_id} 0 obj\n<< /Length {} >>\nstream\n{content}\nendstream\nendobj\n",
+            content.len()
+        ));
+    }
+
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    for object in objects {
+        pdf.extend_from_slice(object.as_bytes());
+    }
+    pdf
+}
+
 fn render_diff(document: &DiffDocument, format: ReportFormat) -> String {
     match format {
         ReportFormat::Json => diff_report::to_json(document)
@@ -938,6 +1176,52 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "UNSUPPORTED_VECTOR_GRAPHIC_DIFF")
         );
+    }
+
+    #[test]
+    fn reports_cid_font_without_tounicode() {
+        let semantic = semantic_document_from_pdf(
+            "cid-font",
+            &cid_font_without_tounicode_pdf(),
+            ParseConfig::default(),
+        )
+        .expect("CID-font extraction should complete with diagnostics");
+
+        assert!(
+            semantic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MISSING_TOUNICODE_CID_FONT")
+        );
+    }
+
+    #[test]
+    fn reports_tagged_pdf_structure_markers() {
+        let semantic = semantic_document_from_pdf("tagged", &tagged_pdf(), ParseConfig::default())
+            .expect("tagged PDF extraction should complete with diagnostics");
+
+        assert!(
+            semantic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "TAGGED_PDF_STRUCTURE_DETECTED")
+        );
+        assert!(
+            semantic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "TAGGED_MCID_DETECTED")
+        );
+    }
+
+    #[test]
+    fn synthetic_benchmark_reports_all_m8_t5_phases() {
+        let report = run_synthetic_benchmark(50).expect("benchmark should run");
+
+        assert_eq!(report.pages, 50);
+        assert!(report.under_target);
+        assert!(report.timings_ms.total <= report.target_total_ms);
+        assert!(report.summary.modified >= 1);
     }
 
     #[test]
@@ -1143,6 +1427,62 @@ endobj
 stream
 BT /F1 12 Tf 72 720 Td (Chart) Tj ET 0 0 m 10 10 l S
 endstream
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn cid_font_without_tounicode_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 38 >>
+stream
+BT /F1 12 Tf 72 720 Td (Hello) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /CIDFont /DescendantFonts [6 0 R] >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CIDFont >>
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn tagged_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /StructParents 0 /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 61 >>
+stream
+BT /P << /MCID 0 >> BDC /F1 12 Tf 72 720 Td (Tagged) Tj EMC ET
+endstream
+endobj
+6 0 obj
+<< /Type /StructTreeRoot /K [7 0 R] >>
+endobj
+7 0 obj
+<< /Type /StructElem /S /P /K 0 /Pg 3 0 R >>
 endobj
 "
         .as_bytes()

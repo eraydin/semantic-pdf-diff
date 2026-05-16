@@ -11,5 +11,8 @@ description = "Shared semantic PDF diff types, diagnostics, provenance, and limi
 serde.workspace = true
 thiserror.workspace = true
 
+[features]
+fuzzing = []
+
 [lints]
 workspace = true

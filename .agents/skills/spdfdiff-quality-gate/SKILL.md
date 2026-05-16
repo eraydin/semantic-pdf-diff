@@ -29,6 +29,7 @@ When relevant, also run or add:
 cargo test --workspace --features fuzzing
 cargo bench --workspace
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
+spdfdiff benchmark --pages 50 --output benchmark.json
 ```
 
 Only run extended commands when the needed features/tools exist.

@@ -11,5 +11,8 @@ description = "Positioned glyph and text-run extraction."
 pdf_content.workspace = true
 spdfdiff_types.workspace = true
 
+[features]
+fuzzing = []
+
 [lints]
 workspace = true

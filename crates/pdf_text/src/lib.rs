@@ -197,8 +197,10 @@ pub fn normalize_text(text: &str) -> String {
 }
 
 fn estimate_text_width(text: &str, state: TextState) -> f32 {
-    let glyph_count = text.chars().count() as f32;
-    let base_width = glyph_count * state.font_size * 0.5;
+    let base_width = text
+        .chars()
+        .map(|character| approximate_glyph_width(character) * state.font_size)
+        .sum::<f32>();
     let spacing = text.chars().fold(0.0, |total, character| {
         let word_spacing = if character == ' ' {
             state.word_spacing
@@ -208,6 +210,18 @@ fn estimate_text_width(text: &str, state: TextState) -> f32 {
         total + state.character_spacing + word_spacing
     });
     (base_width + spacing) * (state.horizontal_scale / 100.0)
+}
+
+fn approximate_glyph_width(character: char) -> f32 {
+    match character {
+        ' ' => 0.25,
+        'i' | 'l' | 'I' | '!' | '.' | ',' | ':' | ';' | '|' => 0.28,
+        'm' | 'w' | 'M' | 'W' => 0.78,
+        character if character.is_ascii_digit() => 0.5,
+        character if character.is_ascii_punctuation() => 0.35,
+        character if character.len_utf8() > 1 => 0.6,
+        _ => 0.5,
+    }
 }
 
 trait DiagnosticExt {
@@ -280,5 +294,16 @@ mod tests {
         );
 
         assert!(spaced.runs[1].bbox.x0 > plain.runs[1].bbox.x0);
+    }
+
+    #[test]
+    fn glyph_width_estimate_uses_character_shape_heuristics() {
+        let state = TextState {
+            font_size: 10.0,
+            ..TextState::default()
+        };
+
+        assert!(estimate_text_width("WWW", state) > estimate_text_width("iii", state));
+        assert!(estimate_text_width("A A", state) < estimate_text_width("AAA", state));
     }
 }

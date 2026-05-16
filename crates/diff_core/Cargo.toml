@@ -11,5 +11,15 @@ description = "Semantic document matching and diffing."
 pdf_semantic.workspace = true
 spdfdiff_types.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
+[features]
+fuzzing = []
+
+[[bench]]
+name = "diff_benchmark"
+harness = false
+
 [lints]
 workspace = true

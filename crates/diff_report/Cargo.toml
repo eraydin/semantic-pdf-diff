@@ -11,5 +11,8 @@ description = "JSON and human-readable report generation."
 serde_json.workspace = true
 spdfdiff_types.workspace = true
 
+[features]
+fuzzing = []
+
 [lints]
 workspace = true

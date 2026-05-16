@@ -28,6 +28,9 @@ Large exact-anchor and fuzzy block comparisons are resource-bounded; when a
 comparison would exceed configured matrix limits, the diff engine emits a stable
 diagnostic and uses deterministic fallback matching instead of allocating an
 unbounded matrix.
+Incremental-update markers, xref recovery, CID/Type0 fonts without `/ToUnicode`,
+tagged-PDF structure markers, and marked-content IDs are surfaced as stable
+diagnostics so hardening gaps stay visible in corpus output.
 
 The `pdf_core` library crate also exposes parser APIs for:
 
@@ -84,6 +87,17 @@ Run without building the binary first:
 ```powershell
 cargo run -p spdfdiff_cli -- diff .\old.pdf .\new.pdf --format md
 ```
+
+## Benchmark
+
+Run the synthetic 50-page benchmark gate:
+
+```powershell
+.\target\debug\spdfdiff.exe benchmark --pages 50 --output .\benchmark.json
+```
+
+The benchmark report includes deterministic phase timing fields for parse,
+extract, semantic, diff, and report work, plus the target threshold result.
 
 ## JSON Example
 

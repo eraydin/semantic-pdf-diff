@@ -28,7 +28,7 @@ rayon = "1"
 clap = { version = "4", features = ["derive"] }
 insta = "1"
 proptest = "1"
-criterion = "0.8"
+criterion = "0.7"
 
 spdfdiff_types = { path = "crates/spdfdiff_types" }
 pdf_core = { path = "crates/pdf_core" }

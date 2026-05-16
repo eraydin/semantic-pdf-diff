@@ -337,6 +337,34 @@ fn corpus_command_sorts_files_and_summarizes_partial_and_failed_inputs() {
 }
 
 #[test]
+fn benchmark_command_reports_m8_t5_phase_metrics() {
+    let fixture = TestFixture::new("benchmark_command_phase_metrics");
+    let output_path = fixture.path("benchmark.json");
+
+    let output = run_spdfdiff([
+        "benchmark",
+        "--pages",
+        "50",
+        "--output",
+        path_arg(&output_path).as_str(),
+    ]);
+    assert_success(&output);
+
+    let json: Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("benchmark report should be written"),
+    )
+    .expect("benchmark output should be valid JSON");
+
+    assert_eq!(json["pages"], 50);
+    assert_eq!(json["target_total_ms"], 5000);
+    assert_eq!(json["under_target"], true);
+    for phase in ["parse", "extract", "semantic", "diff", "report", "total"] {
+        assert!(json["timings_ms"][phase].is_number());
+    }
+    assert!(json["summary"]["modified"].as_u64().unwrap_or_default() >= 1);
+}
+
+#[test]
 fn diff_command_completes_against_real_sample_pdfs() {
     let fixture = TestFixture::new("diff_command_real_samples");
     for pair in REAL_SAMPLE_PAIRS {
@@ -366,8 +394,8 @@ fn assert_real_sample_diff(fixture: &TestFixture, pair: RealSamplePair) {
 
     let report = read_json(&output_path);
     assert_eq!(report["schema_version"], "0.1.0");
-    assert_eq!(report["old_fingerprint"], path_arg(&old_pdf));
-    assert_eq!(report["new_fingerprint"], path_arg(&new_pdf));
+    assert_eq!(report["old_fingerprint"], pair.old_name);
+    assert_eq!(report["new_fingerprint"], pair.new_name);
     assert!(report["summary"].is_object());
     assert!(report["changes"].is_array());
     if let Some(expected) = pair.expected {
@@ -409,12 +437,12 @@ fn inspect_command_completes_against_real_sample_pdf() {
         let report: Value =
             serde_json::from_slice(&output.stdout).expect("inspect stdout should be valid JSON");
 
-        assert_eq!(report["file"], path_arg(&pdf));
+        assert_eq!(report["file"], sample);
         assert!(
             report["object_count"].as_u64().unwrap_or_default() >= 1,
             "inspect should parse a non-empty object graph for {sample}"
         );
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 3);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 4);
         assert!(report["first_page_streams"].as_u64().unwrap_or_default() >= 1);
     }
 }
@@ -429,7 +457,7 @@ fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
         let report: Value =
             serde_json::from_slice(&output.stdout).expect("extract stdout should be valid JSON");
 
-        assert_eq!(report["file"], path_arg(&pdf));
+        assert_eq!(report["file"], sample);
         let paragraphs = report["paragraphs"].as_u64().unwrap_or_default();
         if sample.starts_with("scanned_document_") {
             assert_eq!(
@@ -439,7 +467,7 @@ fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
         } else {
             assert!(paragraphs >= 1, "expected extractable text in {sample}");
         }
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 3);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 4);
     }
 }
 
@@ -742,7 +770,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 34);
     assert_eq!(report["parsed"], 34);
-    assert_eq!(report["partial"], 29);
+    assert_eq!(report["partial"], 34);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
@@ -757,6 +785,10 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(
         report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"],
         28
+    );
+    assert_eq!(
+        report["diagnostic_counts"]["MISSING_TOUNICODE_CID_FONT"],
+        32
     );
     assert!(report["diagnostic_counts"]["UNSUPPORTED_IMAGE_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());

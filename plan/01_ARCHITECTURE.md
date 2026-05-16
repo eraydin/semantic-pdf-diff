@@ -335,6 +335,7 @@ spdfdiff diff old.pdf new.pdf
 spdfdiff inspect file.pdf --format json
 spdfdiff extract file.pdf --format json
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
+spdfdiff benchmark --pages 50 --output benchmark.json
 ```
 
 ## 3. Semantic anchor strategy
