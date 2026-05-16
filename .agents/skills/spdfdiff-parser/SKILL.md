@@ -19,7 +19,10 @@ description: Implement or review semantic-pdf-diff low-level parser work in crat
 
 - Preserve byte ranges and object provenance as soon as parser data can cross crate boundaries.
 - Never panic on invalid input. Return `PdfDiffError` or a `Diagnostic`.
-- Controlled classic xref tables, `/Type /XRef` streams, `/Type /ObjStm` extraction, no-filter streams, and `FlateDecode` streams are implemented parser capabilities. Extend these paths rather than reintroducing broad unsupported diagnostics for them.
+- Controlled classic xref tables, `/Type /XRef` streams, `/Type /ObjStm`
+  extraction, no-filter streams, `FlateDecode`, `ASCIIHexDecode`, and
+  `RunLengthDecode` streams are implemented parser capabilities. Extend these
+  paths rather than reintroducing broad unsupported diagnostics for them.
 - Incremental-update markers and xref recovery should be diagnostic-backed:
   select the latest `startxref` marker, emit prior-revision diagnostics when
   `/Prev` is present, and emit `XREF_RECOVERY_USED` only when an actual xref

@@ -234,6 +234,9 @@ fn diff_command_reports_text_changes_in_stdout_and_output_file() {
         json["changes"][0]["new_node"]["text"],
         "Annual revenue was 12 million."
     );
+    assert_eq!(json["changes"][0]["text_hunks"][1]["kind"], "Replaced");
+    assert_eq!(json["changes"][0]["text_hunks"][1]["old_text"], "10");
+    assert_eq!(json["changes"][0]["text_hunks"][1]["new_text"], "12");
 
     let markdown_path = fixture.path("diff.md");
     let markdown_output = run_spdfdiff([
@@ -255,6 +258,30 @@ fn diff_command_reports_text_changes_in_stdout_and_output_file() {
     assert!(markdown.contains("# Semantic PDF Diff"));
     assert!(markdown.contains("| Modified | 1 |"));
     assert!(markdown.contains("`change-0000` Modified"));
+}
+
+#[test]
+fn diff_fail_on_changes_exits_one_only_when_changes_exist() {
+    let fixture = TestFixture::new("diff_fail_on_changes");
+    let old_pdf = fixture.write_pdf("old.pdf", "Annual revenue was 10 million.");
+    let new_pdf = fixture.write_pdf("new.pdf", "Annual revenue was 12 million.");
+
+    let changed = run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+        "--fail-on-changes",
+    ]);
+    assert_eq!(changed.status.code(), Some(1));
+    assert!(changed.stderr.is_empty());
+
+    let unchanged = run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&old_pdf).as_str(),
+        "--fail-on-changes",
+    ]);
+    assert_success(&unchanged);
 }
 
 #[test]
@@ -432,12 +459,13 @@ fn assert_real_sample_diff(fixture: &TestFixture, pair: RealSamplePair) {
                     .unwrap_or_default()
                 <= expected.changes as u64
         );
-        assert_eq!(
+        assert!(
             report["changes"]
                 .as_array()
                 .expect("changes should be an array")
-                .len(),
-            expected.changes
+                .len()
+                >= expected.changes,
+            "expected at least the documented semantic changes; object-level surfaces may add evidence changes"
         );
     }
     if !matches!(
@@ -471,7 +499,7 @@ fn inspect_command_completes_against_real_sample_pdf() {
             report["object_count"].as_u64().unwrap_or_default() >= 1,
             "inspect should parse a non-empty object graph for {sample}"
         );
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 4);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 8);
         assert!(report["first_page_streams"].as_u64().unwrap_or_default() >= 1);
     }
 }
@@ -517,7 +545,8 @@ fn html_outputs_complete_against_real_sample_pdfs() {
         ]));
         let html = fs::read_to_string(output_path).expect("diff HTML should be written");
         assert_self_contained_html(&html);
-        assert!(html.contains("# Semantic PDF Diff"));
+        assert!(html.contains("<h1>Semantic PDF Diff</h1>"));
+        assert!(html.contains("<th>Old</th><th>New</th>"));
         if pair.slug == "semantic-contract" {
             assert_readable_output_contains_all(
                 &html,

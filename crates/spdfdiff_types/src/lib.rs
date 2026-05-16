@@ -249,6 +249,21 @@ pub struct SemanticNodeEvidence {
     pub source: Vec<Provenance>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextHunkKind {
+    Equal,
+    Inserted,
+    Deleted,
+    Replaced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextHunk {
+    pub kind: TextHunkKind,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticChange {
     pub id: String,
@@ -256,6 +271,8 @@ pub struct SemanticChange {
     pub severity: ChangeSeverity,
     pub old_node: Option<SemanticNodeEvidence>,
     pub new_node: Option<SemanticNodeEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_hunks: Vec<TextHunk>,
     pub confidence: f32,
     pub reason: String,
 }

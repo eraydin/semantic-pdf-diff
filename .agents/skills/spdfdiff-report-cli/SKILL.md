@@ -19,6 +19,8 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 - Keep JSON canonical enough for agents and CI to consume.
 - Markdown should summarize counts, changes, page references, and diagnostics.
 - Basic HTML must not depend on external network resources.
+- Basic HTML diff reports should render old/new evidence side by side and show
+  available page/bbox evidence; keep SVG overlays deferred.
 - Report coordinates must state whether they are PDF user space or normalized page space once overlays exist.
 - CLI extraction currently walks parsed page content across all pages. Diff
   reports compare image XObject payloads by deterministic stream hash and should
@@ -29,6 +31,7 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 
 - Public commands:
   - `spdfdiff diff old.pdf new.pdf --format json|md|html --output out`
+  - `spdfdiff diff old.pdf new.pdf --fail-on-changes`
   - `spdfdiff inspect file.pdf --format json`
   - `spdfdiff extract file.pdf --format json`
   - `spdfdiff corpus tests/fixtures/real_world --output corpus_report.json`

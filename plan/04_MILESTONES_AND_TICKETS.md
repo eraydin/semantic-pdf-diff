@@ -480,6 +480,12 @@ Acceptance:
 - insertion and deletion hunks are stable;
 - whitespace-only changes obey config.
 
+Implemented behavior:
+
+- modified semantic changes include deterministic word-level `text_hunks` in the
+  JSON report;
+- Markdown and HTML reports surface text hunk evidence for modified paragraphs.
+
 #### M6-T3 — Layout diff
 
 Implement:
@@ -543,6 +549,11 @@ Acceptance:
 - no external network resources required;
 - SVG overlays are deferred to the layout-aware v0.3 phase unless implemented behind an explicit unstable feature.
 
+Implemented behavior:
+
+- HTML diff reports are self-contained and render old/new evidence side by side;
+- page numbers and available bounding boxes are shown in PDF user space.
+
 #### M7-T4 — CLI integration
 
 Acceptance:
@@ -552,6 +563,13 @@ Acceptance:
 - `spdfdiff inspect file.pdf` prints page/object diagnostics;
 - `spdfdiff corpus tests/fixtures/real_world --output corpus_report.json` works once the corpus runner exists;
 - exit codes documented and tested.
+
+Implemented behavior:
+
+- `--fail-on-changes` returns exit code `1` when a diff completes and changes
+  are present;
+- encrypted/protected PDFs are rejected with exit code `3` and stable
+  `UNSUPPORTED_ENCRYPTION` error text.
 
 ## Milestone 8 — Hardening
 

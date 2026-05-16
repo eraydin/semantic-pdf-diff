@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use pdf_semantic::{SemanticDocument, SemanticNode};
 use spdfdiff_types::{
     ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, SemanticChange, SemanticNodeEvidence,
+    TextHunk, TextHunkKind,
 };
 
 const DEFAULT_MAX_MATCH_MATRIX_CELLS: usize = 1_000_000;
@@ -239,14 +240,18 @@ fn emit_unmatched_range(
 
         let old_node = &old.nodes[fuzzy_match.old_index];
         let new_node = &new.nodes[fuzzy_match.new_index];
-        let reason = modified_reason_with_hunk(old_node, new_node, config);
+        let text_hunks = text_hunks_for_nodes(old_node, new_node, config);
+        let reason = modified_reason_with_hunks(old_node, new_node, config, &text_hunks);
         push_change_with_confidence(
             document,
             ChangeKind::Modified,
             Some(old_node),
             Some(new_node),
-            &format!("{reason}; fuzzy_match_score={:.3}", fuzzy_match.score),
-            fuzzy_match.score,
+            ChangeDetails {
+                reason: format!("{reason}; fuzzy_match_score={:.3}", fuzzy_match.score),
+                confidence: fuzzy_match.score,
+                text_hunks,
+            },
             classifier,
         );
         old_cursor = fuzzy_match.old_index + 1;
@@ -525,7 +530,24 @@ fn push_change(
     reason: &str,
     classifier: &impl SeverityClassifier,
 ) {
-    push_change_with_confidence(document, kind, old_node, new_node, reason, 0.9, classifier);
+    push_change_with_confidence(
+        document,
+        kind,
+        old_node,
+        new_node,
+        ChangeDetails {
+            reason: reason.to_owned(),
+            confidence: 0.9,
+            text_hunks: Vec::new(),
+        },
+        classifier,
+    );
+}
+
+struct ChangeDetails {
+    reason: String,
+    confidence: f32,
+    text_hunks: Vec<TextHunk>,
 }
 
 fn push_change_with_confidence(
@@ -533,8 +555,7 @@ fn push_change_with_confidence(
     kind: ChangeKind,
     old_node: Option<&SemanticNode>,
     new_node: Option<&SemanticNode>,
-    reason: &str,
-    confidence: f32,
+    details: ChangeDetails,
     classifier: &impl SeverityClassifier,
 ) {
     let kind_for_summary = kind.clone();
@@ -544,8 +565,9 @@ fn push_change_with_confidence(
         severity: ChangeSeverity::Info,
         old_node: old_node.map(to_evidence),
         new_node: new_node.map(to_evidence),
-        confidence,
-        reason: reason.into(),
+        text_hunks: details.text_hunks,
+        confidence: details.confidence,
+        reason: details.reason,
     };
     change.severity = classifier.classify(&change);
     match kind_for_summary {
@@ -614,10 +636,11 @@ fn comparable_text(node: &SemanticNode, config: DiffConfig) -> String {
     }
 }
 
-fn modified_reason_with_hunk(
+fn modified_reason_with_hunks(
     old_node: &SemanticNode,
     new_node: &SemanticNode,
     config: DiffConfig,
+    text_hunks: &[TextHunk],
 ) -> String {
     let old_text = old_node.normalized_text.as_deref().unwrap_or_default();
     let new_text = new_node.normalized_text.as_deref().unwrap_or_default();
@@ -628,16 +651,138 @@ fn modified_reason_with_hunk(
         return "paragraph text differs between exact-match anchors".into();
     }
 
-    let prefix_len = shared_prefix_len(&old_tokens, &new_tokens);
-    let old_suffix_start = shared_suffix_start(&old_tokens, &new_tokens, prefix_len);
-    let new_suffix_start = shared_suffix_start(&new_tokens, &old_tokens, prefix_len);
+    let first_change = text_hunks
+        .iter()
+        .find(|hunk| hunk.kind != TextHunkKind::Equal);
+    if let Some(hunk) = first_change {
+        return format!(
+            "paragraph text differs between exact-match anchors (old: \"{}\" -> new: \"{}\")",
+            hunk.old_text.as_deref().unwrap_or_default(),
+            hunk.new_text.as_deref().unwrap_or_default()
+        );
+    }
 
-    let old_hunk = old_tokens[prefix_len..old_suffix_start].join(" ");
-    let new_hunk = new_tokens[prefix_len..new_suffix_start].join(" ");
-    format!(
-        "paragraph text differs between exact-match anchors (old: \"{}\" -> new: \"{}\")",
-        old_hunk, new_hunk
-    )
+    "paragraph text differs between exact-match anchors".into()
+}
+
+fn text_hunks_for_nodes(
+    old_node: &SemanticNode,
+    new_node: &SemanticNode,
+    config: DiffConfig,
+) -> Vec<TextHunk> {
+    let old_tokens = normalized_tokens(
+        old_node.normalized_text.as_deref().unwrap_or_default(),
+        config,
+    );
+    let new_tokens = normalized_tokens(
+        new_node.normalized_text.as_deref().unwrap_or_default(),
+        config,
+    );
+    text_hunks_from_tokens(&old_tokens, &new_tokens)
+}
+
+fn text_hunks_from_tokens(old_tokens: &[String], new_tokens: &[String]) -> Vec<TextHunk> {
+    let mut lengths = vec![vec![0usize; new_tokens.len() + 1]; old_tokens.len() + 1];
+    for old_index in (0..old_tokens.len()).rev() {
+        for new_index in (0..new_tokens.len()).rev() {
+            lengths[old_index][new_index] = if old_tokens[old_index] == new_tokens[new_index] {
+                lengths[old_index + 1][new_index + 1] + 1
+            } else {
+                lengths[old_index + 1][new_index].max(lengths[old_index][new_index + 1])
+            };
+        }
+    }
+
+    let mut hunks = Vec::new();
+    let mut deleted = Vec::new();
+    let mut inserted = Vec::new();
+    let mut old_index = 0;
+    let mut new_index = 0;
+    while old_index < old_tokens.len() || new_index < new_tokens.len() {
+        if old_index < old_tokens.len()
+            && new_index < new_tokens.len()
+            && old_tokens[old_index] == new_tokens[new_index]
+        {
+            flush_change_hunk(&mut hunks, &mut deleted, &mut inserted);
+            push_or_merge_hunk(
+                &mut hunks,
+                TextHunkKind::Equal,
+                Some(old_tokens[old_index].clone()),
+                Some(new_tokens[new_index].clone()),
+            );
+            old_index += 1;
+            new_index += 1;
+        } else if new_index >= new_tokens.len()
+            || (old_index < old_tokens.len()
+                && lengths[old_index + 1][new_index] >= lengths[old_index][new_index + 1])
+        {
+            deleted.push(old_tokens[old_index].clone());
+            old_index += 1;
+        } else {
+            inserted.push(new_tokens[new_index].clone());
+            new_index += 1;
+        }
+    }
+    flush_change_hunk(&mut hunks, &mut deleted, &mut inserted);
+    hunks
+}
+
+fn flush_change_hunk(
+    hunks: &mut Vec<TextHunk>,
+    deleted: &mut Vec<String>,
+    inserted: &mut Vec<String>,
+) {
+    if deleted.is_empty() && inserted.is_empty() {
+        return;
+    }
+    let kind = match (deleted.is_empty(), inserted.is_empty()) {
+        (false, false) => TextHunkKind::Replaced,
+        (false, true) => TextHunkKind::Deleted,
+        (true, false) => TextHunkKind::Inserted,
+        (true, true) => unreachable!(),
+    };
+    push_or_merge_hunk(
+        hunks,
+        kind,
+        (!deleted.is_empty()).then(|| deleted.join(" ")),
+        (!inserted.is_empty()).then(|| inserted.join(" ")),
+    );
+    deleted.clear();
+    inserted.clear();
+}
+
+fn push_or_merge_hunk(
+    hunks: &mut Vec<TextHunk>,
+    kind: TextHunkKind,
+    old_text: Option<String>,
+    new_text: Option<String>,
+) {
+    if let Some(last) = hunks.last_mut() {
+        if last.kind == kind {
+            append_optional_text(&mut last.old_text, old_text);
+            append_optional_text(&mut last.new_text, new_text);
+            return;
+        }
+    }
+    hunks.push(TextHunk {
+        kind,
+        old_text,
+        new_text,
+    });
+}
+
+fn append_optional_text(target: &mut Option<String>, addition: Option<String>) {
+    let Some(addition) = addition else {
+        return;
+    };
+    match target {
+        Some(target) if !target.is_empty() => {
+            target.push(' ');
+            target.push_str(&addition);
+        }
+        Some(target) => target.push_str(&addition),
+        None => *target = Some(addition),
+    }
 }
 
 fn normalized_tokens(text: &str, config: DiffConfig) -> Vec<String> {
@@ -655,25 +800,6 @@ fn normalized_tokens(text: &str, config: DiffConfig) -> Vec<String> {
         .split_whitespace()
         .map(ToOwned::to_owned)
         .collect()
-}
-
-fn shared_prefix_len(left: &[String], right: &[String]) -> usize {
-    let mut index = 0;
-    while index < left.len() && index < right.len() && left[index] == right[index] {
-        index += 1;
-    }
-    index
-}
-
-fn shared_suffix_start(target: &[String], other: &[String], prefix_len: usize) -> usize {
-    let mut suffix_len = 0;
-    while target.len() > prefix_len + suffix_len
-        && other.len() > prefix_len + suffix_len
-        && target[target.len() - 1 - suffix_len] == other[other.len() - 1 - suffix_len]
-    {
-        suffix_len += 1;
-    }
-    target.len() - suffix_len
 }
 
 fn relabel_insert_delete_pairs_as_moves(
@@ -806,6 +932,12 @@ mod tests {
                 .reason
                 .contains("old: \"\" -> new: \"world\"")
         );
+        assert_eq!(diff.changes[0].text_hunks.len(), 2);
+        assert_eq!(diff.changes[0].text_hunks[1].kind, TextHunkKind::Inserted);
+        assert_eq!(
+            diff.changes[0].text_hunks[1].new_text.as_deref(),
+            Some("world")
+        );
         assert!(diff.changes[0].reason.contains("fuzzy_match_score=0.850"));
         assert_ne!(diff.changes[0].severity, ChangeSeverity::Critical);
     }
@@ -858,6 +990,14 @@ mod tests {
         assert_eq!(diff.changes[0].kind, ChangeKind::Modified);
         assert!((diff.changes[0].confidence - 0.833).abs() < 0.001);
         assert!(diff.changes[0].reason.contains("fuzzy_match_score=0.833"));
+        assert!(
+            diff.changes[0]
+                .text_hunks
+                .iter()
+                .any(|hunk| hunk.kind == TextHunkKind::Replaced
+                    && hunk.old_text.as_deref() == Some("30")
+                    && hunk.new_text.as_deref() == Some("15"))
+        );
         assert_eq!(
             diff.changes[0].old_node.as_ref().unwrap().text.as_deref(),
             Some("Payment is due in 30 days")

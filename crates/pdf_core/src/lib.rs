@@ -173,6 +173,11 @@ impl PdfDocument {
     pub fn parse_with_config(bytes: &[u8], config: ParseConfig) -> Result<Self, PdfDiffError> {
         config.limits.check_file_size(bytes.len())?;
         let mut document = parse_header(bytes)?;
+        if keyword_count(bytes, b"/Encrypt") > 0 {
+            return Err(PdfDiffError::UnsupportedPdf(
+                "UNSUPPORTED_ENCRYPTION: encrypted or protected PDF is not supported".into(),
+            ));
+        }
         append_incremental_update_diagnostics(bytes, &mut document.diagnostics);
         document.objects = match parse_object_store(bytes, config) {
             Ok(store) => pdf_objects_from_object_store(store.objects),
@@ -998,12 +1003,149 @@ fn decode_stream(mut stream: PdfStream, config: ParseConfig) -> Result<PdfStream
                 }
             }
         }
+        Some("ASCIIHexDecode") | Some("AHx") => {
+            match ascii_hex_decode_limited(
+                &stream.raw_bytes,
+                config.limits.max_decoded_stream_bytes,
+            ) {
+                Ok(decoded) => {
+                    stream.bytes = decoded;
+                    stream.decoded = true;
+                    Ok(stream)
+                }
+                Err(PdfDiffError::ResourceLimitExceeded(message)) => {
+                    Err(PdfDiffError::ResourceLimitExceeded(message))
+                }
+                Err(_) => {
+                    stream.bytes.clone_from(&stream.raw_bytes);
+                    stream.decoded = false;
+                    Ok(stream)
+                }
+            }
+        }
+        Some("RunLengthDecode") | Some("RL") => {
+            match run_length_decode_limited(
+                &stream.raw_bytes,
+                config.limits.max_decoded_stream_bytes,
+            ) {
+                Ok(decoded) => {
+                    stream.bytes = decoded;
+                    stream.decoded = true;
+                    Ok(stream)
+                }
+                Err(PdfDiffError::ResourceLimitExceeded(message)) => {
+                    Err(PdfDiffError::ResourceLimitExceeded(message))
+                }
+                Err(_) => {
+                    stream.bytes.clone_from(&stream.raw_bytes);
+                    stream.decoded = false;
+                    Ok(stream)
+                }
+            }
+        }
         Some(_) => {
             stream.bytes.clone_from(&stream.raw_bytes);
             stream.decoded = false;
             Ok(stream)
         }
     }
+}
+
+fn ascii_hex_decode_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, PdfDiffError> {
+    let mut decoded = Vec::new();
+    let mut high_nibble = None;
+    for byte in bytes {
+        if *byte == b'>' {
+            break;
+        }
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        let Some(nibble) = hex_nibble(*byte) else {
+            return Err(PdfDiffError::InvalidInput(
+                "ASCIIHexDecode contained a non-hex byte".into(),
+            ));
+        };
+        if let Some(high) = high_nibble.take() {
+            push_decoded_byte_limited(&mut decoded, (high << 4) | nibble, limit)?;
+        } else {
+            high_nibble = Some(nibble);
+        }
+    }
+    if let Some(high) = high_nibble {
+        push_decoded_byte_limited(&mut decoded, high << 4, limit)?;
+    }
+    Ok(decoded)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn run_length_decode_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, PdfDiffError> {
+    let mut decoded = Vec::new();
+    let mut index = 0;
+    while let Some(length) = bytes.get(index).copied() {
+        index += 1;
+        match length {
+            128 => break,
+            0..=127 => {
+                let count = usize::from(length) + 1;
+                let end = index.checked_add(count).ok_or_else(|| {
+                    PdfDiffError::InvalidInput("RunLengthDecode segment overflows".into())
+                })?;
+                let Some(segment) = bytes.get(index..end) else {
+                    return Err(PdfDiffError::InvalidInput(
+                        "RunLengthDecode literal segment is truncated".into(),
+                    ));
+                };
+                ensure_decoded_capacity(decoded.len(), segment.len(), limit)?;
+                decoded.extend_from_slice(segment);
+                index = end;
+            }
+            129..=255 => {
+                let count = 257usize - usize::from(length);
+                let Some(byte) = bytes.get(index).copied() else {
+                    return Err(PdfDiffError::InvalidInput(
+                        "RunLengthDecode repeat segment is truncated".into(),
+                    ));
+                };
+                index += 1;
+                ensure_decoded_capacity(decoded.len(), count, limit)?;
+                decoded.extend(std::iter::repeat_n(byte, count));
+            }
+        }
+    }
+    Ok(decoded)
+}
+
+fn push_decoded_byte_limited(
+    decoded: &mut Vec<u8>,
+    byte: u8,
+    limit: usize,
+) -> Result<(), PdfDiffError> {
+    ensure_decoded_capacity(decoded.len(), 1, limit)?;
+    decoded.push(byte);
+    Ok(())
+}
+
+fn ensure_decoded_capacity(
+    current_len: usize,
+    additional: usize,
+    limit: usize,
+) -> Result<(), PdfDiffError> {
+    if current_len.saturating_add(additional) > limit {
+        return Err(resource_limit_error(
+            "RESOURCE_LIMIT_DECODED_STREAM_BYTES",
+            format!("decoded stream exceeds limit of {limit} bytes"),
+        ));
+    }
+    Ok(())
 }
 
 fn flate_decode_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, PdfDiffError> {
@@ -1933,7 +2075,24 @@ fn scan_unsupported_features(objects: &[PdfObject]) -> Vec<Diagnostic> {
                     )
                     .with_object(object.id),
                 ),
-                Some("FlateDecode" | "Fl") | None => {}
+                Some("ASCIIHexDecode" | "AHx") if !stream.decoded => diagnostics.push(
+                    Diagnostic::warning(
+                        "STREAM_DECODE_FAILED",
+                        "ASCIIHexDecode stream could not be decoded; raw bytes were preserved",
+                    )
+                    .with_object(object.id),
+                ),
+                Some("RunLengthDecode" | "RL") if !stream.decoded => diagnostics.push(
+                    Diagnostic::warning(
+                        "STREAM_DECODE_FAILED",
+                        "RunLengthDecode stream could not be decoded; raw bytes were preserved",
+                    )
+                    .with_object(object.id),
+                ),
+                Some(
+                    "FlateDecode" | "Fl" | "ASCIIHexDecode" | "AHx" | "RunLengthDecode" | "RL",
+                )
+                | None => {}
                 Some(filter) => diagnostics.push(
                     Diagnostic::warning(
                         "UNSUPPORTED_STREAM_FILTER",
@@ -2275,6 +2434,43 @@ mod tests {
         assert_eq!(stream.raw_bytes, b"not deflated");
         assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
         assert!(!stream.decoded);
+    }
+
+    #[test]
+    fn decodes_ascii_hex_stream_object() {
+        let object =
+            stream_object_with_filter(b"4254202848656c6c6f2920546a204554>", "/ASCIIHexDecode");
+        let parsed = parse_indirect_object(&object, ParseConfig::default())
+            .expect("ASCIIHex stream object should parse");
+        let stream = parsed.stream.expect("stream should be present");
+
+        assert_eq!(stream.bytes, b"BT (Hello) Tj ET");
+        assert_eq!(stream.filter.as_deref(), Some("ASCIIHexDecode"));
+        assert!(stream.decoded);
+    }
+
+    #[test]
+    fn decodes_run_length_stream_object() {
+        let object = stream_object_with_filter(b"\x02ABC\xFD!\x80", "/RunLengthDecode");
+        let parsed = parse_indirect_object(&object, ParseConfig::default())
+            .expect("RunLength stream object should parse");
+        let stream = parsed.stream.expect("stream should be present");
+
+        assert_eq!(stream.bytes, b"ABC!!!!");
+        assert_eq!(stream.filter.as_deref(), Some("RunLengthDecode"));
+        assert!(stream.decoded);
+    }
+
+    #[test]
+    fn rejects_encrypted_pdf_with_stable_code() {
+        let error =
+            PdfDocument::parse(b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Encrypt 2 0 R >>\nendobj\n")
+                .expect_err("encrypted PDF should not be parsed");
+
+        assert!(matches!(
+            error,
+            PdfDiffError::UnsupportedPdf(message) if message.contains("UNSUPPORTED_ENCRYPTION")
+        ));
     }
 
     #[test]
@@ -2661,7 +2857,7 @@ endobj
 << /Type /Page /Contents 2 0 R >>
 endobj
 2 0 obj
-<< /Length 5 /Filter /ASCIIHexDecode >>
+<< /Length 5 /Filter /DCTDecode >>
 stream
 abcde
 endstream

@@ -26,6 +26,8 @@ enum Command {
         format: ReportFormat,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        fail_on_changes: bool,
     },
     Inspect {
         file: PathBuf,
@@ -64,19 +66,37 @@ enum ReportFormat {
 fn main() {
     let cli = Cli::parse();
 
-    if let Err(error) = run(cli) {
-        eprintln!("{error}");
-        std::process::exit(2);
+    match run(cli) {
+        Ok(exit_code) => {
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(exit_code_for_error(&error));
+        }
     }
 }
 
-fn run(cli: Cli) -> Result<(), PdfDiffError> {
+fn exit_code_for_error(error: &PdfDiffError) -> i32 {
+    match error {
+        PdfDiffError::UnsupportedPdf(message) if message.contains("UNSUPPORTED_ENCRYPTION") => 3,
+        PdfDiffError::InternalInvariant(_) => 4,
+        PdfDiffError::ResourceLimitExceeded(_)
+        | PdfDiffError::UnsupportedPdf(_)
+        | PdfDiffError::InvalidInput(_) => 2,
+    }
+}
+
+fn run(cli: Cli) -> Result<i32, PdfDiffError> {
     match cli.command {
         Command::Diff {
             old_pdf,
             new_pdf,
             format,
             output,
+            fail_on_changes,
         } => {
             let old_bytes = std::fs::read(&old_pdf)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
@@ -90,6 +110,11 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
             )?;
             let rendered = render_diff(&document, format);
             write_or_print(rendered, output)?;
+            return Ok(if fail_on_changes && !document.changes.is_empty() {
+                1
+            } else {
+                0
+            });
         }
         Command::Inspect {
             file,
@@ -129,7 +154,7 @@ fn run(cli: Cli) -> Result<(), PdfDiffError> {
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 #[derive(Debug, Serialize)]
@@ -314,6 +339,7 @@ fn diff_pdf_bytes(
     let new = semantic_document_from_document(new_fingerprint, &new_document, config);
     let mut diff = diff_semantic_documents(&old, &new, DiffConfig::default());
     append_image_payload_changes(&mut diff, &old_document, &new_document);
+    append_document_surface_changes(&mut diff, &old_document, &new_document);
     Ok(diff)
 }
 
@@ -388,7 +414,9 @@ fn extract_text_runs_from_document(
     let mut has_vector_graphics = false;
     for (page_index, mut program) in programs {
         has_vector_graphics |= program_has_vector_graphics(&program);
-        let applied_tounicode = apply_tounicode_maps(&mut program, document);
+        let tounicode_result = apply_tounicode_maps(&mut program, document);
+        let applied_tounicode = tounicode_result.applied;
+        diagnostics.extend(tounicode_result.diagnostics);
         let extraction = pdf_text::extract_text_runs(&program, page_index);
         diagnostics.extend(
             extraction
@@ -534,6 +562,240 @@ fn append_image_payload_changes(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DocumentSurface {
+    category: SurfaceCategory,
+    index: usize,
+    object_id: ObjectId,
+    summary: String,
+    hash: String,
+    byte_range: Option<ByteRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SurfaceCategory {
+    Annotation,
+    FormField,
+    Outline,
+    Metadata,
+    Attachment,
+}
+
+fn append_document_surface_changes(
+    document: &mut DiffDocument,
+    old_document: &pdf_core::PdfDocument,
+    new_document: &pdf_core::PdfDocument,
+) {
+    for category in [
+        SurfaceCategory::Annotation,
+        SurfaceCategory::FormField,
+        SurfaceCategory::Outline,
+        SurfaceCategory::Metadata,
+        SurfaceCategory::Attachment,
+    ] {
+        let old_surfaces = document_surfaces(old_document, category);
+        let new_surfaces = document_surfaces(new_document, category);
+        for index in 0..old_surfaces.len().max(new_surfaces.len()) {
+            match (old_surfaces.get(index), new_surfaces.get(index)) {
+                (Some(old_surface), Some(new_surface)) if old_surface.hash == new_surface.hash => {}
+                (Some(old_surface), Some(new_surface)) => push_surface_change(
+                    document,
+                    Some(old_surface),
+                    Some(new_surface),
+                    format!(
+                        "{} differs at index {index}",
+                        old_surface.category.report_label()
+                    ),
+                ),
+                (Some(old_surface), None) => push_surface_change(
+                    document,
+                    Some(old_surface),
+                    None,
+                    format!(
+                        "{} exists only in old document at index {index}",
+                        old_surface.category.report_label()
+                    ),
+                ),
+                (None, Some(new_surface)) => push_surface_change(
+                    document,
+                    None,
+                    Some(new_surface),
+                    format!(
+                        "{} exists only in new document at index {index}",
+                        new_surface.category.report_label()
+                    ),
+                ),
+                (None, None) => {}
+            }
+        }
+    }
+}
+
+impl SurfaceCategory {
+    fn change_kind(self) -> ChangeKind {
+        match self {
+            SurfaceCategory::Annotation | SurfaceCategory::Attachment => {
+                ChangeKind::AnnotationChanged
+            }
+            SurfaceCategory::FormField => ChangeKind::FormFieldChanged,
+            SurfaceCategory::Outline | SurfaceCategory::Metadata => ChangeKind::MetadataChanged,
+        }
+    }
+
+    fn report_label(self) -> &'static str {
+        match self {
+            SurfaceCategory::Annotation => "annotation/link surface",
+            SurfaceCategory::FormField => "form field surface",
+            SurfaceCategory::Outline => "outline/bookmark surface",
+            SurfaceCategory::Metadata => "metadata/XMP surface",
+            SurfaceCategory::Attachment => "embedded attachment surface",
+        }
+    }
+
+    fn node_prefix(self) -> &'static str {
+        match self {
+            SurfaceCategory::Annotation => "annotation",
+            SurfaceCategory::FormField => "form",
+            SurfaceCategory::Outline => "outline",
+            SurfaceCategory::Metadata => "metadata",
+            SurfaceCategory::Attachment => "attachment",
+        }
+    }
+}
+
+fn document_surfaces(
+    document: &pdf_core::PdfDocument,
+    category: SurfaceCategory,
+) -> Vec<DocumentSurface> {
+    let mut surfaces = document
+        .objects
+        .iter()
+        .filter(|object| surface_matches_category(&object.body, category))
+        .enumerate()
+        .map(|(index, object)| {
+            let bytes = object
+                .stream
+                .as_ref()
+                .map_or_else(|| object.body.as_bytes(), |stream| stream.bytes.as_slice());
+            let summary = summarize_surface(&object.body, category);
+            DocumentSurface {
+                category,
+                index,
+                object_id: object.id,
+                summary,
+                hash: stable_hash(bytes),
+                byte_range: object.stream.as_ref().map(|stream| stream.byte_range),
+            }
+        })
+        .collect::<Vec<_>>();
+    surfaces.sort_by_key(|surface| (surface.category, surface.index, surface.object_id));
+    surfaces
+}
+
+fn surface_matches_category(body: &str, category: SurfaceCategory) -> bool {
+    match category {
+        SurfaceCategory::Annotation => {
+            body.contains("/Subtype /Link")
+                || (body.contains("/Type /Annot") && !body.contains("/Subtype /Widget"))
+        }
+        SurfaceCategory::FormField => {
+            body.contains("/AcroForm") || body.contains("/Subtype /Widget")
+        }
+        SurfaceCategory::Outline => {
+            body.contains("/Outlines")
+                || (body.contains("/Title")
+                    && (body.contains("/Dest")
+                        || body.contains("/Parent")
+                        || body.contains("/First")
+                        || body.contains("/Next")))
+        }
+        SurfaceCategory::Metadata => {
+            body.contains("/Type /Metadata") || body.contains("/Metadata") || body.contains("/Info")
+        }
+        SurfaceCategory::Attachment => {
+            body.contains("/EmbeddedFiles")
+                || body.contains("/Filespec")
+                || body.contains("/Subtype /FileAttachment")
+        }
+    }
+}
+
+fn summarize_surface(body: &str, category: SurfaceCategory) -> String {
+    let mut parts = vec![category.report_label().to_owned()];
+    for key in ["Subtype", "URI", "Title", "F", "Desc", "Contents", "T", "V"] {
+        if let Some(value) = value_after_pdf_name(body, key) {
+            parts.push(format!("{key}={value}"));
+        }
+    }
+    parts.join(" ")
+}
+
+fn value_after_pdf_name(body: &str, key: &str) -> Option<String> {
+    let start = body.find(&format!("/{key}"))? + key.len() + 1;
+    let remaining = body[start..].trim_start();
+    if let Some(value) = remaining.strip_prefix('(') {
+        return value
+            .split_once(')')
+            .map(|(value, _)| value.chars().take(120).collect());
+    }
+    if let Some(value) = remaining.strip_prefix('/') {
+        return value
+            .split_whitespace()
+            .next()
+            .map(|value| value.chars().take(120).collect());
+    }
+    remaining
+        .split_whitespace()
+        .next()
+        .map(|value| value.chars().take(120).collect())
+}
+
+fn push_surface_change(
+    document: &mut DiffDocument,
+    old_surface: Option<&DocumentSurface>,
+    new_surface: Option<&DocumentSurface>,
+    reason: String,
+) {
+    let category = old_surface
+        .map(|surface| surface.category)
+        .or_else(|| new_surface.map(|surface| surface.category))
+        .unwrap_or(SurfaceCategory::Metadata);
+    let change = SemanticChange {
+        id: format!("change-{:04}", document.changes.len()),
+        kind: category.change_kind(),
+        severity: ChangeSeverity::Info,
+        old_node: old_surface.map(|surface| surface_evidence(FileRole::Old, surface)),
+        new_node: new_surface.map(|surface| surface_evidence(FileRole::New, surface)),
+        text_hunks: Vec::new(),
+        confidence: 0.8,
+        reason,
+    };
+    document.changes.push(change);
+}
+
+fn surface_evidence(file_role: FileRole, surface: &DocumentSurface) -> SemanticNodeEvidence {
+    SemanticNodeEvidence {
+        node_id: format!("{}-{:04}", surface.category.node_prefix(), surface.index),
+        page: 0,
+        bbox: None,
+        text: Some(format!(
+            "{} object {} 0 R hash={} {}",
+            surface.category.report_label(),
+            surface.object_id.number,
+            surface.hash,
+            surface.summary
+        )),
+        source: vec![Provenance {
+            file_role: Some(file_role),
+            object_id: Some(surface.object_id),
+            page_index: None,
+            stream_object_id: Some(surface.object_id),
+            content_op_index: None,
+            byte_range: surface.byte_range,
+        }],
+    }
+}
+
 fn image_payloads(document: &pdf_core::PdfDocument) -> Vec<ImagePayload> {
     document
         .objects
@@ -566,6 +828,7 @@ fn push_image_payload_change(
         severity: ChangeSeverity::Info,
         old_node: old_image.map(|image| image_payload_evidence(FileRole::Old, image)),
         new_node: new_image.map(|image| image_payload_evidence(FileRole::New, image)),
+        text_hunks: Vec::new(),
         confidence: 1.0,
         reason,
     };
@@ -660,10 +923,21 @@ fn is_vector_graphics_operator(operator: &str) -> bool {
     )
 }
 
-fn apply_tounicode_maps(program: &mut ContentProgram, document: &pdf_core::PdfDocument) -> bool {
+struct ToUnicodeApplyResult {
+    applied: bool,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn apply_tounicode_maps(
+    program: &mut ContentProgram,
+    document: &pdf_core::PdfDocument,
+) -> ToUnicodeApplyResult {
     let maps = font_tounicode_maps(document);
-    if maps.is_empty() {
-        return false;
+    if maps.maps.is_empty() {
+        return ToUnicodeApplyResult {
+            applied: false,
+            diagnostics: maps.diagnostics,
+        };
     }
 
     let mut current_font: Option<String> = None;
@@ -682,7 +956,7 @@ fn apply_tounicode_maps(program: &mut ContentProgram, document: &pdf_core::PdfDo
                 let Some(font_name) = current_font.as_deref() else {
                     continue;
                 };
-                let Some(map) = maps.get(font_name) else {
+                let Some(map) = maps.maps.get(font_name) else {
                     continue;
                 };
                 if let Some(decoded) = decode_with_tounicode(raw_bytes, map) {
@@ -707,12 +981,18 @@ fn apply_tounicode_maps(program: &mut ContentProgram, document: &pdf_core::PdfDo
         }
     }
 
-    applied
+    ToUnicodeApplyResult {
+        applied,
+        diagnostics: maps.diagnostics,
+    }
 }
 
-fn font_tounicode_maps(
-    document: &pdf_core::PdfDocument,
-) -> BTreeMap<String, BTreeMap<Vec<u8>, String>> {
+struct ToUnicodeMaps {
+    maps: BTreeMap<String, BTreeMap<Vec<u8>, String>>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn font_tounicode_maps(document: &pdf_core::PdfDocument) -> ToUnicodeMaps {
     let objects_by_id = document
         .objects
         .iter()
@@ -726,6 +1006,7 @@ fn font_tounicode_maps(
     }
 
     let mut maps = BTreeMap::new();
+    let mut diagnostics = Vec::new();
     for object in &document.objects {
         for (font_name, font_object_id) in named_references(&object.body) {
             let Some(cmap_object_id) = font_to_cmap.get(&font_object_id) else {
@@ -737,13 +1018,14 @@ fn font_tounicode_maps(
             else {
                 continue;
             };
-            let cmap = parse_tounicode_cmap(&cmap_stream.bytes);
-            if !cmap.is_empty() {
-                maps.insert(font_name, cmap);
+            let cmap = parse_tounicode_cmap_with_diagnostics(&cmap_stream.bytes);
+            diagnostics.extend(cmap.diagnostics);
+            if !cmap.map.is_empty() {
+                maps.insert(font_name, cmap.map);
             }
         }
     }
-    maps
+    ToUnicodeMaps { maps, diagnostics }
 }
 
 fn reference_after_key(body: &str, key: &str) -> Option<ObjectId> {
@@ -791,21 +1073,104 @@ fn body_tokens(body: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_tounicode_cmap(bytes: &[u8]) -> BTreeMap<Vec<u8>, String> {
+struct ToUnicodeCMap {
+    map: BTreeMap<Vec<u8>, String>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn parse_tounicode_cmap_with_diagnostics(bytes: &[u8]) -> ToUnicodeCMap {
     let text = String::from_utf8_lossy(bytes);
     let mut map = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+    let mut in_bfrange = false;
     for line in text.lines() {
-        let hex_tokens = line
-            .split_whitespace()
-            .filter_map(hex_token_bytes)
-            .collect::<Vec<_>>();
-        if hex_tokens.len() == 2 {
+        let trimmed = line.trim();
+        if trimmed.ends_with("beginbfrange") {
+            in_bfrange = true;
+            continue;
+        }
+        if trimmed == "endbfrange" {
+            in_bfrange = false;
+            continue;
+        }
+        if trimmed.ends_with("beginbfchar") || trimmed == "endbfchar" {
+            continue;
+        }
+        let hex_tokens = hex_tokens_in_line(line);
+        if in_bfrange && hex_tokens.len() >= 3 {
+            if let Err(message) = insert_bfrange(&mut map, &hex_tokens, trimmed.contains('[')) {
+                diagnostics.push(Diagnostic::warning("CMAP_UNSUPPORTED_RANGE", message));
+            }
+        } else if hex_tokens.len() == 2 {
             if let Some(decoded) = unicode_hex_to_string(&hex_tokens[1]) {
                 map.insert(hex_tokens[0].clone(), decoded);
             }
+        } else if trimmed.contains("begin")
+            || trimmed.contains("end")
+            || trimmed.is_empty()
+            || trimmed.starts_with('%')
+        {
+            continue;
         }
     }
-    map
+    ToUnicodeCMap { map, diagnostics }
+}
+
+fn insert_bfrange(
+    map: &mut BTreeMap<Vec<u8>, String>,
+    hex_tokens: &[Vec<u8>],
+    array_mode: bool,
+) -> Result<(), String> {
+    if hex_tokens.len() < 3 {
+        return Err("bfrange entry has fewer than three hex operands".into());
+    }
+    let start = bytes_to_u32(&hex_tokens[0]).ok_or("bfrange start is too wide")?;
+    let end = bytes_to_u32(&hex_tokens[1]).ok_or("bfrange end is too wide")?;
+    if end < start {
+        return Err("bfrange end is before start".into());
+    }
+    let count = usize::try_from(end - start + 1).map_err(|_| "bfrange is too large")?;
+    if !array_mode {
+        let destination_start =
+            bytes_to_u32(&hex_tokens[2]).ok_or("bfrange destination is too wide")?;
+        for offset in 0..count {
+            let source = int_to_be_bytes(start + offset as u32, hex_tokens[0].len());
+            let destination =
+                int_to_be_bytes(destination_start + offset as u32, hex_tokens[2].len());
+            let Some(decoded) = unicode_hex_to_string(&destination) else {
+                return Err("bfrange destination is not valid UTF-16BE".into());
+            };
+            map.insert(source, decoded);
+        }
+    } else {
+        if hex_tokens.len() - 2 < count {
+            return Err("bfrange destination array is shorter than source range".into());
+        }
+        for (offset, destination) in hex_tokens[2..2 + count].iter().enumerate() {
+            let source = int_to_be_bytes(start + offset as u32, hex_tokens[0].len());
+            let Some(decoded) = unicode_hex_to_string(destination) else {
+                return Err("bfrange array destination is not valid UTF-16BE".into());
+            };
+            map.insert(source, decoded);
+        }
+    }
+    Ok(())
+}
+
+fn bytes_to_u32(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() > 4 {
+        return None;
+    }
+    let mut value = 0u32;
+    for byte in bytes {
+        value = (value << 8) | u32::from(*byte);
+    }
+    Some(value)
+}
+
+fn int_to_be_bytes(value: u32, width: usize) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    bytes[bytes.len().saturating_sub(width)..].to_vec()
 }
 
 fn hex_token_bytes(token: &str) -> Option<Vec<u8>> {
@@ -817,6 +1182,27 @@ fn hex_token_bytes(token: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|index| u8::from_str_radix(&token[index..index + 2], 16).ok())
         .collect()
+}
+
+fn hex_tokens_in_line(line: &str) -> Vec<Vec<u8>> {
+    let bytes = line.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'<' || bytes.get(index + 1) == Some(&b'<') {
+            index += 1;
+            continue;
+        }
+        let Some(relative_end) = bytes[index + 1..].iter().position(|byte| *byte == b'>') else {
+            break;
+        };
+        let end = index + 1 + relative_end;
+        if let Some(token) = line.get(index..=end).and_then(hex_token_bytes) {
+            tokens.push(token);
+        }
+        index = end + 1;
+    }
+    tokens
 }
 
 fn unicode_hex_to_string(bytes: &[u8]) -> Option<String> {
@@ -989,13 +1375,7 @@ fn render_diff(document: &DiffDocument, format: ReportFormat) -> String {
         ReportFormat::Json => diff_report::to_json(document)
             .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}")),
         ReportFormat::Md => diff_report::to_markdown(document),
-        ReportFormat::Html => {
-            let markdown = diff_report::to_markdown(document);
-            format!(
-                "<!doctype html><meta charset=\"utf-8\"><pre>{}</pre>",
-                escape_html(&markdown)
-            )
-        }
+        ReportFormat::Html => diff_report::to_html(document),
     }
 }
 
@@ -1252,12 +1632,34 @@ mod tests {
 
     #[test]
     fn parses_and_applies_tounicode_cmap() {
-        let cmap =
-            parse_tounicode_cmap(b"2 beginbfchar\n<0026> <0043>\n<004f> <006c>\nendbfchar\n");
+        let cmap = parse_tounicode_cmap_with_diagnostics(
+            b"2 beginbfchar\n<0026> <0043>\n<004f> <006c>\nendbfchar\n",
+        );
 
         assert_eq!(
-            decode_with_tounicode(&[0x00, 0x26, 0x00, 0x4f], &cmap).as_deref(),
+            decode_with_tounicode(&[0x00, 0x26, 0x00, 0x4f], &cmap.map).as_deref(),
             Some("Cl")
+        );
+    }
+
+    #[test]
+    fn parses_tounicode_bfrange_and_reports_unsupported_syntax() {
+        let cmap = parse_tounicode_cmap_with_diagnostics(
+            b"1 beginbfrange\n<0001> <0003> <0041>\n<0004> <0005> [<0058> <0059>]\n<0006> <0008> [<005a>]\nendbfrange\n",
+        );
+
+        assert_eq!(
+            decode_with_tounicode(&[0, 1, 0, 2, 0, 3], &cmap.map).as_deref(),
+            Some("ABC")
+        );
+        assert_eq!(
+            decode_with_tounicode(&[0, 4, 0, 5], &cmap.map).as_deref(),
+            Some("XY")
+        );
+        assert!(
+            cmap.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "CMAP_UNSUPPORTED_RANGE")
         );
     }
 

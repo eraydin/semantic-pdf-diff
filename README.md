@@ -21,6 +21,12 @@ style classification, and table-cell semantics remain incremental compatibility
 work rather than public-alpha claims. Unsupported vector, annotation, and
 missing text-layer surfaces are emitted as stable diagnostics instead of being
 silently treated as fully supported semantic diffs.
+The diff engine also emits structured word-level text hunks for modified
+paragraphs and compares selected report-facing document surfaces, including
+image payloads, link/annotation dictionaries, embedded-file/FileSpec objects,
+outline-like objects, and metadata/XMP objects by deterministic object hashes.
+These object-level comparisons preserve evidence but are not yet full semantic
+annotation, attachment, outline, or metadata interpreters.
 Common non-text drawing, color, clipping, marked-content, and XObject operators
 are recognized so visual PDF content does not create `CONTENT_OPERATOR_UNKNOWN`
 noise during text extraction.
@@ -86,6 +92,12 @@ Run without building the binary first:
 
 ```powershell
 cargo run -p spdfdiff_cli -- diff .\old.pdf .\new.pdf --format md
+```
+
+Return exit code `1` when changes are found:
+
+```powershell
+.\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --fail-on-changes
 ```
 
 ## Benchmark

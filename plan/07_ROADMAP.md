@@ -39,8 +39,10 @@ Handle enough modern PDFs to make the public alpha honest.
 - better CID fonts;
 - better CMap parser;
 - annotations;
+- file attachments and embedded file specifications;
 - outlines/bookmarks;
 - metadata and XMP diff;
+- redaction overlays, hidden text, and layer/visibility semantics;
 - corpus runner improvements.
 
 ### Expected result
@@ -80,6 +82,8 @@ Make layout and table comparison genuinely useful.
 - table row/cell reconstruction;
 - table cell-level diff;
 - figure/image movement detection;
+- redaction-layer classification;
+- hidden-text and overlapping-layer categorization;
 - repeated content detection;
 - page template detection.
 

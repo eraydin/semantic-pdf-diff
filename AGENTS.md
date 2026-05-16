@@ -76,9 +76,11 @@ minimal_old.pdf + minimal_new.pdf
 ## Current Parser Capability Boundary
 
 - `pdf_core` currently supports parser primitives, indirect objects, classic xref
-  tables/trailers, no-filter and `FlateDecode` streams, controlled `/Type /XRef`
-  streams, controlled `/Type /ObjStm` extraction through `ObjectStore`, embedded
-  object provenance, and resource-limit enforcement for parser-owned limits.
+  tables/trailers, no-filter, `FlateDecode`, `ASCIIHexDecode`, and
+  `RunLengthDecode` streams, controlled `/Type /XRef` streams, controlled
+  `/Type /ObjStm` extraction through `ObjectStore`, embedded object provenance,
+  encrypted-PDF rejection, and resource-limit enforcement for parser-owned
+  limits.
 - This is still a `compatibility-gate` parser foundation, not a public-alpha
   compatibility claim. Public-alpha still requires corpus metrics, documented
   unsupported cases, and broader extraction/report evidence.
