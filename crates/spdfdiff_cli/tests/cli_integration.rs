@@ -420,7 +420,7 @@ fn inspect_command_completes_against_real_sample_pdf() {
             report["object_count"].as_u64().unwrap_or_default() >= 1,
             "inspect should parse a non-empty object graph for {sample}"
         );
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 2);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 3);
         assert!(report["first_page_streams"].as_u64().unwrap_or_default() >= 1);
     }
 }
@@ -445,7 +445,7 @@ fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
         } else {
             assert!(paragraphs >= 1, "expected extractable text in {sample}");
         }
-        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 2);
+        assert!(report["diagnostic_count"].as_u64().unwrap_or_default() <= 3);
     }
 }
 
@@ -608,6 +608,90 @@ fn generated_output_files_include_expected_semantic_sample_content() {
 }
 
 #[test]
+fn generated_reports_reflect_documented_scenario_expectations() {
+    let fixture = TestFixture::new("documented_scenario_expectations");
+
+    assert_diff_contains_all(
+        &fixture,
+        "document",
+        "document_v1.pdf",
+        "document_v2.pdf",
+        &["Redis", "150ms", "Version 1.1", "scalable backend"],
+    );
+    assert_diff_contains_all(
+        &fixture,
+        "complex",
+        "complex_semantic_diff_v1.pdf",
+        "complex_semantic_diff_v2.pdf",
+        &["γ", "Σ", "Δ"],
+    );
+    assert_diff_contains_all(
+        &fixture,
+        "headers-footers",
+        "headers_footers_v1.pdf",
+        "headers_footers_v2.pdf",
+        &["994-B", "2026", "firewall logs"],
+    );
+    assert_diff_contains_all(
+        &fixture,
+        "multipage-table",
+        "multipage_table_v1.pdf",
+        "multipage_table_v2.pdf",
+        &["User_15@example.com"],
+    );
+    assert_diff_contains_all(
+        &fixture,
+        "interactive-forms",
+        "interactive_forms_v1.pdf",
+        "interactive_forms_v2.pdf",
+        &["Jane Doe", "Engineering", "Laptop"],
+    );
+    assert_diff_contains_all(
+        &fixture,
+        "document-outline",
+        "document_outline_v1.pdf",
+        "document_outline_v2.pdf",
+        &["Caching Layer", "API Specifications"],
+    );
+
+    assert_diff_has_diagnostic(
+        &fixture,
+        "image-report",
+        "report_with_images_v1.pdf",
+        "report_with_images_v2.pdf",
+        "UNSUPPORTED_IMAGE_DIFF",
+    );
+    assert_diff_has_diagnostic(
+        &fixture,
+        "semantic-images",
+        "semantic_images_v1.pdf",
+        "semantic_images_v2.pdf",
+        "UNSUPPORTED_IMAGE_DIFF",
+    );
+    assert_diff_has_diagnostic(
+        &fixture,
+        "interactive-links",
+        "interactive_links_v1.pdf",
+        "interactive_links_v2.pdf",
+        "UNSUPPORTED_ANNOTATION_DIFF",
+    );
+    assert_diff_has_diagnostic(
+        &fixture,
+        "scanned-document",
+        "scanned_document_v1.pdf",
+        "scanned_document_v2.pdf",
+        "MISSING_TEXT_LAYER",
+    );
+    assert_diff_has_diagnostic(
+        &fixture,
+        "vector-paths",
+        "vector_paths_graphic_v1.pdf",
+        "vector_paths_graphic_v2.pdf",
+        "UNSUPPORTED_VECTOR_GRAPHIC_DIFF",
+    );
+}
+
+#[test]
 fn scenario_markdown_files_document_all_real_sample_pairs() {
     let mut scenarios = String::new();
     for markdown in SAMPLE_SCENARIO_MARKDOWN {
@@ -664,13 +748,23 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 34);
     assert_eq!(report["parsed"], 34);
-    assert_eq!(report["partial"], 6);
+    assert_eq!(report["partial"], 29);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
     }
     assert!(report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"].is_null());
     assert_eq!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"], 7);
+    assert_eq!(report["diagnostic_counts"]["UNSUPPORTED_IMAGE_DIFF"], 8);
+    assert_eq!(report["diagnostic_counts"]["MISSING_TEXT_LAYER"], 2);
+    assert_eq!(
+        report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"],
+        2
+    );
+    assert_eq!(
+        report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"],
+        28
+    );
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());
@@ -729,6 +823,56 @@ fn real_sample_pdf_pairs() -> &'static [RealSamplePair] {
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("JSON report should be written"))
         .expect("report should be valid JSON")
+}
+
+fn assert_diff_contains_all(
+    fixture: &TestFixture,
+    slug: &str,
+    old_name: &str,
+    new_name: &str,
+    expected_terms: &[&str],
+) {
+    let output_path = fixture.path(&format!("{slug}.json"));
+    assert_success(&run_spdfdiff([
+        "diff",
+        path_arg(&real_sample_pdf(old_name)).as_str(),
+        path_arg(&real_sample_pdf(new_name)).as_str(),
+        "--format",
+        "json",
+        "--output",
+        path_arg(&output_path).as_str(),
+    ]));
+    let output = fs::read_to_string(output_path).expect("diff JSON should be written");
+    assert_readable_output_contains_all(&output, expected_terms);
+}
+
+fn assert_diff_has_diagnostic(
+    fixture: &TestFixture,
+    slug: &str,
+    old_name: &str,
+    new_name: &str,
+    expected_code: &str,
+) {
+    let output_path = fixture.path(&format!("{slug}.json"));
+    assert_success(&run_spdfdiff([
+        "diff",
+        path_arg(&real_sample_pdf(old_name)).as_str(),
+        path_arg(&real_sample_pdf(new_name)).as_str(),
+        "--format",
+        "json",
+        "--output",
+        path_arg(&output_path).as_str(),
+    ]));
+    let report = read_json(&output_path);
+    let diagnostics = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == expected_code),
+        "expected diagnostic code {expected_code} in {diagnostics:?}"
+    );
 }
 
 fn assert_diagnostic_code_absent(report: &Value, code: &str) {

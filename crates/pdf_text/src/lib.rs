@@ -108,19 +108,20 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
                 source,
                 ..
             } => {
+                let run_page_index = source.page_index.unwrap_or(page_index);
                 if !emitted_missing_tounicode {
                     diagnostics.push(
                         Diagnostic::warning(
                             "MISSING_TOUNICODE",
                             "using literal-string fallback text because no ToUnicode map is available",
                         )
-                        .with_page(page_index),
+                        .with_page(run_page_index),
                     );
                     emitted_missing_tounicode = true;
                 }
                 emit_run(
                     &mut runs,
-                    page_index,
+                    run_page_index,
                     text,
                     raw_bytes,
                     source.clone(),

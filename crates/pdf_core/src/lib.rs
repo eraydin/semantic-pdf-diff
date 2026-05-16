@@ -203,8 +203,24 @@ impl PdfDocument {
     #[must_use]
     pub fn first_page_contents(&self) -> Option<Vec<PageContent<'_>>> {
         let page = self.pages.first()?;
-        let contents = page
-            .content_object_ids
+        let contents = self.contents_for_page(page);
+        if contents.is_empty() {
+            None
+        } else {
+            Some(contents)
+        }
+    }
+
+    #[must_use]
+    pub fn page_contents(&self) -> Vec<PageContent<'_>> {
+        self.pages
+            .iter()
+            .flat_map(|page| self.contents_for_page(page))
+            .collect()
+    }
+
+    fn contents_for_page(&self, page: &PdfPage) -> Vec<PageContent<'_>> {
+        page.content_object_ids
             .iter()
             .filter_map(|content_object_id| {
                 let object = self
@@ -220,12 +236,7 @@ impl PdfDocument {
                     byte_range: stream.byte_range,
                 })
             })
-            .collect::<Vec<_>>();
-        if contents.is_empty() {
-            None
-        } else {
-            Some(contents)
-        }
+            .collect()
     }
 }
 
@@ -2522,6 +2533,24 @@ endobj
     }
 
     #[test]
+    fn resolves_page_content_streams_across_all_pages() {
+        let document = PdfDocument::parse(multi_page_pdf()).expect("fixture should parse");
+        let contents = document.page_contents();
+
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0].page_index, 0);
+        assert_eq!(
+            contents[0].bytes,
+            b"BT /F1 12 Tf 72 720 Td (First page) Tj ET"
+        );
+        assert_eq!(contents[1].page_index, 1);
+        assert_eq!(
+            contents[1].bytes,
+            b"BT /F1 12 Tf 72 720 Td (Second page) Tj ET"
+        );
+    }
+
+    #[test]
     fn emits_diagnostic_for_page_without_contents() {
         let pdf = b"%PDF-1.7
 1 0 obj
@@ -2689,6 +2718,35 @@ endobj
 << /Length 13 >>
 stream
 ( world) Tj ET
+endstream
+endobj
+"
+    }
+
+    fn multi_page_pdf() -> &'static [u8] {
+        b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 43 >>
+stream
+BT /F1 12 Tf 72 720 Td (First page) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 44 >>
+stream
+BT /F1 12 Tf 72 720 Td (Second page) Tj ET
 endstream
 endobj
 "

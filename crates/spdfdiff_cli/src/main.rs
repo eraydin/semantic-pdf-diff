@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use diff_core::{DiffConfig, diff_semantic_documents};
 use pdf_content::{ContentOp, ContentProgram};
 use serde::Serialize;
-use spdfdiff_types::{DiffDocument, ObjectId, ParseConfig, PdfDiffError};
+use spdfdiff_types::{Diagnostic, DiffDocument, ObjectId, ParseConfig, PdfDiffError};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -281,7 +281,8 @@ fn semantic_document_from_pdf(
     config: ParseConfig,
 ) -> Result<pdf_semantic::SemanticDocument, PdfDiffError> {
     let document = pdf_core::PdfDocument::parse_with_config(bytes, config)?;
-    let Some(contents) = document.first_page_contents() else {
+    let contents = document.page_contents();
+    if contents.is_empty() {
         let mut semantic =
             pdf_semantic::build_semantic_document(fingerprint, &[], document.diagnostics);
         semantic
@@ -291,36 +292,144 @@ fn semantic_document_from_pdf(
                 "no page content stream was available for extraction",
             ));
         return Ok(semantic);
-    };
-    let page_index = contents[0].page_index;
-    let mut program = ContentProgram {
-        operations: Vec::new(),
-        diagnostics: Vec::new(),
-    };
-    for content in contents {
+    }
+    let mut programs: Vec<(usize, ContentProgram)> = Vec::new();
+    for content in &contents {
         let mut stream_program = pdf_content::parse_content_stream_with_limits(
             content.bytes,
             content.page_index,
             Some(content.stream_object_id),
             config.limits,
         );
-        program.operations.append(&mut stream_program.operations);
-        program.diagnostics.append(&mut stream_program.diagnostics);
+        if let Some((_, page_program)) = programs
+            .iter_mut()
+            .find(|(page_index, _)| *page_index == content.page_index)
+        {
+            page_program
+                .operations
+                .append(&mut stream_program.operations);
+            page_program
+                .diagnostics
+                .append(&mut stream_program.diagnostics);
+        } else {
+            programs.push((content.page_index, stream_program));
+        }
     }
-    let applied_tounicode = apply_tounicode_maps(&mut program, &document);
-    let extraction = pdf_text::extract_text_runs(&program, page_index);
-    let mut diagnostics = document.diagnostics;
-    diagnostics.extend(
-        extraction
-            .diagnostics
-            .into_iter()
-            .filter(|diagnostic| !applied_tounicode || diagnostic.code != "MISSING_TOUNICODE"),
+    let mut runs = Vec::new();
+    let mut diagnostics = document.diagnostics.clone();
+    let mut has_vector_graphics = false;
+    for (page_index, mut program) in programs {
+        has_vector_graphics |= program_has_vector_graphics(&program);
+        let applied_tounicode = apply_tounicode_maps(&mut program, &document);
+        let extraction = pdf_text::extract_text_runs(&program, page_index);
+        diagnostics.extend(
+            extraction
+                .diagnostics
+                .into_iter()
+                .filter(|diagnostic| !applied_tounicode || diagnostic.code != "MISSING_TOUNICODE"),
+        );
+        runs.extend(extraction.runs);
+    }
+    append_unsupported_feature_diagnostics(
+        &document,
+        runs.is_empty(),
+        has_vector_graphics,
+        &mut diagnostics,
     );
     Ok(pdf_semantic::build_semantic_document(
         fingerprint,
-        &extraction.runs,
+        &runs,
         diagnostics,
     ))
+}
+
+fn append_unsupported_feature_diagnostics(
+    document: &pdf_core::PdfDocument,
+    has_no_text_runs: bool,
+    has_vector_graphics: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if has_vector_graphics {
+        diagnostics.push(Diagnostic::warning(
+            "UNSUPPORTED_VECTOR_GRAPHIC_DIFF",
+            "native vector path comparison is not implemented",
+        ));
+    }
+
+    if document_has_token(document, "/Subtype /Image") {
+        diagnostics.push(Diagnostic::warning(
+            "UNSUPPORTED_IMAGE_DIFF",
+            "image XObject payload comparison is not implemented",
+        ));
+        if has_no_text_runs {
+            diagnostics.push(Diagnostic::warning(
+                "MISSING_TEXT_LAYER",
+                "no extractable text layer was found; OCR is not implemented",
+            ));
+        }
+    }
+
+    if document_has_any_token(document, &["/Annots", "/Subtype /Link", "/Annot"]) {
+        diagnostics.push(Diagnostic::warning(
+            "UNSUPPORTED_ANNOTATION_DIFF",
+            "annotation and link target comparison is not implemented",
+        ));
+    }
+
+    if document_has_any_token(document, &["/AcroForm", "/Widget"]) {
+        diagnostics.push(Diagnostic::warning(
+            "UNSUPPORTED_FORM_FIELD_DIFF",
+            "interactive form field comparison is not implemented",
+        ));
+    }
+}
+
+fn document_has_any_token(document: &pdf_core::PdfDocument, tokens: &[&str]) -> bool {
+    tokens
+        .iter()
+        .any(|token| document_has_token(document, token))
+}
+
+fn document_has_token(document: &pdf_core::PdfDocument, token: &str) -> bool {
+    document
+        .objects
+        .iter()
+        .any(|object| object.body.contains(token))
+}
+
+fn program_has_vector_graphics(program: &ContentProgram) -> bool {
+    program.operations.iter().any(|operation| {
+        matches!(
+            operation,
+            ContentOp::RecognizedNonText { operator, .. }
+                if is_vector_graphics_operator(operator)
+        )
+    })
+}
+
+fn is_vector_graphics_operator(operator: &str) -> bool {
+    matches!(
+        operator,
+        "m" | "l"
+            | "c"
+            | "v"
+            | "y"
+            | "h"
+            | "re"
+            | "S"
+            | "s"
+            | "f"
+            | "F"
+            | "f*"
+            | "B"
+            | "B*"
+            | "b"
+            | "b*"
+            | "n"
+            | "W"
+            | "W*"
+            | "sh"
+    )
 }
 
 fn apply_tounicode_maps(program: &mut ContentProgram, document: &pdf_core::PdfDocument) -> bool {
@@ -637,6 +746,58 @@ mod tests {
     }
 
     #[test]
+    fn extracts_text_across_multiple_pages() {
+        let semantic =
+            semantic_document_from_pdf("sample", &multi_page_pdf(), ParseConfig::default())
+                .expect("multi-page extraction should succeed");
+
+        let extracted = semantic
+            .nodes
+            .iter()
+            .filter_map(|node| node.normalized_text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(extracted.contains("First page"));
+        assert!(extracted.contains("Second page"));
+    }
+
+    #[test]
+    fn reports_image_only_pdf_as_missing_text_layer() {
+        let semantic =
+            semantic_document_from_pdf("image-only", &image_only_pdf(), ParseConfig::default())
+                .expect("image-only extraction should complete with diagnostics");
+
+        assert!(semantic.nodes.is_empty());
+        assert!(
+            semantic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "UNSUPPORTED_IMAGE_DIFF")
+        );
+        assert!(
+            semantic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MISSING_TEXT_LAYER")
+        );
+    }
+
+    #[test]
+    fn reports_vector_graphics_as_unsupported_diff_surface() {
+        let semantic =
+            semantic_document_from_pdf("vector", &vector_graphics_pdf(), ParseConfig::default())
+                .expect("vector extraction should complete with diagnostics");
+
+        assert!(
+            semantic
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "UNSUPPORTED_VECTOR_GRAPHIC_DIFF")
+        );
+    }
+
+    #[test]
     fn inspect_report_includes_object_count() {
         let parsed = pdf_core::PdfDocument::parse(minimal_pdf("Hello").as_slice()).unwrap();
         let json = render_inspect_report("sample.pdf", &parsed, ReportFormat::Json);
@@ -757,5 +918,86 @@ endobj
             second_text.len() + 9
         )
         .into_bytes()
+    }
+
+    fn multi_page_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 43 >>
+stream
+BT /F1 12 Tf 72 720 Td (First page) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 44 >>
+stream
+BT /F1 12 Tf 72 720 Td (Second page) Tj ET
+endstream
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn image_only_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 21 >>
+stream
+q 10 0 0 10 0 0 cm /Im1 Do Q
+endstream
+endobj
+5 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>
+stream
+x
+endstream
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn vector_graphics_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 44 >>
+stream
+BT /F1 12 Tf 72 720 Td (Chart) Tj ET 0 0 m 10 10 l S
+endstream
+endobj
+"
+        .as_bytes()
+        .to_vec()
     }
 }
