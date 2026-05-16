@@ -15,11 +15,12 @@ The CLI extraction path resolves page content streams across all parsed pages
 and applies simple font resource dictionaries with `/ToUnicode` CMap streams
 before building semantic text blocks. This covers the current sample PDFs that
 use Type0 fonts and hex `Tj`/`TJ` text. Broader font resource modeling, image
-payload diffing, native vector graphic comparison, annotation/link comparison,
-OCR, style classification, and table-cell semantics remain incremental
-compatibility work rather than public-alpha claims. Unsupported image, vector,
-annotation, and missing text-layer surfaces are emitted as stable diagnostics
-instead of being silently treated as fully supported semantic diffs.
+payloads are compared by deterministic stream hash for object-level image
+changes. Native vector graphic comparison, annotation/link comparison, OCR,
+style classification, and table-cell semantics remain incremental compatibility
+work rather than public-alpha claims. Unsupported vector, annotation, and
+missing text-layer surfaces are emitted as stable diagnostics instead of being
+silently treated as fully supported semantic diffs.
 Common non-text drawing, color, clipping, marked-content, and XObject operators
 are recognized so visual PDF content does not create `CONTENT_OPERATOR_UNKNOWN`
 noise during text extraction.

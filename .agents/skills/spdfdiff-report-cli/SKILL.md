@@ -20,10 +20,10 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 - Markdown should summarize counts, changes, page references, and diagnostics.
 - Basic HTML must not depend on external network resources.
 - Report coordinates must state whether they are PDF user space or normalized page space once overlays exist.
-- CLI extraction currently walks parsed page content across all pages and should
-  emit stable unsupported-feature diagnostics for image payload diffing,
-  native vector graphic comparison, annotation/link comparison, and image-only
-  PDFs that require OCR.
+- CLI extraction currently walks parsed page content across all pages. Diff
+  reports compare image XObject payloads by deterministic stream hash and should
+  emit stable unsupported-feature diagnostics for native vector graphic
+  comparison, annotation/link comparison, and image-only PDFs that require OCR.
 
 ## CLI Rules
 

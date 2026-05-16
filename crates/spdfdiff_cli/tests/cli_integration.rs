@@ -78,7 +78,7 @@ const REAL_SAMPLE_PAIRS: &[RealSamplePair] = &[
         expected: Some(ExpectedDiffSummary {
             inserted: 2,
             deleted: 2,
-            changes: 4,
+            changes: 5,
         }),
     },
     RealSamplePair {
@@ -98,7 +98,7 @@ const REAL_SAMPLE_PAIRS: &[RealSamplePair] = &[
         expected: Some(ExpectedDiffSummary {
             inserted: 1,
             deleted: 2,
-            changes: 5,
+            changes: 8,
         }),
     },
     RealSamplePair {
@@ -654,19 +654,19 @@ fn generated_reports_reflect_documented_scenario_expectations() {
         &["Caching Layer", "API Specifications"],
     );
 
-    assert_diff_has_diagnostic(
+    assert_diff_contains_all(
         &fixture,
         "image-report",
         "report_with_images_v1.pdf",
         "report_with_images_v2.pdf",
-        "UNSUPPORTED_IMAGE_DIFF",
+        &["ObjectChanged", "image payload differs"],
     );
-    assert_diff_has_diagnostic(
+    assert_diff_contains_all(
         &fixture,
         "semantic-images",
         "semantic_images_v1.pdf",
         "semantic_images_v2.pdf",
-        "UNSUPPORTED_IMAGE_DIFF",
+        &["ObjectChanged", "image payload"],
     );
     assert_diff_has_diagnostic(
         &fixture,
@@ -755,7 +755,6 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     }
     assert!(report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"].is_null());
     assert_eq!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"], 7);
-    assert_eq!(report["diagnostic_counts"]["UNSUPPORTED_IMAGE_DIFF"], 8);
     assert_eq!(report["diagnostic_counts"]["MISSING_TEXT_LAYER"], 2);
     assert_eq!(
         report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"],
@@ -765,6 +764,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
         report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"],
         28
     );
+    assert!(report["diagnostic_counts"]["UNSUPPORTED_IMAGE_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());

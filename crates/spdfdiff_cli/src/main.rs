@@ -2,7 +2,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use diff_core::{DiffConfig, diff_semantic_documents};
 use pdf_content::{ContentOp, ContentProgram};
 use serde::Serialize;
-use spdfdiff_types::{Diagnostic, DiffDocument, ObjectId, ParseConfig, PdfDiffError};
+use spdfdiff_types::{
+    ByteRange, ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, FileRole, ObjectId,
+    ParseConfig, PdfDiffError, Provenance, SemanticChange, SemanticNodeEvidence,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -270,9 +273,13 @@ fn diff_pdf_bytes(
     new_bytes: &[u8],
 ) -> Result<DiffDocument, PdfDiffError> {
     let config = ParseConfig::default();
-    let old = semantic_document_from_pdf(old_fingerprint, old_bytes, config)?;
-    let new = semantic_document_from_pdf(new_fingerprint, new_bytes, config)?;
-    Ok(diff_semantic_documents(&old, &new, DiffConfig::default()))
+    let old_document = pdf_core::PdfDocument::parse_with_config(old_bytes, config)?;
+    let new_document = pdf_core::PdfDocument::parse_with_config(new_bytes, config)?;
+    let old = semantic_document_from_document(old_fingerprint, &old_document, config);
+    let new = semantic_document_from_document(new_fingerprint, &new_document, config);
+    let mut diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+    append_image_payload_changes(&mut diff, &old_document, &new_document);
+    Ok(diff)
 }
 
 fn semantic_document_from_pdf(
@@ -281,17 +288,29 @@ fn semantic_document_from_pdf(
     config: ParseConfig,
 ) -> Result<pdf_semantic::SemanticDocument, PdfDiffError> {
     let document = pdf_core::PdfDocument::parse_with_config(bytes, config)?;
+    Ok(semantic_document_from_document(
+        fingerprint,
+        &document,
+        config,
+    ))
+}
+
+fn semantic_document_from_document(
+    fingerprint: &str,
+    document: &pdf_core::PdfDocument,
+    config: ParseConfig,
+) -> pdf_semantic::SemanticDocument {
     let contents = document.page_contents();
     if contents.is_empty() {
         let mut semantic =
-            pdf_semantic::build_semantic_document(fingerprint, &[], document.diagnostics);
+            pdf_semantic::build_semantic_document(fingerprint, &[], document.diagnostics.clone());
         semantic
             .diagnostics
             .push(spdfdiff_types::Diagnostic::warning(
                 "MISSING_PAGE_CONTENT",
                 "no page content stream was available for extraction",
             ));
-        return Ok(semantic);
+        return semantic;
     }
     let mut programs: Vec<(usize, ContentProgram)> = Vec::new();
     for content in &contents {
@@ -320,7 +339,7 @@ fn semantic_document_from_pdf(
     let mut has_vector_graphics = false;
     for (page_index, mut program) in programs {
         has_vector_graphics |= program_has_vector_graphics(&program);
-        let applied_tounicode = apply_tounicode_maps(&mut program, &document);
+        let applied_tounicode = apply_tounicode_maps(&mut program, document);
         let extraction = pdf_text::extract_text_runs(&program, page_index);
         diagnostics.extend(
             extraction
@@ -331,16 +350,12 @@ fn semantic_document_from_pdf(
         runs.extend(extraction.runs);
     }
     append_unsupported_feature_diagnostics(
-        &document,
+        document,
         runs.is_empty(),
         has_vector_graphics,
         &mut diagnostics,
     );
-    Ok(pdf_semantic::build_semantic_document(
-        fingerprint,
-        &runs,
-        diagnostics,
-    ))
+    pdf_semantic::build_semantic_document(fingerprint, &runs, diagnostics)
 }
 
 fn append_unsupported_feature_diagnostics(
@@ -356,17 +371,11 @@ fn append_unsupported_feature_diagnostics(
         ));
     }
 
-    if document_has_token(document, "/Subtype /Image") {
+    if document_has_token(document, "/Subtype /Image") && has_no_text_runs {
         diagnostics.push(Diagnostic::warning(
-            "UNSUPPORTED_IMAGE_DIFF",
-            "image XObject payload comparison is not implemented",
+            "MISSING_TEXT_LAYER",
+            "no extractable text layer was found; OCR is not implemented",
         ));
-        if has_no_text_runs {
-            diagnostics.push(Diagnostic::warning(
-                "MISSING_TEXT_LAYER",
-                "no extractable text layer was found; OCR is not implemented",
-            ));
-        }
     }
 
     if document_has_any_token(document, &["/Annots", "/Subtype /Link", "/Annot"]) {
@@ -382,6 +391,118 @@ fn append_unsupported_feature_diagnostics(
             "interactive form field comparison is not implemented",
         ));
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImagePayload {
+    index: usize,
+    object_id: ObjectId,
+    byte_range: ByteRange,
+    byte_len: usize,
+    hash: String,
+}
+
+fn append_image_payload_changes(
+    document: &mut DiffDocument,
+    old_document: &pdf_core::PdfDocument,
+    new_document: &pdf_core::PdfDocument,
+) {
+    let old_images = image_payloads(old_document);
+    let new_images = image_payloads(new_document);
+    for index in 0..old_images.len().max(new_images.len()) {
+        match (old_images.get(index), new_images.get(index)) {
+            (Some(old_image), Some(new_image)) if old_image.hash == new_image.hash => {}
+            (Some(old_image), Some(new_image)) => push_image_payload_change(
+                document,
+                Some(old_image),
+                Some(new_image),
+                format!(
+                    "image payload differs at image index {index} (old hash {} -> new hash {})",
+                    old_image.hash, new_image.hash
+                ),
+            ),
+            (Some(old_image), None) => push_image_payload_change(
+                document,
+                Some(old_image),
+                None,
+                format!("image payload at index {index} exists only in old document"),
+            ),
+            (None, Some(new_image)) => push_image_payload_change(
+                document,
+                None,
+                Some(new_image),
+                format!("image payload at index {index} exists only in new document"),
+            ),
+            (None, None) => {}
+        }
+    }
+}
+
+fn image_payloads(document: &pdf_core::PdfDocument) -> Vec<ImagePayload> {
+    document
+        .objects
+        .iter()
+        .filter(|object| object.body.contains("/Subtype /Image"))
+        .filter_map(|object| {
+            let stream = object.stream.as_ref()?;
+            Some((object.id, stream.byte_range, stream.bytes.as_slice()))
+        })
+        .enumerate()
+        .map(|(index, (object_id, byte_range, bytes))| ImagePayload {
+            index,
+            object_id,
+            byte_range,
+            byte_len: bytes.len(),
+            hash: stable_hash(bytes),
+        })
+        .collect()
+}
+
+fn push_image_payload_change(
+    document: &mut DiffDocument,
+    old_image: Option<&ImagePayload>,
+    new_image: Option<&ImagePayload>,
+    reason: String,
+) {
+    let change = SemanticChange {
+        id: format!("change-{:04}", document.changes.len()),
+        kind: ChangeKind::ObjectChanged,
+        severity: ChangeSeverity::Info,
+        old_node: old_image.map(|image| image_payload_evidence(FileRole::Old, image)),
+        new_node: new_image.map(|image| image_payload_evidence(FileRole::New, image)),
+        confidence: 1.0,
+        reason,
+    };
+    document.changes.push(change);
+}
+
+fn image_payload_evidence(file_role: FileRole, image: &ImagePayload) -> SemanticNodeEvidence {
+    SemanticNodeEvidence {
+        node_id: format!("image-{:04}", image.index),
+        page: 0,
+        bbox: None,
+        text: Some(format!(
+            "image XObject {} 0 R bytes={} hash={}",
+            image.object_id.number, image.byte_len, image.hash
+        )),
+        source: vec![Provenance {
+            file_role: Some(file_role),
+            object_id: Some(image.object_id),
+            page_index: None,
+            stream_object_id: Some(image.object_id),
+            content_op_index: None,
+            byte_range: Some(image.byte_range),
+        }],
+    }
+}
+
+fn stable_hash(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn document_has_any_token(document: &pdf_core::PdfDocument, tokens: &[&str]) -> bool {
@@ -773,11 +894,33 @@ mod tests {
             semantic
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "UNSUPPORTED_IMAGE_DIFF")
+                .any(|diagnostic| diagnostic.code == "MISSING_TEXT_LAYER")
+        );
+    }
+
+    #[test]
+    fn reports_image_payload_changes() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &image_payload_pdf(b"x"),
+            "new",
+            &image_payload_pdf(b"y"),
+        )
+        .expect("image payload diff should complete");
+
+        assert!(
+            diff.changes
+                .iter()
+                .any(|change| change.kind == ChangeKind::ObjectChanged
+                    && change.reason.contains("image payload differs"))
         );
         assert!(
-            semantic
-                .diagnostics
+            diff.diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "UNSUPPORTED_IMAGE_DIFF")
+        );
+        assert!(
+            diff.diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "MISSING_TEXT_LAYER")
         );
@@ -952,6 +1095,11 @@ endobj
     }
 
     fn image_only_pdf() -> Vec<u8> {
+        image_payload_pdf(b"x")
+    }
+
+    fn image_payload_pdf(payload: &[u8]) -> Vec<u8> {
+        let payload_text = String::from_utf8_lossy(payload);
         "%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -975,8 +1123,8 @@ x
 endstream
 endobj
 "
-        .as_bytes()
-        .to_vec()
+        .replace("stream\nx\nendstream", &format!("stream\n{payload_text}\nendstream"))
+        .into_bytes()
     }
 
     fn vector_graphics_pdf() -> Vec<u8> {

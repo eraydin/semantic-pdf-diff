@@ -12,6 +12,7 @@ Current command behavior:
   and writes stable aggregate totals (`total`, `parsed`, `partial`, `failed`),
   per-file status, extracted node counts, and diagnostic-code frequency.
 
-The CLI emits stable unsupported-feature diagnostics for image payload diffing,
-native vector graphic comparison, annotation/link comparison, and image-only
-PDFs that require OCR.
+The CLI compares image XObject payloads by deterministic stream hash and emits
+object-level image changes in diff reports. It still emits stable
+unsupported-feature diagnostics for native vector graphic comparison,
+annotation/link comparison, and image-only PDFs that require OCR.
