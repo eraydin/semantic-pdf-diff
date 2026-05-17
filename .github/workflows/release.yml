@@ -47,8 +47,27 @@ jobs:
         run: |
           set -euo pipefail
 
+          crate_version() {
+            local crate="$1"
+            cargo metadata --no-deps --format-version 1 \
+              | python3 -c 'import json, sys; crate = sys.argv[1]; versions = [p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == crate]; print(versions[0]) if versions else sys.exit(f"missing workspace package: {crate}")' "${crate}"
+          }
+
+          crate_is_published() {
+            local crate="$1"
+            local version="$2"
+            cargo search "${crate}" --limit 5 | grep -Eq "^${crate} = \"${version}\""
+          }
+
           publish_crate() {
             local crate="$1"
+            local version
+            version="$(crate_version "${crate}")"
+            if crate_is_published "${crate}" "${version}"; then
+              echo "Skipping ${crate} ${version}; already published"
+              return
+            fi
+
             echo "Publishing ${crate}"
             cargo publish -p "${crate}"
             # crates.io index propagation is eventually consistent. A short wait
