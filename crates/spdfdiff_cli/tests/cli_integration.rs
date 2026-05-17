@@ -649,6 +649,63 @@ fn html_outputs_complete_against_real_sample_pdfs() {
 }
 
 #[test]
+fn ai_json_outputs_complete_against_real_sample_pdfs() {
+    let fixture = TestFixture::new("real_sample_ai_json_outputs");
+
+    for pair in real_sample_pdf_pairs().iter().copied() {
+        let output_path = fixture.path(&format!("{}-ai-review.json", pair.slug));
+        assert_success(&run_spdfdiff([
+            "diff",
+            path_arg(&real_sample_pdf(pair.old_name)).as_str(),
+            path_arg(&real_sample_pdf(pair.new_name)).as_str(),
+            "--format",
+            "ai-json",
+            "--output",
+            path_arg(&output_path).as_str(),
+        ]));
+
+        let report = read_json(&output_path);
+        assert_eq!(report["schema_version"], "0.1.0");
+        assert_eq!(report["source_schema_version"], "0.1.0");
+        assert!(report["summary"]["total_changes"].is_u64());
+        assert_eq!(
+            report["review_items"]
+                .as_array()
+                .expect("ai-json review_items should be an array")
+                .len() as u64,
+            report["summary"]["total_changes"]
+                .as_u64()
+                .expect("ai-json total_changes should be a number")
+        );
+        assert_eq!(
+            report["question_hints"]
+                .as_array()
+                .expect("ai-json question_hints should be an array")
+                .len(),
+            5
+        );
+        assert!(report["diagnostic_summary"].is_array());
+
+        if pair.slug == "semantic-contract" {
+            assert!(
+                ai_json_has_tag(&report, "PaymentTermsCandidate"),
+                "semantic contract ai-json should flag payment-term candidate evidence"
+            );
+            assert!(
+                ai_json_has_tag(&report, "DateOrDurationCandidate"),
+                "semantic contract ai-json should flag date/duration candidate evidence"
+            );
+        }
+        if pair.slug == "semantic-images" {
+            assert_eq!(
+                ai_json_question_answer(&report, "Were unsupported PDF surfaces encountered?"),
+                Some("Yes")
+            );
+        }
+    }
+}
+
+#[test]
 fn generated_output_files_include_expected_semantic_sample_content() {
     let fixture = TestFixture::new("semantic_sample_output_content");
     let contract_v2 = real_sample_pdf("semantic_contract_v2.pdf");
@@ -993,6 +1050,28 @@ fn real_sample_pdf_pairs() -> &'static [RealSamplePair] {
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("JSON report should be written"))
         .expect("report should be valid JSON")
+}
+
+fn ai_json_has_tag(report: &Value, expected_tag: &str) -> bool {
+    report["review_items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|item| {
+            item["tags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|tag| tag.as_str() == Some(expected_tag))
+        })
+}
+
+fn ai_json_question_answer<'a>(report: &'a Value, question: &str) -> Option<&'a str> {
+    report["question_hints"]
+        .as_array()?
+        .iter()
+        .find(|hint| hint["question"].as_str() == Some(question))
+        .and_then(|hint| hint["answer"].as_str())
 }
 
 fn assert_diff_contains_all(
