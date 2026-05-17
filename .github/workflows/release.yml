@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run cargo publish --dry-run instead of publishing"
+        description: "Run cargo publish --workspace --dry-run instead of publishing"
         required: true
         default: "true"
         type: choice
@@ -39,7 +39,7 @@ jobs:
 
       - name: Publish dry run
         if: ${{ inputs.dry_run == 'true' }}
-        run: cargo publish --dry-run
+        run: cargo publish --workspace --dry-run
 
       - name: Publish crates
         if: ${{ inputs.dry_run == 'false' }}
