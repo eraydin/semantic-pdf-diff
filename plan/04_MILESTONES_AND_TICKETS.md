@@ -482,8 +482,10 @@ Acceptance:
 
 Implemented behavior:
 
-- modified semantic changes include deterministic word-level `text_hunks` in the
-  JSON report;
+- modified semantic changes include deterministic token-level `text_hunks` with
+  normalized text ranges in the JSON report;
+- small non-numeric word replacements include character-level fallback hunks,
+  while numeric replacements such as `30` -> `15` remain token replacements;
 - Markdown and HTML reports surface text hunk evidence for modified paragraphs.
 
 #### M6-T3 — Layout diff

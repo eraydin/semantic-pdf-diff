@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use pdf_semantic::{SemanticDocument, SemanticNode};
 use spdfdiff_types::{
     ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, SemanticChange, SemanticNodeEvidence,
-    TextHunk, TextHunkKind,
+    TextHunk, TextHunkGranularity, TextHunkKind, TextRange,
 };
 
 const DEFAULT_MAX_MATCH_MATRIX_CELLS: usize = 1_000_000;
@@ -446,7 +446,7 @@ fn fuzzy_match_score(old_node: &SemanticNode, new_node: &SemanticNode, config: D
         new_node.normalized_text.as_deref().unwrap_or_default(),
         config,
     );
-    let score = token_similarity(&old_tokens, &new_tokens);
+    let score = token_similarity(&token_texts(&old_tokens), &token_texts(&new_tokens));
     if is_text_extension(&old_text, &new_text) {
         score.max(0.85)
     } else {
@@ -647,7 +647,7 @@ fn modified_reason_with_hunks(
     let old_tokens = normalized_tokens(old_text, config);
     let new_tokens = normalized_tokens(new_text, config);
 
-    if old_tokens == new_tokens {
+    if token_texts(&old_tokens) == token_texts(&new_tokens) {
         return "paragraph text differs between exact-match anchors".into();
     }
 
@@ -681,15 +681,22 @@ fn text_hunks_for_nodes(
     text_hunks_from_tokens(&old_tokens, &new_tokens)
 }
 
-fn text_hunks_from_tokens(old_tokens: &[String], new_tokens: &[String]) -> Vec<TextHunk> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextToken {
+    text: String,
+    range: TextRange,
+}
+
+fn text_hunks_from_tokens(old_tokens: &[TextToken], new_tokens: &[TextToken]) -> Vec<TextHunk> {
     let mut lengths = vec![vec![0usize; new_tokens.len() + 1]; old_tokens.len() + 1];
     for old_index in (0..old_tokens.len()).rev() {
         for new_index in (0..new_tokens.len()).rev() {
-            lengths[old_index][new_index] = if old_tokens[old_index] == new_tokens[new_index] {
-                lengths[old_index + 1][new_index + 1] + 1
-            } else {
-                lengths[old_index + 1][new_index].max(lengths[old_index][new_index + 1])
-            };
+            lengths[old_index][new_index] =
+                if old_tokens[old_index].text == new_tokens[new_index].text {
+                    lengths[old_index + 1][new_index + 1] + 1
+                } else {
+                    lengths[old_index + 1][new_index].max(lengths[old_index][new_index + 1])
+                };
         }
     }
 
@@ -701,14 +708,17 @@ fn text_hunks_from_tokens(old_tokens: &[String], new_tokens: &[String]) -> Vec<T
     while old_index < old_tokens.len() || new_index < new_tokens.len() {
         if old_index < old_tokens.len()
             && new_index < new_tokens.len()
-            && old_tokens[old_index] == new_tokens[new_index]
+            && old_tokens[old_index].text == new_tokens[new_index].text
         {
             flush_change_hunk(&mut hunks, &mut deleted, &mut inserted);
             push_or_merge_hunk(
                 &mut hunks,
                 TextHunkKind::Equal,
-                Some(old_tokens[old_index].clone()),
-                Some(new_tokens[new_index].clone()),
+                TextHunkGranularity::Token,
+                Some(old_tokens[old_index].range),
+                Some(new_tokens[new_index].range),
+                Some(old_tokens[old_index].text.clone()),
+                Some(new_tokens[new_index].text.clone()),
             );
             old_index += 1;
             new_index += 1;
@@ -727,14 +737,27 @@ fn text_hunks_from_tokens(old_tokens: &[String], new_tokens: &[String]) -> Vec<T
     hunks
 }
 
+fn token_texts(tokens: &[TextToken]) -> Vec<String> {
+    tokens.iter().map(|token| token.text.clone()).collect()
+}
+
 fn flush_change_hunk(
     hunks: &mut Vec<TextHunk>,
-    deleted: &mut Vec<String>,
-    inserted: &mut Vec<String>,
+    deleted: &mut Vec<TextToken>,
+    inserted: &mut Vec<TextToken>,
 ) {
     if deleted.is_empty() && inserted.is_empty() {
         return;
     }
+    if let Some(character_hunks) = character_hunks_for_small_replacement(deleted, inserted) {
+        for hunk in character_hunks {
+            push_or_merge_existing_hunk(hunks, hunk);
+        }
+        deleted.clear();
+        inserted.clear();
+        return;
+    }
+
     let kind = match (deleted.is_empty(), inserted.is_empty()) {
         (false, false) => TextHunkKind::Replaced,
         (false, true) => TextHunkKind::Deleted,
@@ -744,8 +767,11 @@ fn flush_change_hunk(
     push_or_merge_hunk(
         hunks,
         kind,
-        (!deleted.is_empty()).then(|| deleted.join(" ")),
-        (!inserted.is_empty()).then(|| inserted.join(" ")),
+        TextHunkGranularity::Token,
+        range_for_tokens(deleted),
+        range_for_tokens(inserted),
+        (!deleted.is_empty()).then(|| tokens_to_text(deleted, TextHunkGranularity::Token)),
+        (!inserted.is_empty()).then(|| tokens_to_text(inserted, TextHunkGranularity::Token)),
     );
     deleted.clear();
     inserted.clear();
@@ -754,38 +780,58 @@ fn flush_change_hunk(
 fn push_or_merge_hunk(
     hunks: &mut Vec<TextHunk>,
     kind: TextHunkKind,
+    granularity: TextHunkGranularity,
+    old_range: Option<TextRange>,
+    new_range: Option<TextRange>,
     old_text: Option<String>,
     new_text: Option<String>,
 ) {
+    let hunk = TextHunk {
+        kind,
+        granularity: Some(granularity),
+        old_range,
+        new_range,
+        old_text,
+        new_text,
+    };
+    push_or_merge_existing_hunk(hunks, hunk);
+}
+
+fn push_or_merge_existing_hunk(hunks: &mut Vec<TextHunk>, hunk: TextHunk) {
     if let Some(last) = hunks.last_mut() {
-        if last.kind == kind {
-            append_optional_text(&mut last.old_text, old_text);
-            append_optional_text(&mut last.new_text, new_text);
+        if last.kind == hunk.kind && last.granularity == hunk.granularity {
+            last.old_range = merge_ranges(last.old_range, hunk.old_range);
+            last.new_range = merge_ranges(last.new_range, hunk.new_range);
+            let granularity = last
+                .granularity
+                .as_ref()
+                .unwrap_or(&TextHunkGranularity::Token);
+            append_optional_text(&mut last.old_text, hunk.old_text, granularity);
+            append_optional_text(&mut last.new_text, hunk.new_text, granularity);
             return;
         }
     }
-    hunks.push(TextHunk {
-        kind,
-        old_text,
-        new_text,
-    });
+    hunks.push(hunk);
 }
 
-fn append_optional_text(target: &mut Option<String>, addition: Option<String>) {
+fn append_optional_text(
+    target: &mut Option<String>,
+    addition: Option<String>,
+    granularity: &TextHunkGranularity,
+) {
     let Some(addition) = addition else {
         return;
     };
     match target {
         Some(target) if !target.is_empty() => {
-            target.push(' ');
-            target.push_str(&addition);
+            append_text_fragment(target, &addition, granularity);
         }
         Some(target) => target.push_str(&addition),
         None => *target = Some(addition),
     }
 }
 
-fn normalized_tokens(text: &str, config: DiffConfig) -> Vec<String> {
+fn normalized_tokens(text: &str, config: DiffConfig) -> Vec<TextToken> {
     let base = if config.ignore_whitespace {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     } else {
@@ -796,10 +842,262 @@ fn normalized_tokens(text: &str, config: DiffConfig) -> Vec<String> {
     } else {
         base
     };
-    normalized
-        .split_whitespace()
-        .map(ToOwned::to_owned)
-        .collect()
+    tokenize_normalized_text(&normalized)
+}
+
+fn character_hunks_for_small_replacement(
+    deleted: &[TextToken],
+    inserted: &[TextToken],
+) -> Option<Vec<TextHunk>> {
+    let old = deleted.first()?;
+    let new = inserted.first()?;
+    if deleted.len() != 1
+        || inserted.len() != 1
+        || old.text.chars().count() > 32
+        || new.text.chars().count() > 32
+        || !is_character_fallback_candidate(&old.text, &new.text)
+    {
+        return None;
+    }
+
+    let old_chars = old.text.chars().collect::<Vec<_>>();
+    let new_chars = new.text.chars().collect::<Vec<_>>();
+    let mut lengths = vec![vec![0usize; new_chars.len() + 1]; old_chars.len() + 1];
+    for old_index in (0..old_chars.len()).rev() {
+        for new_index in (0..new_chars.len()).rev() {
+            lengths[old_index][new_index] = if old_chars[old_index] == new_chars[new_index] {
+                lengths[old_index + 1][new_index + 1] + 1
+            } else {
+                lengths[old_index + 1][new_index].max(lengths[old_index][new_index + 1])
+            };
+        }
+    }
+    if lengths[0][0] == 0 {
+        return None;
+    }
+
+    let mut hunks = Vec::new();
+    let mut deleted_chars = Vec::new();
+    let mut inserted_chars = Vec::new();
+    let mut old_index = 0;
+    let mut new_index = 0;
+    while old_index < old_chars.len() || new_index < new_chars.len() {
+        if old_index < old_chars.len()
+            && new_index < new_chars.len()
+            && old_chars[old_index] == new_chars[new_index]
+        {
+            flush_character_change_hunk(
+                &mut hunks,
+                &mut deleted_chars,
+                &mut inserted_chars,
+                old.range.start,
+                new.range.start,
+            );
+            push_or_merge_hunk(
+                &mut hunks,
+                TextHunkKind::Equal,
+                TextHunkGranularity::Character,
+                Some(TextRange::new(
+                    old.range.start + old_index,
+                    old.range.start + old_index + 1,
+                )),
+                Some(TextRange::new(
+                    new.range.start + new_index,
+                    new.range.start + new_index + 1,
+                )),
+                Some(old_chars[old_index].to_string()),
+                Some(new_chars[new_index].to_string()),
+            );
+            old_index += 1;
+            new_index += 1;
+        } else if new_index >= new_chars.len()
+            || (old_index < old_chars.len()
+                && lengths[old_index + 1][new_index] >= lengths[old_index][new_index + 1])
+        {
+            deleted_chars.push((old_index, old_chars[old_index]));
+            old_index += 1;
+        } else {
+            inserted_chars.push((new_index, new_chars[new_index]));
+            new_index += 1;
+        }
+    }
+    flush_character_change_hunk(
+        &mut hunks,
+        &mut deleted_chars,
+        &mut inserted_chars,
+        old.range.start,
+        new.range.start,
+    );
+    Some(hunks)
+}
+
+fn is_character_fallback_candidate(old: &str, new: &str) -> bool {
+    let old_is_number = old.chars().all(|character| character.is_ascii_digit());
+    let new_is_number = new.chars().all(|character| character.is_ascii_digit());
+    !old_is_number
+        && !new_is_number
+        && old.chars().any(char::is_alphabetic)
+        && new.chars().any(char::is_alphabetic)
+}
+
+fn flush_character_change_hunk(
+    hunks: &mut Vec<TextHunk>,
+    deleted: &mut Vec<(usize, char)>,
+    inserted: &mut Vec<(usize, char)>,
+    old_base: usize,
+    new_base: usize,
+) {
+    if deleted.is_empty() && inserted.is_empty() {
+        return;
+    }
+    let kind = match (deleted.is_empty(), inserted.is_empty()) {
+        (false, false) => TextHunkKind::Replaced,
+        (false, true) => TextHunkKind::Deleted,
+        (true, false) => TextHunkKind::Inserted,
+        (true, true) => unreachable!(),
+    };
+    let old_text = (!deleted.is_empty()).then(|| deleted.iter().map(|(_, c)| c).collect());
+    let new_text = (!inserted.is_empty()).then(|| inserted.iter().map(|(_, c)| c).collect());
+    push_or_merge_hunk(
+        hunks,
+        kind,
+        TextHunkGranularity::Character,
+        character_range(deleted, old_base),
+        character_range(inserted, new_base),
+        old_text,
+        new_text,
+    );
+    deleted.clear();
+    inserted.clear();
+}
+
+fn character_range(characters: &[(usize, char)], base: usize) -> Option<TextRange> {
+    let start = characters.first()?.0;
+    let end = characters.last()?.0 + 1;
+    Some(TextRange::new(base + start, base + end))
+}
+
+fn append_text_fragment(target: &mut String, addition: &str, granularity: &TextHunkGranularity) {
+    if *granularity == TextHunkGranularity::Character || is_punctuation_fragment(addition) {
+        target.push_str(addition);
+    } else {
+        target.push(' ');
+        target.push_str(addition);
+    }
+}
+
+fn merge_ranges(left: Option<TextRange>, right: Option<TextRange>) -> Option<TextRange> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(TextRange::new(
+            left.start.min(right.start),
+            left.end.max(right.end),
+        )),
+        (Some(range), None) | (None, Some(range)) => Some(range),
+        (None, None) => None,
+    }
+}
+
+fn range_for_tokens(tokens: &[TextToken]) -> Option<TextRange> {
+    Some(TextRange::new(
+        tokens.first()?.range.start,
+        tokens.last()?.range.end,
+    ))
+}
+
+fn tokens_to_text(tokens: &[TextToken], granularity: TextHunkGranularity) -> String {
+    let mut text = String::new();
+    for token in tokens {
+        if text.is_empty() {
+            text.push_str(&token.text);
+        } else {
+            append_text_fragment(&mut text, &token.text, &granularity);
+        }
+    }
+    text
+}
+
+fn is_punctuation_fragment(fragment: &str) -> bool {
+    let mut chars = fragment.chars();
+    matches!(
+        chars.next(),
+        Some(character) if chars.next().is_none() && character.is_ascii_punctuation()
+    )
+}
+
+fn tokenize_normalized_text(text: &str) -> Vec<TextToken> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut current_kind = None;
+    let mut current_start = 0usize;
+    let mut char_index = 0usize;
+    for character in text.chars() {
+        if character.is_whitespace() {
+            flush_token(
+                &mut tokens,
+                &mut current,
+                &mut current_kind,
+                current_start,
+                char_index,
+            );
+            char_index += 1;
+            continue;
+        }
+
+        let kind = token_kind(character);
+        if current_kind == Some(kind) {
+            current.push(character);
+        } else {
+            flush_token(
+                &mut tokens,
+                &mut current,
+                &mut current_kind,
+                current_start,
+                char_index,
+            );
+            current_start = char_index;
+            current_kind = Some(kind);
+            current.push(character);
+        }
+        char_index += 1;
+    }
+    flush_token(
+        &mut tokens,
+        &mut current,
+        &mut current_kind,
+        current_start,
+        char_index,
+    );
+    tokens
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenKind {
+    Word,
+    Punctuation,
+}
+
+fn token_kind(character: char) -> TokenKind {
+    if character.is_alphanumeric() {
+        TokenKind::Word
+    } else {
+        TokenKind::Punctuation
+    }
+}
+
+fn flush_token(
+    tokens: &mut Vec<TextToken>,
+    current: &mut String,
+    current_kind: &mut Option<TokenKind>,
+    start: usize,
+    end: usize,
+) {
+    if !current.is_empty() {
+        tokens.push(TextToken {
+            text: std::mem::take(current),
+            range: TextRange::new(start, end),
+        });
+    }
+    *current_kind = None;
 }
 
 fn relabel_insert_delete_pairs_as_moves(
@@ -1005,6 +1303,46 @@ mod tests {
         assert_eq!(
             diff.changes[0].new_node.as_ref().unwrap().text.as_deref(),
             Some("Payment is due in 15 days")
+        );
+    }
+
+    #[test]
+    fn small_alphabetic_replacements_include_character_hunks() {
+        let old = document_with_texts("old", &["Alpha", "The color changed", "Omega"]);
+        let new = document_with_texts("new", &["Alpha", "The colour changed", "Omega"]);
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert_eq!(diff.summary.modified, 1);
+        assert!(
+            diff.changes[0].text_hunks.iter().any(|hunk| {
+                hunk.kind == TextHunkKind::Inserted
+                    && hunk.granularity == Some(TextHunkGranularity::Character)
+                    && hunk.old_range.is_none()
+                    && hunk.new_range == Some(TextRange::new(8, 9))
+                    && hunk.new_text.as_deref() == Some("u")
+            }),
+            "expected inserted character hunk in {:?}",
+            diff.changes[0].text_hunks
+        );
+    }
+
+    #[test]
+    fn numeric_replacements_remain_token_hunks() {
+        let old = document_with_texts("old", &["Alpha", "Payment is due in 30 days", "Omega"]);
+        let new = document_with_texts("new", &["Alpha", "Payment is due in 15 days", "Omega"]);
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert!(
+            diff.changes[0].text_hunks.iter().any(|hunk| {
+                hunk.kind == TextHunkKind::Replaced
+                    && hunk.granularity == Some(TextHunkGranularity::Token)
+                    && hunk.old_text.as_deref() == Some("30")
+                    && hunk.new_text.as_deref() == Some("15")
+            }),
+            "expected numeric token replacement hunk in {:?}",
+            diff.changes[0].text_hunks
         );
     }
 
