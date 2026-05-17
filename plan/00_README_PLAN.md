@@ -59,7 +59,9 @@ This makes the result useful for AI agents because agents can reason over exact 
 
 ## 3. MVP scope
 
-The MVP should support common digitally generated PDFs, not scanned/OCR-only PDFs.
+The MVP should support common digitally generated PDFs first. Scanned/OCR-only
+PDFs are supported only through the external OCR adapter path and should not be
+treated as broad visual-rendering compatibility.
 
 ### In scope for MVP
 
@@ -86,7 +88,8 @@ The MVP should support common digitally generated PDFs, not scanned/OCR-only PDF
 - Full JavaScript/action support.
 - Full encryption support.
 - Full Type 0/CID font coverage beyond common `/ToUnicode` cases and selected fallback encodings.
-- OCR for scanned documents.
+- Embedded OCR models or broad scanned-document compatibility beyond the
+  external OCR adapter.
 - Digital signature validation.
 - Full table reconstruction in arbitrary PDFs.
 - Editing/writing modified PDFs.

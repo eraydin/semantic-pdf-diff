@@ -14,13 +14,17 @@ or basic self-contained HTML reports.
 The CLI extraction path resolves page content streams across all parsed pages
 and applies simple font resource dictionaries with `/ToUnicode` CMap streams
 before building semantic text blocks. This covers the current sample PDFs that
-use Type0 fonts and hex `Tj`/`TJ` text. Broader font resource modeling, image
-payloads are compared by deterministic stream hash for object-level image
-changes. Native vector graphic comparison, annotation/link comparison, OCR,
-style classification, and table-cell semantics remain incremental compatibility
-work rather than public-alpha claims. Unsupported vector, annotation, and
-missing text-layer surfaces are emitted as stable diagnostics instead of being
-silently treated as fully supported semantic diffs.
+use Type0 fonts and hex `Tj`/`TJ` text. Image payloads are compared by
+deterministic stream hash for object-level image changes. When a PDF has no
+extractable text layer, the CLI can OCR supported high-contrast image XObjects
+by invoking an external OCR engine. Set `SPDFDIFF_OCR_COMMAND` to a command that
+accepts a generated PPM image path and writes text to stdout, or install
+`tesseract` so the CLI can call `tesseract <image> stdout --psm 6`. Native vector
+graphic comparison, annotation/link comparison, style classification, and
+table-cell semantics remain incremental compatibility work rather than
+public-alpha claims. Unsupported vector, annotation, and missing text-layer
+surfaces are emitted as stable diagnostics instead of being silently treated as
+fully supported semantic diffs.
 The diff engine also emits structured word-level text hunks for modified
 paragraphs and compares selected report-facing document surfaces, including
 image payloads, link/annotation dictionaries, embedded-file/FileSpec objects,
@@ -117,6 +121,18 @@ Return exit code `1` when changes are found:
 ```powershell
 .\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --fail-on-changes
 ```
+
+Use OCR for image-only/scanned PDFs:
+
+```powershell
+$env:SPDFDIFF_OCR_COMMAND = "tesseract"
+.\target\debug\spdfdiff.exe diff .\samples\scanned_document_v1.pdf .\samples\scanned_document_v2.pdf --format json
+```
+
+Custom OCR commands receive the generated image path as their first argument.
+The CLI also provides `SPDFDIFF_OCR_OBJECT_ID`, `SPDFDIFF_OCR_IMAGE_INDEX`, and
+`SPDFDIFF_OCR_IMAGE_HASH` environment variables to the OCR process for
+diagnostics or deterministic test adapters.
 
 ## Benchmark
 

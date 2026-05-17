@@ -19,5 +19,8 @@ Current command behavior:
 The CLI compares image XObject payloads and selected annotation, attachment,
 outline, and metadata objects by deterministic hash and emits object-level
 changes in diff reports. It still emits stable unsupported-feature diagnostics
-for native vector graphic comparison, incomplete annotation/link semantics, and
-image-only PDFs that require OCR.
+for native vector graphic comparison and incomplete annotation/link semantics.
+For image-only PDFs, the CLI can OCR supported high-contrast image XObjects with
+an external engine. Set `SPDFDIFF_OCR_COMMAND` to a command that accepts a PPM
+path and writes recognized text to stdout, or install `tesseract` for the
+default `tesseract <image> stdout --psm 6` adapter.
