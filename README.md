@@ -118,6 +118,24 @@ Run the synthetic 50-page benchmark gate:
 The benchmark report includes deterministic phase timing fields for parse,
 extract, semantic, diff, and report work, plus the target threshold result.
 
+## Versioning And Releases
+
+The repository uses `VERSION` as the next stable release version. All workspace
+crates share that version in source.
+
+Release automation is branch-based:
+
+- pushes to `dev` publish preview crates as
+  `VERSION-preview.<github-run-number>` and create a GitHub prerelease;
+- pushes to `main` publish the stable `VERSION` crates and create the GitHub
+  release marked as latest.
+
+The release workflow rewrites all workspace crate versions and internal
+dependency requirements before publishing. Preview releases use exact internal
+dependency requirements so every preview crate resolves against the matching
+preview set. Published crates are skipped if that exact version already exists,
+and crates.io new-crate rate limits are retried automatically.
+
 ## JSON Example
 
 For a PDF where one paragraph changes from `Hello` to `Hello world`, the JSON
