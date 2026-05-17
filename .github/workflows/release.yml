@@ -56,7 +56,9 @@ jobs:
           crate_is_published() {
             local crate="$1"
             local version="$2"
-            cargo search "${crate}" --limit 5 | grep -Eq "^${crate} = \"${version}\""
+            curl --fail --silent --show-error \
+              "https://crates.io/api/v1/crates/${crate}/${version}" \
+              > /dev/null
           }
 
           publish_crate() {
