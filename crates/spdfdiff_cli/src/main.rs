@@ -4,10 +4,11 @@ use pdf_content::{ContentOp, ContentProgram};
 use serde::Serialize;
 use spdfdiff_types::{
     ByteRange, ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, FileRole, ObjectId,
-    ParseConfig, PdfDiffError, Provenance, SemanticChange, SemanticNodeEvidence,
+    ParseConfig, PdfDiffError, Provenance, Rect, SemanticChange, SemanticNodeEvidence,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::time::Instant;
 
 #[derive(Debug, Parser)]
@@ -401,6 +402,41 @@ struct ExtractedTextRuns {
     diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OcrConfig {
+    command: String,
+    mode: OcrCommandMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OcrCommandMode {
+    Tesseract,
+    Plain,
+}
+
+impl OcrConfig {
+    fn from_environment() -> Self {
+        if let Some(command) = std::env::var_os("SPDFDIFF_OCR_COMMAND")
+            .and_then(|value| value.into_string().ok())
+            .filter(|value| !value.trim().is_empty())
+        {
+            return Self {
+                mode: if command.to_ascii_lowercase().contains("tesseract") {
+                    OcrCommandMode::Tesseract
+                } else {
+                    OcrCommandMode::Plain
+                },
+                command,
+            };
+        }
+
+        Self {
+            command: "tesseract".into(),
+            mode: OcrCommandMode::Tesseract,
+        }
+    }
+}
+
 fn extract_text_runs_from_document(
     document: &pdf_core::PdfDocument,
     config: ParseConfig,
@@ -457,6 +493,11 @@ fn extract_text_runs_from_document(
         );
         runs.extend(extraction.runs);
     }
+    if runs.is_empty() && document_has_token(document, "/Subtype /Image") {
+        let ocr = extract_ocr_text_runs_from_document(document, OcrConfig::from_environment());
+        diagnostics.extend(ocr.diagnostics);
+        runs.extend(ocr.runs);
+    }
     append_unsupported_feature_diagnostics(
         document,
         runs.is_empty(),
@@ -482,7 +523,7 @@ fn append_unsupported_feature_diagnostics(
     if document_has_token(document, "/Subtype /Image") && has_no_text_runs {
         diagnostics.push(Diagnostic::warning(
             "MISSING_TEXT_LAYER",
-            "no extractable text layer was found; OCR is not implemented",
+            "no extractable text layer was found and OCR did not produce text",
         ));
     }
 
@@ -502,6 +543,323 @@ fn append_unsupported_feature_diagnostics(
 
     append_font_diagnostics(document, diagnostics);
     append_tagged_pdf_diagnostics(document, diagnostics);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OcrImage {
+    index: usize,
+    object_id: ObjectId,
+    byte_range: ByteRange,
+    width: usize,
+    height: usize,
+    pixels_rgb: Vec<u8>,
+    hash: String,
+}
+
+fn extract_ocr_text_runs_from_document(
+    document: &pdf_core::PdfDocument,
+    config: OcrConfig,
+) -> ExtractedTextRuns {
+    let mut runs = Vec::new();
+    let mut diagnostics = Vec::new();
+    let images = ocr_images(document, &mut diagnostics);
+
+    for image in images {
+        match run_ocr_for_image(&image, &config) {
+            Ok(text) => {
+                let normalized = normalize_ocr_text(&text);
+                if normalized.is_empty() {
+                    continue;
+                }
+                diagnostics.push(Diagnostic::info(
+                    "OCR_TEXT_EXTRACTED",
+                    format!(
+                        "extracted OCR text from image XObject {} 0 R",
+                        image.object_id.number
+                    ),
+                ));
+                runs.push(ocr_text_run(&image, normalized));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                break;
+            }
+            Err(error) => diagnostics.push(Diagnostic::warning(
+                "OCR_ENGINE_FAILED",
+                format!(
+                    "OCR engine failed for image XObject {} 0 R: {error}",
+                    image.object_id.number
+                ),
+            )),
+        }
+    }
+
+    ExtractedTextRuns { runs, diagnostics }
+}
+
+fn ocr_images(
+    document: &pdf_core::PdfDocument,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<OcrImage> {
+    let soft_masks = soft_mask_object_ids(document);
+    let mut images = Vec::new();
+    for object in document
+        .objects
+        .iter()
+        .filter(|object| object.body.contains("/Subtype /Image"))
+    {
+        if soft_masks.contains(&object.id) {
+            continue;
+        }
+        let index = images.len();
+        match ocr_image_from_object(index, object) {
+            Ok(Some(image)) => images.push(image),
+            Ok(None) => {}
+            Err(message) => diagnostics.push(Diagnostic::warning(
+                "OCR_IMAGE_UNSUPPORTED",
+                format!(
+                    "image XObject {} 0 R is not supported for OCR extraction: {message}",
+                    object.id.number
+                ),
+            )),
+        }
+    }
+    images
+}
+
+fn soft_mask_object_ids(document: &pdf_core::PdfDocument) -> Vec<ObjectId> {
+    document
+        .objects
+        .iter()
+        .filter_map(|object| reference_after_key(&object.body, "SMask"))
+        .collect()
+}
+
+fn ocr_image_from_object(
+    index: usize,
+    object: &pdf_core::PdfObject,
+) -> Result<Option<OcrImage>, String> {
+    let Some(stream) = &object.stream else {
+        return Ok(None);
+    };
+    if !stream.decoded {
+        return Err("stream bytes were not decoded".into());
+    }
+
+    let width =
+        pdf_usize_after_name(&object.body, "Width").ok_or_else(|| "missing /Width".to_owned())?;
+    let height =
+        pdf_usize_after_name(&object.body, "Height").ok_or_else(|| "missing /Height".to_owned())?;
+    let bits_per_component = pdf_usize_after_name(&object.body, "BitsPerComponent")
+        .ok_or_else(|| "missing /BitsPerComponent".to_owned())?;
+    if bits_per_component != 8 {
+        return Err(format!(
+            "BitsPerComponent {bits_per_component} is not supported"
+        ));
+    }
+
+    let color_space = value_after_pdf_name(&object.body, "ColorSpace")
+        .ok_or_else(|| "missing /ColorSpace".to_owned())?;
+    let components = match color_space.as_str() {
+        "DeviceRGB" => 3,
+        "DeviceGray" => 1,
+        other => return Err(format!("ColorSpace /{other} is not supported")),
+    };
+
+    let columns = pdf_usize_after_name(&object.body, "Columns").unwrap_or(width);
+    let colors = pdf_usize_after_name(&object.body, "Colors").unwrap_or(components);
+    if columns != width || colors != components {
+        return Err("DecodeParms columns/colors do not match image dimensions".into());
+    }
+
+    let predictor = pdf_usize_after_name(&object.body, "Predictor").unwrap_or(1);
+    let samples = decode_image_samples(&stream.bytes, width, height, components, predictor)?;
+    let pixels_rgb = if components == 3 {
+        samples
+    } else {
+        samples
+            .into_iter()
+            .flat_map(|sample| [sample, sample, sample])
+            .collect()
+    };
+    let hash = stable_hash(&pixels_rgb);
+
+    Ok(Some(OcrImage {
+        index,
+        object_id: object.id,
+        byte_range: stream.byte_range,
+        width,
+        height,
+        pixels_rgb,
+        hash,
+    }))
+}
+
+fn decode_image_samples(
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    components: usize,
+    predictor: usize,
+) -> Result<Vec<u8>, String> {
+    let row_len = width
+        .checked_mul(components)
+        .ok_or_else(|| "image row size overflowed".to_owned())?;
+    let expected = row_len
+        .checked_mul(height)
+        .ok_or_else(|| "image size overflowed".to_owned())?;
+
+    if predictor == 1 {
+        if bytes.len() < expected {
+            return Err(format!(
+                "decoded stream has {} bytes but expected at least {expected}",
+                bytes.len()
+            ));
+        }
+        return Ok(bytes[..expected].to_vec());
+    }
+
+    if !(10..=15).contains(&predictor) {
+        return Err(format!("Predictor {predictor} is not supported"));
+    }
+
+    let encoded_row_len = row_len
+        .checked_add(1)
+        .ok_or_else(|| "PNG predictor row size overflowed".to_owned())?;
+    let expected_encoded = encoded_row_len
+        .checked_mul(height)
+        .ok_or_else(|| "PNG predictor image size overflowed".to_owned())?;
+    if bytes.len() < expected_encoded {
+        return Err(format!(
+            "decoded stream has {} bytes but expected at least {expected_encoded}",
+            bytes.len()
+        ));
+    }
+
+    let mut output = vec![0; expected];
+    for y in 0..height {
+        let input_start = y * encoded_row_len;
+        let filter = bytes[input_start];
+        let input = &bytes[input_start + 1..input_start + 1 + row_len];
+        let row_start = y * row_len;
+        for x in 0..row_len {
+            let left = if x >= components {
+                output[row_start + x - components]
+            } else {
+                0
+            };
+            let up = if y > 0 {
+                output[row_start + x - row_len]
+            } else {
+                0
+            };
+            let up_left = if y > 0 && x >= components {
+                output[row_start + x - row_len - components]
+            } else {
+                0
+            };
+            let predictor_byte = match filter {
+                0 => 0,
+                1 => left,
+                2 => up,
+                3 => ((u16::from(left) + u16::from(up)) / 2) as u8,
+                4 => paeth_predictor(left, up, up_left),
+                other => return Err(format!("PNG row filter {other} is not supported")),
+            };
+            output[row_start + x] = input[x].wrapping_add(predictor_byte);
+        }
+    }
+
+    Ok(output)
+}
+
+fn paeth_predictor(left: u8, up: u8, up_left: u8) -> u8 {
+    let left = i32::from(left);
+    let up = i32::from(up);
+    let up_left = i32::from(up_left);
+    let estimate = left + up - up_left;
+    let left_distance = (estimate - left).abs();
+    let up_distance = (estimate - up).abs();
+    let up_left_distance = (estimate - up_left).abs();
+    if left_distance <= up_distance && left_distance <= up_left_distance {
+        left as u8
+    } else if up_distance <= up_left_distance {
+        up as u8
+    } else {
+        up_left as u8
+    }
+}
+
+fn run_ocr_for_image(image: &OcrImage, config: &OcrConfig) -> std::io::Result<String> {
+    let path = write_temp_ppm(image)?;
+    let mut command = ProcessCommand::new(&config.command);
+    match config.mode {
+        OcrCommandMode::Tesseract => {
+            command.arg(&path).arg("stdout").arg("--psm").arg("6");
+        }
+        OcrCommandMode::Plain => {
+            command.arg(&path);
+        }
+    }
+    command
+        .env("SPDFDIFF_OCR_OBJECT_ID", image.object_id.number.to_string())
+        .env("SPDFDIFF_OCR_IMAGE_INDEX", image.index.to_string())
+        .env("SPDFDIFF_OCR_IMAGE_HASH", &image.hash);
+    let output = command.output();
+    let _ = std::fs::remove_file(&path);
+    let output = output?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(std::io::Error::other(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
+    }
+}
+
+fn write_temp_ppm(image: &OcrImage) -> std::io::Result<PathBuf> {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "spdfdiff-ocr-{}-{}-{}.ppm",
+        std::process::id(),
+        image.object_id.number,
+        image.hash
+    ));
+    let mut bytes = format!("P6\n{} {}\n255\n", image.width, image.height).into_bytes();
+    bytes.extend_from_slice(&image.pixels_rgb);
+    std::fs::write(&path, bytes)?;
+    Ok(path)
+}
+
+fn ocr_text_run(image: &OcrImage, text: String) -> pdf_text::TextRun {
+    pdf_text::TextRun {
+        id: format!("ocr-image-{:04}", image.index),
+        text: text.clone(),
+        normalized_text: text,
+        glyphs: Vec::new(),
+        bbox: Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: image.width as f32,
+            y1: image.height as f32,
+        },
+        source: Provenance {
+            file_role: None,
+            object_id: Some(image.object_id),
+            page_index: Some(0),
+            stream_object_id: Some(image.object_id),
+            content_op_index: None,
+            byte_range: Some(image.byte_range),
+        },
+        marked_content: None,
+    }
+}
+
+fn normalize_ocr_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn pdf_usize_after_name(body: &str, key: &str) -> Option<usize> {
+    value_after_pdf_name(body, key)?.parse().ok()
 }
 
 fn append_font_diagnostics(document: &pdf_core::PdfDocument, diagnostics: &mut Vec<Diagnostic>) {

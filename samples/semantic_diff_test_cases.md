@@ -311,8 +311,11 @@ operators rather than raster image XObjects.
 - The visible raster content differs because one sentence inside the scanned
   image changed.
 - There are no text operators or font dictionaries to extract.
-- Current text-layer-only behavior should report a diagnostic such as missing
-  text layer; full semantic comparison would require OCR.
+- Without an OCR engine available, current behavior should report a diagnostic
+  such as missing text layer.
+- With `SPDFDIFF_OCR_COMMAND` or `tesseract` available, `extract` should emit OCR
+  text with image-object provenance and `diff` should compare the OCR-derived
+  text instead of reporting only `MISSING_TEXT_LAYER`.
 
 ## 18. Layered Redaction And Hidden Text
 

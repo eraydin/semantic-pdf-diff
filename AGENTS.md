@@ -21,7 +21,9 @@ minimal_old.pdf + minimal_new.pdf
 ## Non-Negotiable Constraints
 
 - Do not use third-party PDF parser/rendering libraries in core crates.
-- Do not start with a GUI, PDF editor, full renderer, OCR path, or visual diff mode.
+- Do not start with a GUI, PDF editor, full renderer, or visual diff mode.
+- Keep OCR as an external adapter path; do not embed a large OCR model or make
+  OCR a substitute for parser/content diagnostics.
 - Do not hide unsupported PDF features; emit stable diagnostics.
 - Do not discard provenance when data crosses crate boundaries.
 - Do not introduce nondeterministic report output.

@@ -117,6 +117,16 @@ Add optional page-render/pixel comparison for unsupported or ambiguous cases.
 
 The engine can say: “semantic text changed here” versus “visual-only change here” versus “unsupported scanned content.”
 
+### Current implementation
+
+Image-only PDFs can use an external OCR adapter for supported high-contrast
+image XObjects. The CLI writes deterministic PPM images for `/DeviceRGB` or
+`/DeviceGray` 8-bit image streams, handles PNG prediction used by the sample
+scanned PDFs, and invokes `SPDFDIFF_OCR_COMMAND <image>` or
+`tesseract <image> stdout --psm 6`. OCR text is fed into semantic extraction
+with image-object provenance. If no OCR engine produces text, the CLI keeps
+emitting stable missing-text-layer diagnostics.
+
 ## Phase 5 — AI-native review layer
 
 ### Objective
@@ -186,7 +196,7 @@ The engine can power CI checks, web apps, desktop PDF tools, and AI document pip
 | Tagged PDF | High | High | P1/P2 |
 | Table cell diff | Medium/High | High | P2 |
 | Visual fallback | Medium | High | P3 |
-| OCR | Medium | Very High | Later |
+| OCR external adapter | Medium | High | P2 |
 | PDF editing | High | Very High | Separate product line |
 
 ## Recommended MVP release name

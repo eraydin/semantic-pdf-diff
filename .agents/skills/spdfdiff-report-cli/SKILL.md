@@ -29,7 +29,9 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 - CLI extraction currently walks parsed page content across all pages. Diff
   reports compare image XObject payloads by deterministic stream hash and should
   emit stable unsupported-feature diagnostics for native vector graphic
-  comparison, annotation/link comparison, and image-only PDFs that require OCR.
+  comparison and annotation/link comparison. Image-only PDFs can use the
+  external OCR adapter when `SPDFDIFF_OCR_COMMAND` or `tesseract` is available;
+  OCR text must preserve image-object provenance and deterministic diagnostics.
 - Inspect and extract JSON reports include simple tagged-structure and
   parent-tree summaries when `pdf_core` parses `/StructTreeRoot`; mapped MCID
   text can now produce tagged semantic nodes, while broader tagged-PDF coverage

@@ -571,6 +571,58 @@ fn extract_command_completes_against_real_sample_pdf_with_readable_content() {
 }
 
 #[test]
+fn extract_command_uses_configured_ocr_for_scanned_sample_pdf() {
+    let fixture = TestFixture::new("ocr_scanned_sample");
+    let ocr_command = fixture.write_mock_ocr_command();
+    let output = run_spdfdiff_with_env(
+        [
+            "extract",
+            path_arg(&real_sample_pdf("scanned_document_v1.pdf")).as_str(),
+            "--format",
+            "md",
+        ],
+        &[("SPDFDIFF_OCR_COMMAND", path_arg(&ocr_command).as_str())],
+    );
+
+    assert_success(&output);
+    let markdown =
+        String::from_utf8(output.stdout).expect("extract markdown should be valid UTF-8");
+    assert_readable_output_contains_all(&markdown, &["Mock OCR text for image"]);
+}
+
+#[test]
+fn diff_command_uses_configured_ocr_for_scanned_sample_pdf() {
+    let fixture = TestFixture::new("ocr_scanned_diff");
+    let ocr_command = fixture.write_mock_ocr_command();
+    let output_path = fixture.path("scanned-ocr-diff.json");
+
+    let output = run_spdfdiff_with_env(
+        [
+            "diff",
+            path_arg(&real_sample_pdf("scanned_document_v1.pdf")).as_str(),
+            path_arg(&real_sample_pdf("scanned_document_v2.pdf")).as_str(),
+            "--format",
+            "json",
+            "--output",
+            path_arg(&output_path).as_str(),
+        ],
+        &[("SPDFDIFF_OCR_COMMAND", path_arg(&ocr_command).as_str())],
+    );
+
+    assert_success(&output);
+    let report = read_json(&output_path);
+    assert!(report["summary"]["modified"].as_u64().unwrap_or_default() >= 1);
+    assert_diagnostic_code_absent(&report, "MISSING_TEXT_LAYER");
+    assert!(
+        report["diagnostics"]
+            .as_array()
+            .expect("diagnostics should be an array")
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "OCR_TEXT_EXTRACTED")
+    );
+}
+
+#[test]
 fn html_outputs_complete_against_real_sample_pdfs() {
     let fixture = TestFixture::new("real_sample_html_outputs");
 
@@ -1005,6 +1057,15 @@ fn run_spdfdiff<const N: usize>(args: [&str; N]) -> Output {
         .expect("spdfdiff process should start")
 }
 
+fn run_spdfdiff_with_env<const N: usize>(args: [&str; N], envs: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_spdfdiff"));
+    command.args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.output().expect("spdfdiff process should start")
+}
+
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
@@ -1180,6 +1241,36 @@ impl TestFixture {
         let path = self.path(name);
         fs::write(&path, minimal_pdf(text)).expect("PDF fixture should be written");
         path
+    }
+
+    fn write_mock_ocr_command(&self) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let path = self.path("mock-ocr.cmd");
+            fs::write(
+                &path,
+                "@echo off\r\necho Mock OCR text for image %SPDFDIFF_OCR_IMAGE_INDEX% %SPDFDIFF_OCR_IMAGE_HASH%\r\n",
+            )
+            .expect("mock OCR command should be written");
+            path
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = self.path("mock-ocr.sh");
+            fs::write(
+                &path,
+                "#!/bin/sh\nprintf 'Mock OCR text for image %s %s\\n' \"$SPDFDIFF_OCR_IMAGE_INDEX\" \"$SPDFDIFF_OCR_IMAGE_HASH\"\n",
+            )
+            .expect("mock OCR command should be written");
+            let mut permissions = fs::metadata(&path)
+                .expect("mock OCR command metadata should be readable")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("mock OCR command should be executable");
+            path
+        }
     }
 }
 
