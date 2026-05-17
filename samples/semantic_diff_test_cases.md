@@ -10,6 +10,33 @@ layout, table, image, metadata, annotation, form, vector graphic, and scanned
 document surfaces. Some scenarios describe capabilities that are intentionally
 diagnostic-backed or deferred by the current CLI rather than fully implemented.
 
+## CLI Report Format Coverage
+
+Every real sample pair in this file should continue to run through:
+
+```powershell
+.\target\debug\spdfdiff.exe diff .\samples\<old>.pdf .\samples\<new>.pdf --format json
+.\target\debug\spdfdiff.exe diff .\samples\<old>.pdf .\samples\<new>.pdf --format md
+.\target\debug\spdfdiff.exe diff .\samples\<old>.pdf .\samples\<new>.pdf --format html
+.\target\debug\spdfdiff.exe diff .\samples\<old>.pdf .\samples\<new>.pdf --format ai-json
+```
+
+The `ai-json` report is expected to be valid JSON and include:
+
+- `schema_version` and `source_schema_version`;
+- `summary.total_changes`, `diagnostic_count`, `low_confidence_change_count`,
+  and `unsupported_surface_count`;
+- `question_hints` for obligation, payment-term, layout-only, low-confidence,
+  and unsupported-surface review questions;
+- `review_items` with deterministic `change_id`, `kind`, neutral candidate
+  `tags`, `confidence_bucket`, explanation text, old/new semantic node IDs when
+  available, text hunks, page/bbox evidence, and provenance;
+- `diagnostic_summary` grouped by stable diagnostic code.
+
+The AI review report must remain deterministic and evidence-preserving. It is a
+prompt-ready review aid, not an embedded LLM result and not a legal or business
+judgement layer.
+
 ## 1. Basic Text And Versioning
 
 **Files:** `document_v1.pdf`, `document_v2.pdf`
@@ -59,6 +86,10 @@ table data changes, and style changes in a legal-contract-like document.
 - The table width, alignment, and border styling change.
 - Liability wording changes from "total amount" to "50% of the total amount" and
   is visually emphasized with bold/orange/tinted styling.
+- `diff --format ai-json` should surface payment/amount and date/duration
+  candidate tags for the visible contract revisions, include question hints for
+  payment-term and obligation review, and preserve old/new evidence for the
+  contract text changes.
 
 ## 4. Image Layout And Wrapping Variations
 
@@ -79,6 +110,10 @@ text wrapping, and image additions.
   larger size, right alignment, dashed container, and background color.
 - A new yellow ISO certification badge is added in version 2.
 - Header border color changes from gray to green.
+- `diff --format ai-json` should remain valid even when the sample includes
+  image payload changes, layout-only changes, and unsupported/deferred visual
+  surfaces; relevant question hints should identify layout-only and unsupported
+  surface evidence without treating them as legal/business conclusions.
 
 ## 5. Complex Pagination, Math And Nested Lists
 
