@@ -57,6 +57,7 @@ jobs:
             local crate="$1"
             local version="$2"
             curl --fail --silent --show-error \
+              --header "User-Agent: semantic-pdf-diff-release (https://github.com/eraydin/semantic-pdf-diff)" \
               "https://crates.io/api/v1/crates/${crate}/${version}" \
               > /dev/null
           }
