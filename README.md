@@ -123,12 +123,12 @@ extract, semantic, diff, and report work, plus the target threshold result.
 The repository uses `VERSION` as the next stable release version. All workspace
 crates share that version in source.
 
-Release automation is branch-based:
+Release automation is manually triggered and branch-based:
 
-- pushes to `dev` publish preview crates as
+- running the `Release` workflow against `dev` publishes preview crates as
   `VERSION-preview.<github-run-number>` and create a GitHub prerelease;
-- pushes to `main` publish the stable `VERSION` crates and create the GitHub
-  release marked as latest.
+- running the `Release` workflow against `main` publishes the stable `VERSION`
+  crates and creates the GitHub release marked as latest.
 
 The release workflow rewrites all workspace crate versions and internal
 dependency requirements before publishing. Preview releases use exact internal
