@@ -29,6 +29,9 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
   use deterministic fallback matching instead of allocating unbounded matrices.
 - Detect moved content separately from delete plus insert when confidence supports it.
 - Keep layout-only changes separate from text modifications.
+- Emit deterministic text hunks for modified nodes. Keep numeric value changes at
+  token granularity, and use character-level fallback only for small non-numeric
+  word replacements where it adds useful localized evidence.
 - The default engine classifier must never emit `Critical`; reserve that for caller-provided classifiers.
 - Keep change ordering stable and snapshot-friendly.
 

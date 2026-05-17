@@ -51,8 +51,8 @@ th{background:#f0f4f8}.change{margin:16px 0;border:1px solid #d9e2ec}.change h3{
                 output.push_str("<div class=\"hunks\"><strong>Text hunks</strong><br>");
                 for hunk in &change.text_hunks {
                     output.push_str(&format!(
-                        "<code>{:?}: {} -> {}</code>",
-                        hunk.kind,
+                        "<code>{}: {} -> {}</code>",
+                        escape_html(&hunk_label(hunk)),
                         escape_html(hunk.old_text.as_deref().unwrap_or("")),
                         escape_html(hunk.new_text.as_deref().unwrap_or(""))
                     ));
@@ -106,8 +106,8 @@ pub fn to_markdown(document: &DiffDocument) -> String {
                 output.push_str("  - Text hunks:");
                 for hunk in &change.text_hunks {
                     output.push_str(&format!(
-                        " `{:?}` \"{}\" -> \"{}\"",
-                        hunk.kind,
+                        " `{}` \"{}\" -> \"{}\"",
+                        hunk_label(hunk),
                         hunk.old_text.as_deref().unwrap_or_default(),
                         hunk.new_text.as_deref().unwrap_or_default()
                     ));
@@ -184,6 +184,13 @@ fn push_evidence_line(
     output.push('\n');
 }
 
+fn hunk_label(hunk: &spdfdiff_types::TextHunk) -> String {
+    match &hunk.granularity {
+        Some(granularity) => format!("{:?}/{:?}", hunk.kind, granularity),
+        None => format!("{:?}", hunk.kind),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +223,9 @@ mod tests {
             }),
             text_hunks: vec![TextHunk {
                 kind: TextHunkKind::Replaced,
+                granularity: None,
+                old_range: None,
+                new_range: None,
                 old_text: Some("10".into()),
                 new_text: Some("12".into()),
             }],

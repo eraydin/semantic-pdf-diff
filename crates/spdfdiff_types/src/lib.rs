@@ -257,9 +257,34 @@ pub enum TextHunkKind {
     Replaced,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl TextRange {
+    #[must_use]
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextHunkGranularity {
+    Token,
+    Character,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextHunk {
     pub kind: TextHunkKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<TextHunkGranularity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_range: Option<TextRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_range: Option<TextRange>,
     pub old_text: Option<String>,
     pub new_text: Option<String>,
 }
