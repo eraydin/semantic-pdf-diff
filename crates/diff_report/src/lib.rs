@@ -1,8 +1,58 @@
-use spdfdiff_types::{DiffDocument, PdfDiffError};
+use std::collections::{BTreeMap, BTreeSet};
+
+use spdfdiff_types::{
+    AiConfidenceBucket, AiDiagnosticCount, AiEvidenceBundle, AiReviewAnswer, AiReviewItem,
+    AiReviewQuestionHint, AiReviewReport, AiReviewSummary, AiReviewTag, ChangeKind, DiffDocument,
+    PdfDiffError, SemanticChange,
+};
 
 pub fn to_json(document: &DiffDocument) -> Result<String, PdfDiffError> {
     serde_json::to_string_pretty(document)
         .map_err(|error| PdfDiffError::InternalInvariant(error.to_string()))
+}
+
+pub fn to_ai_review_json(document: &DiffDocument) -> Result<String, PdfDiffError> {
+    serde_json::to_string_pretty(&build_ai_review_report(document))
+        .map_err(|error| PdfDiffError::InternalInvariant(error.to_string()))
+}
+
+#[must_use]
+pub fn build_ai_review_report(document: &DiffDocument) -> AiReviewReport {
+    let review_items = document
+        .changes
+        .iter()
+        .map(build_ai_review_item)
+        .collect::<Vec<_>>();
+    let unsupported_surface_count = document
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.starts_with("UNSUPPORTED_"))
+        .count();
+    let low_confidence_change_count = review_items
+        .iter()
+        .filter(|item| item.confidence_bucket == AiConfidenceBucket::Low)
+        .count();
+
+    AiReviewReport {
+        schema_version: "0.1.0".into(),
+        source_schema_version: document.schema_version.clone(),
+        old_fingerprint: document.old_fingerprint.clone(),
+        new_fingerprint: document.new_fingerprint.clone(),
+        summary: AiReviewSummary {
+            total_changes: document.changes.len(),
+            inserted: document.summary.inserted,
+            deleted: document.summary.deleted,
+            modified: document.summary.modified,
+            moved: document.summary.moved,
+            layout_changed: document.summary.layout_changed,
+            diagnostic_count: document.diagnostics.len(),
+            low_confidence_change_count,
+            unsupported_surface_count,
+        },
+        question_hints: build_question_hints(&review_items, unsupported_surface_count),
+        review_items,
+        diagnostic_summary: diagnostic_summary(document),
+    }
 }
 
 #[must_use]
@@ -78,6 +128,365 @@ th{background:#f0f4f8}.change{margin:16px 0;border:1px solid #d9e2ec}.change h3{
     }
     output.push_str("</body></html>");
     output
+}
+
+fn build_ai_review_item(change: &SemanticChange) -> AiReviewItem {
+    let tags = review_tags(change);
+    AiReviewItem {
+        change_id: change.id.clone(),
+        kind: change.kind.clone(),
+        severity: change.severity,
+        confidence: change.confidence,
+        confidence_bucket: confidence_bucket(change.confidence),
+        explanation: review_explanation(change, &tags),
+        evidence: evidence_bundle(change),
+        tags,
+    }
+}
+
+fn confidence_bucket(confidence: f32) -> AiConfidenceBucket {
+    if confidence >= 0.9 {
+        AiConfidenceBucket::High
+    } else if confidence >= 0.75 {
+        AiConfidenceBucket::Medium
+    } else {
+        AiConfidenceBucket::Low
+    }
+}
+
+fn review_tags(change: &SemanticChange) -> Vec<AiReviewTag> {
+    let mut tags = BTreeSet::new();
+    match change.kind {
+        ChangeKind::Inserted => {
+            tags.insert(AiReviewTag::ContentInserted);
+        }
+        ChangeKind::Deleted => {
+            tags.insert(AiReviewTag::ContentDeleted);
+        }
+        ChangeKind::Modified => {
+            tags.insert(AiReviewTag::TextChanged);
+        }
+        ChangeKind::Moved => {
+            tags.insert(AiReviewTag::ContentMoved);
+        }
+        ChangeKind::LayoutChanged => {
+            tags.insert(AiReviewTag::LayoutOnly);
+        }
+        ChangeKind::AnnotationChanged => {
+            tags.insert(AiReviewTag::AnnotationOrLinkChanged);
+        }
+        ChangeKind::FormFieldChanged => {
+            tags.insert(AiReviewTag::FormFieldChanged);
+        }
+        ChangeKind::MetadataChanged => {
+            tags.insert(AiReviewTag::MetadataChanged);
+        }
+        ChangeKind::ObjectChanged | ChangeKind::StyleChanged => {
+            tags.insert(AiReviewTag::VisualSurfaceChanged);
+        }
+        ChangeKind::Unknown => {}
+    }
+
+    let text = change_text(change);
+    let lower_text = text.to_lowercase();
+    if has_any(
+        &lower_text,
+        &[
+            "payment",
+            "invoice",
+            "amount",
+            "fee",
+            "price",
+            "revenue",
+            "total",
+            "usd",
+            "$",
+            "maintenance",
+            "schedule",
+        ],
+    ) {
+        tags.insert(AiReviewTag::PaymentTermsCandidate);
+    }
+    if has_any(
+        &lower_text,
+        &[
+            "day", "days", "date", "term", "notice", "year", "annual", "month", "weekly",
+        ],
+    ) {
+        tags.insert(AiReviewTag::DateOrDurationCandidate);
+    }
+    if has_any(
+        &lower_text,
+        &[
+            "corp",
+            "llc",
+            "inc",
+            "client",
+            "vendor",
+            "party",
+            "contractor",
+        ],
+    ) {
+        tags.insert(AiReviewTag::PartyNameCandidate);
+    }
+    if change.text_hunks.iter().any(hunk_has_digit_change) {
+        tags.insert(AiReviewTag::NumericValueChanged);
+    }
+    if change.confidence < 0.75 {
+        tags.insert(AiReviewTag::LowConfidence);
+    }
+    if change.reason.contains("UNSUPPORTED_") {
+        tags.insert(AiReviewTag::UnsupportedSurface);
+    }
+
+    tags.into_iter().collect()
+}
+
+fn hunk_has_digit_change(hunk: &spdfdiff_types::TextHunk) -> bool {
+    hunk.old_text
+        .as_deref()
+        .is_some_and(|text| text.chars().any(|character| character.is_ascii_digit()))
+        || hunk
+            .new_text
+            .as_deref()
+            .is_some_and(|text| text.chars().any(|character| character.is_ascii_digit()))
+}
+
+fn has_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
+}
+
+fn change_text(change: &SemanticChange) -> String {
+    [
+        change
+            .old_node
+            .as_ref()
+            .and_then(|node| node.text.as_deref())
+            .unwrap_or_default(),
+        change
+            .new_node
+            .as_ref()
+            .and_then(|node| node.text.as_deref())
+            .unwrap_or_default(),
+    ]
+    .join(" ")
+}
+
+fn review_explanation(change: &SemanticChange, tags: &[AiReviewTag]) -> String {
+    let mut parts = vec![match change.kind {
+        ChangeKind::Inserted => "Content was inserted.".to_owned(),
+        ChangeKind::Deleted => "Content was deleted.".to_owned(),
+        ChangeKind::Modified => "Text changed between matched semantic nodes.".to_owned(),
+        ChangeKind::Moved => {
+            "Content appears to have moved without a primary text change.".to_owned()
+        }
+        ChangeKind::LayoutChanged => {
+            "Layout changed while text evidence stayed comparable.".to_owned()
+        }
+        ChangeKind::StyleChanged => "A style-facing surface changed.".to_owned(),
+        ChangeKind::MetadataChanged => "A metadata-facing surface changed.".to_owned(),
+        ChangeKind::AnnotationChanged => "An annotation or link surface changed.".to_owned(),
+        ChangeKind::FormFieldChanged => "A form-field surface changed.".to_owned(),
+        ChangeKind::ObjectChanged => "A report-facing PDF object surface changed.".to_owned(),
+        ChangeKind::Unknown => "A change was detected but not classified further.".to_owned(),
+    }];
+
+    if tags.contains(&AiReviewTag::PaymentTermsCandidate) {
+        parts.push("Payment or amount terms are mentioned; treat this as a review candidate, not a legal conclusion.".into());
+    }
+    if tags.contains(&AiReviewTag::DateOrDurationCandidate) {
+        parts.push("Date, duration, or notice language is mentioned.".into());
+    }
+    if tags.contains(&AiReviewTag::LowConfidence) {
+        parts.push("Confidence is low; inspect extraction diagnostics and source evidence.".into());
+    }
+    parts.push(change.reason.clone());
+    parts.join(" ")
+}
+
+fn evidence_bundle(change: &SemanticChange) -> AiEvidenceBundle {
+    let mut provenance = Vec::new();
+    if let Some(old_node) = &change.old_node {
+        provenance.extend(old_node.source.clone());
+    }
+    if let Some(new_node) = &change.new_node {
+        provenance.extend(new_node.source.clone());
+    }
+
+    AiEvidenceBundle {
+        old_node_id: change.old_node.as_ref().map(|node| node.node_id.clone()),
+        new_node_id: change.new_node.as_ref().map(|node| node.node_id.clone()),
+        section_hint: section_hint(change),
+        old_page: change.old_node.as_ref().map(|node| node.page),
+        new_page: change.new_node.as_ref().map(|node| node.page),
+        old_bbox: change.old_node.as_ref().and_then(|node| node.bbox),
+        new_bbox: change.new_node.as_ref().and_then(|node| node.bbox),
+        old_text: change.old_node.as_ref().and_then(|node| node.text.clone()),
+        new_text: change.new_node.as_ref().and_then(|node| node.text.clone()),
+        text_hunks: change.text_hunks.clone(),
+        provenance,
+    }
+}
+
+fn section_hint(change: &SemanticChange) -> Option<String> {
+    change
+        .new_node
+        .as_ref()
+        .and_then(|node| node.text.as_deref())
+        .and_then(section_hint_from_text)
+        .or_else(|| {
+            change
+                .old_node
+                .as_ref()
+                .and_then(|node| node.text.as_deref())
+                .and_then(section_hint_from_text)
+        })
+}
+
+fn section_hint_from_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    if lower.starts_with("section ") || lower.starts_with("clause ") {
+        return Some(first_words(trimmed, 10));
+    }
+
+    let first_token = trimmed.split_whitespace().next().unwrap_or_default();
+    let looks_numbered = first_token
+        .chars()
+        .any(|character| character.is_ascii_digit())
+        && (first_token.ends_with('.') || first_token.ends_with(')') || first_token.contains('.'));
+    if looks_numbered {
+        Some(first_words(trimmed, 10))
+    } else {
+        None
+    }
+}
+
+fn first_words(text: &str, limit: usize) -> String {
+    let mut value = text
+        .split_whitespace()
+        .take(limit)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if value.len() > 96 {
+        value.truncate(96);
+        value = value.trim_end().to_owned();
+    }
+    value
+}
+
+fn build_question_hints(
+    review_items: &[AiReviewItem],
+    unsupported_surface_count: usize,
+) -> Vec<AiReviewQuestionHint> {
+    vec![
+        question_hint(
+            "Which contractual obligations changed?",
+            review_items,
+            |item| {
+                item.tags.iter().any(|tag| {
+                    matches!(
+                        tag,
+                        AiReviewTag::TextChanged
+                            | AiReviewTag::ContentInserted
+                            | AiReviewTag::ContentDeleted
+                            | AiReviewTag::ContentMoved
+                    )
+                }) && change_text_mentions_obligation(&item.evidence)
+            },
+            "Candidate obligation changes are based on obligation-like keywords and semantic change evidence.",
+        ),
+        question_hint(
+            "Were payment terms modified?",
+            review_items,
+            |item| item.tags.contains(&AiReviewTag::PaymentTermsCandidate),
+            "Payment-term candidates are based on payment, invoice, amount, or currency language in changed evidence.",
+        ),
+        question_hint(
+            "Did layout change without text changing?",
+            review_items,
+            |item| item.tags.contains(&AiReviewTag::LayoutOnly),
+            "Layout-only answers use changes classified separately from text modifications.",
+        ),
+        question_hint(
+            "Which changes are low-confidence because extraction was incomplete?",
+            review_items,
+            |item| item.tags.contains(&AiReviewTag::LowConfidence),
+            "Low-confidence answers use the engine confidence bucket and should be cross-checked with diagnostics.",
+        ),
+        AiReviewQuestionHint {
+            question: "Were unsupported PDF surfaces encountered?".into(),
+            answer: if unsupported_surface_count > 0 {
+                AiReviewAnswer::Yes
+            } else {
+                AiReviewAnswer::No
+            },
+            supporting_change_ids: Vec::new(),
+            rationale: "Unsupported surfaces are counted from stable diagnostic codes that start with UNSUPPORTED_.".into(),
+        },
+    ]
+}
+
+fn question_hint(
+    question: &str,
+    review_items: &[AiReviewItem],
+    predicate: impl Fn(&AiReviewItem) -> bool,
+    rationale: &str,
+) -> AiReviewQuestionHint {
+    let supporting_change_ids = review_items
+        .iter()
+        .filter(|item| predicate(item))
+        .map(|item| item.change_id.clone())
+        .collect::<Vec<_>>();
+    AiReviewQuestionHint {
+        question: question.into(),
+        answer: if supporting_change_ids.is_empty() {
+            AiReviewAnswer::No
+        } else {
+            AiReviewAnswer::Yes
+        },
+        supporting_change_ids,
+        rationale: rationale.into(),
+    }
+}
+
+fn change_text_mentions_obligation(evidence: &AiEvidenceBundle) -> bool {
+    let text = [
+        evidence.old_text.as_deref().unwrap_or_default(),
+        evidence.new_text.as_deref().unwrap_or_default(),
+    ]
+    .join(" ")
+    .to_lowercase();
+    has_any(
+        &text,
+        &[
+            "shall",
+            "must",
+            "required",
+            "obligation",
+            "liable",
+            "liability",
+            "indemnification",
+            "termination",
+            "notice",
+            "payment",
+        ],
+    )
+}
+
+fn diagnostic_summary(document: &DiffDocument) -> Vec<AiDiagnosticCount> {
+    let mut counts = BTreeMap::new();
+    for diagnostic in &document.diagnostics {
+        *counts.entry(diagnostic.code.clone()).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(code, count)| AiDiagnosticCount { code, count })
+        .collect()
 }
 
 #[must_use]
@@ -277,5 +686,77 @@ mod tests {
         assert!(html.contains("Annual revenue was 12 million."));
         assert!(!html.contains("http://"));
         assert!(!html.contains("https://"));
+    }
+
+    #[test]
+    fn ai_review_report_summarizes_questions_tags_and_evidence() {
+        let mut document = DiffDocument::empty("old.pdf", "new.pdf");
+        document.summary.modified = 1;
+        document.changes.push(SemanticChange {
+            id: "change-0000".into(),
+            kind: ChangeKind::Modified,
+            severity: ChangeSeverity::Major,
+            old_node: Some(SemanticNodeEvidence {
+                node_id: "old-node".into(),
+                page: 0,
+                bbox: None,
+                text: Some("Payment is due within 30 days.".into()),
+                source: vec![Provenance::unknown()],
+            }),
+            new_node: Some(SemanticNodeEvidence {
+                node_id: "new-node".into(),
+                page: 0,
+                bbox: None,
+                text: Some("Payment is due within 15 days.".into()),
+                source: vec![Provenance::unknown()],
+            }),
+            text_hunks: vec![TextHunk {
+                kind: TextHunkKind::Replaced,
+                granularity: None,
+                old_range: None,
+                new_range: None,
+                old_text: Some("30".into()),
+                new_text: Some("15".into()),
+            }],
+            confidence: 0.91,
+            reason: "paragraph text differs".into(),
+        });
+
+        let report = build_ai_review_report(&document);
+
+        assert_eq!(report.summary.total_changes, 1);
+        assert_eq!(
+            report.review_items[0].confidence_bucket,
+            AiConfidenceBucket::High
+        );
+        assert!(
+            report.review_items[0]
+                .tags
+                .contains(&AiReviewTag::PaymentTermsCandidate)
+        );
+        assert!(
+            report.review_items[0]
+                .tags
+                .contains(&AiReviewTag::NumericValueChanged)
+        );
+        assert_eq!(
+            report.review_items[0].evidence.old_node_id.as_deref(),
+            Some("old-node")
+        );
+        assert_eq!(
+            report.review_items[0].evidence.new_node_id.as_deref(),
+            Some("new-node")
+        );
+        assert_eq!(
+            report.review_items[0].evidence.old_text.as_deref(),
+            Some("Payment is due within 30 days.")
+        );
+        let payment_hint = report
+            .question_hints
+            .iter()
+            .find(|hint| hint.question == "Were payment terms modified?")
+            .expect("payment question hint should be present");
+        assert_eq!(payment_hint.answer, AiReviewAnswer::Yes);
+        assert_eq!(payment_hint.supporting_change_ids, vec!["change-0000"]);
     }
 }

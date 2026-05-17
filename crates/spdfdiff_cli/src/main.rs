@@ -22,8 +22,8 @@ enum Command {
     Diff {
         old_pdf: PathBuf,
         new_pdf: PathBuf,
-        #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
-        format: ReportFormat,
+        #[arg(long, value_enum, default_value_t = DiffReportFormat::Json)]
+        format: DiffReportFormat,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -54,6 +54,14 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DiffReportFormat {
+    Json,
+    AiJson,
+    Md,
+    Html,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1402,7 +1410,7 @@ fn run_synthetic_benchmark(pages: usize) -> Result<BenchmarkReport, PdfDiffError
     let diff_ms = diff_start.elapsed().as_millis();
 
     let report_start = Instant::now();
-    let _rendered = render_diff(&diff, ReportFormat::Json);
+    let _rendered = render_diff(&diff, DiffReportFormat::Json);
     let report = report_start.elapsed().as_millis();
     let total = total_start.elapsed().as_millis();
 
@@ -1498,12 +1506,14 @@ fn synthetic_text_pdf(pages: usize, replacement: Option<(usize, &str)>) -> Vec<u
     pdf
 }
 
-fn render_diff(document: &DiffDocument, format: ReportFormat) -> String {
+fn render_diff(document: &DiffDocument, format: DiffReportFormat) -> String {
     match format {
-        ReportFormat::Json => diff_report::to_json(document)
+        DiffReportFormat::Json => diff_report::to_json(document)
             .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}")),
-        ReportFormat::Md => diff_report::to_markdown(document),
-        ReportFormat::Html => diff_report::to_html(document),
+        DiffReportFormat::AiJson => diff_report::to_ai_review_json(document)
+            .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}")),
+        DiffReportFormat::Md => diff_report::to_markdown(document),
+        DiffReportFormat::Html => diff_report::to_html(document),
     }
 }
 

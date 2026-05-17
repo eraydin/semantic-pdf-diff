@@ -8,8 +8,8 @@ The current CLI entry point is `spdfdiff`.
 ## Current Capabilities
 
 The `spdfdiff diff` command currently compares extracted text from simple,
-digitally generated PDFs and writes JSON, Markdown, or basic self-contained HTML
-reports.
+digitally generated PDFs and writes stable diff JSON, AI review JSON, Markdown,
+or basic self-contained HTML reports.
 
 The CLI extraction path resolves page content streams across all parsed pages
 and applies simple font resource dictionaries with `/ToUnicode` CMap streams
@@ -41,6 +41,11 @@ gaps stay visible in corpus output. When structure elements map cleanly to
 marked-content text runs, semantic extraction builds high-confidence tagged
 nodes in tagged reading order before falling back to layout heuristics for
 unmapped text.
+For agent workflows, `diff --format ai-json` emits a compact deterministic
+review artifact with summary counts, question hints, neutral candidate tags,
+confidence buckets, explanation templates, semantic node identities, and
+prompt-ready evidence bundles. It does not call an LLM and does not make legal
+or business conclusions.
 
 The `pdf_core` library crate also exposes parser APIs for:
 
@@ -93,6 +98,12 @@ Write Markdown to a file:
 
 ```powershell
 .\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --format md --output .\diff.md
+```
+
+Write AI review JSON to a file:
+
+```powershell
+.\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --format ai-json --output .\ai-review.json
 ```
 
 Run without building the binary first:
@@ -176,6 +187,20 @@ report includes this kind of summary and change entry:
 
 Each change includes old/new evidence when extracted text is available, including
 page number, bounding box, text, and provenance fields.
+
+## AI Review JSON
+
+Use `--format ai-json` when another agent or review workflow needs a compact
+view over the stable diff report:
+
+```powershell
+.\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --format ai-json
+```
+
+The AI review report includes question hints such as whether payment terms were
+modified, neutral tags such as `PaymentTermsCandidate` or `NumericValueChanged`,
+old/new semantic node IDs, section hints when detected from the changed text,
+text hunks, page/bbox evidence, provenance, and diagnostic counts.
 
 ## Parser Library Example
 

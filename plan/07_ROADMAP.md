@@ -142,6 +142,17 @@ AI agents can ask and answer:
 - “Did layout change without text changing?”
 - “Which changes are low-confidence because extraction was incomplete?”
 
+### Current implementation
+
+`spdfdiff diff --format ai-json` emits deterministic AI review JSON with compact
+summary counts, question hints, neutral domain candidate tags, confidence
+buckets, change explanation templates, semantic node identities, section hints
+when visible in changed text, prompt-ready evidence bundles, and diagnostic
+counts. The existing `diff_core::SeverityClassifier` hook supports
+caller-provided severity policy while the default classifier stays neutral and
+does not emit legal/business `Critical` severity. No LLM is embedded in the
+engine; an optional external adapter crate remains future ecosystem work.
+
 ## Phase 6 — Library ecosystem and integrations
 
 ### Objective
