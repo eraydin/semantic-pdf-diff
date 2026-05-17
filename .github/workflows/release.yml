@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run cargo publish --dry-run instead of publishing"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  cargo-release:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Publish dry run
+        if: ${{ inputs.dry_run == 'true' }}
+        run: cargo publish --dry-run
+
+      - name: Publish crates
+        if: ${{ inputs.dry_run == 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          publish_crate() {
+            local crate="$1"
+            echo "Publishing ${crate}"
+            cargo publish -p "${crate}"
+            # crates.io index propagation is eventually consistent. A short wait
+            # keeps dependent workspace crates from resolving too early.
+            sleep 30
+          }
+
+          publish_crate spdfdiff_types
+          publish_crate pdf_content
+          publish_crate pdf_core
+          publish_crate pdf_text
+          publish_crate pdf_semantic
+          publish_crate diff_report
+          publish_crate diff_core
+          publish_crate spdfdiff_cli
