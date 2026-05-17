@@ -59,7 +59,7 @@ jobs:
             curl --fail --silent --show-error \
               --header "User-Agent: semantic-pdf-diff-release (https://github.com/eraydin/semantic-pdf-diff)" \
               "https://crates.io/api/v1/crates/${crate}/${version}" \
-              > /dev/null
+              > /dev/null 2>&1
           }
 
           publish_crate() {
@@ -71,11 +71,35 @@ jobs:
               return
             fi
 
-            echo "Publishing ${crate}"
-            cargo publish -p "${crate}"
-            # crates.io index propagation is eventually consistent. A short wait
-            # keeps dependent workspace crates from resolving too early.
-            sleep 30
+            local publish_log
+            publish_log="$(mktemp)"
+            for attempt in 1 2 3 4 5; do
+              echo "Publishing ${crate} ${version} (attempt ${attempt})"
+              if cargo publish -p "${crate}" 2>&1 | tee "${publish_log}"; then
+                # crates.io index propagation is eventually consistent. A short wait
+                # keeps dependent workspace crates from resolving too early.
+                sleep 30
+                rm -f "${publish_log}"
+                return
+              fi
+
+              if grep -q "already exists on crates.io index" "${publish_log}"; then
+                echo "Skipping ${crate} ${version}; already published"
+                rm -f "${publish_log}"
+                return
+              fi
+
+              if grep -q "status 429 Too Many Requests" "${publish_log}"; then
+                echo "crates.io rate limited ${crate}; waiting 5 minutes before retry"
+                sleep 300
+                continue
+              fi
+
+              return 1
+            done
+
+            echo "Failed to publish ${crate} ${version} after retrying crates.io rate limits"
+            return 1
           }
 
           publish_crate spdfdiff_types
