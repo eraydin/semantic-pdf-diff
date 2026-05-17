@@ -1,6 +1,6 @@
 ---
 name: spdfdiff-report-cli
-description: Implement or review semantic-pdf-diff report generation and CLI work in crates/diff_report and crates/spdfdiff_cli. Use for stable JSON reports, Markdown summaries, basic HTML reports, SVG overlay deferral, CLI commands, command arguments, exit codes, output files, corpus command integration, and report snapshot tests.
+description: Implement or review semantic-pdf-diff report generation and CLI work in crates/diff_report and crates/spdfdiff_cli. Use for stable JSON reports, AI review JSON, Markdown summaries, basic HTML reports, SVG overlay deferral, CLI commands, command arguments, exit codes, output files, corpus command integration, and report snapshot tests.
 ---
 
 # SPDFDiff Report CLI
@@ -9,7 +9,7 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 
 1. Read `AGENTS.md`, then read `references/report-cli-plan.md`.
 2. Keep `DiffDocument` serialization stable and machine-readable first.
-3. Treat JSON and Markdown as vertical-slice outputs; keep SVG overlays deferred to the layout-aware v0.3 phase unless explicitly requested behind an unstable feature.
+3. Treat JSON, AI review JSON, and Markdown as deterministic report outputs; keep SVG overlays deferred to the layout-aware v0.3 phase unless explicitly requested behind an unstable feature.
 4. Keep the public CLI shape stable: `spdfdiff diff`, `inspect`, `extract`, and `corpus`.
 5. Add snapshot-style tests for report output whenever fields or ordering change.
 
@@ -17,6 +17,10 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 
 - Do not include timestamps, absolute paths, random IDs, nondeterministic map order, or machine-specific timings by default.
 - Keep JSON canonical enough for agents and CI to consume.
+- AI review JSON must stay deterministic, evidence-preserving, and neutral:
+  include question hints, candidate tags, confidence buckets, explanation
+  templates, semantic node identities, and prompt-ready evidence bundles without
+  embedding an LLM or making legal/business conclusions.
 - Markdown should summarize counts, changes, page references, and diagnostics.
 - Basic HTML must not depend on external network resources.
 - Basic HTML diff reports should render old/new evidence side by side and show
@@ -34,7 +38,7 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 ## CLI Rules
 
 - Public commands:
-  - `spdfdiff diff old.pdf new.pdf --format json|md|html --output out`
+  - `spdfdiff diff old.pdf new.pdf --format json|ai-json|md|html --output out`
   - `spdfdiff diff old.pdf new.pdf --fail-on-changes`
   - `spdfdiff inspect file.pdf --format json`
   - `spdfdiff extract file.pdf --format json`

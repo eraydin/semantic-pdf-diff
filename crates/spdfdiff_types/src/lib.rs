@@ -312,6 +312,105 @@ pub struct DiffDocument {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiReviewReport {
+    pub schema_version: String,
+    pub source_schema_version: String,
+    pub old_fingerprint: String,
+    pub new_fingerprint: String,
+    pub summary: AiReviewSummary,
+    pub question_hints: Vec<AiReviewQuestionHint>,
+    pub review_items: Vec<AiReviewItem>,
+    pub diagnostic_summary: Vec<AiDiagnosticCount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiReviewSummary {
+    pub total_changes: usize,
+    pub inserted: usize,
+    pub deleted: usize,
+    pub modified: usize,
+    pub moved: usize,
+    pub layout_changed: usize,
+    pub diagnostic_count: usize,
+    pub low_confidence_change_count: usize,
+    pub unsupported_surface_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiReviewQuestionHint {
+    pub question: String,
+    pub answer: AiReviewAnswer,
+    pub supporting_change_ids: Vec<String>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AiReviewAnswer {
+    Yes,
+    No,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiReviewItem {
+    pub change_id: String,
+    pub kind: ChangeKind,
+    pub severity: ChangeSeverity,
+    pub confidence: f32,
+    pub confidence_bucket: AiConfidenceBucket,
+    pub tags: Vec<AiReviewTag>,
+    pub explanation: String,
+    pub evidence: AiEvidenceBundle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AiConfidenceBucket {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum AiReviewTag {
+    TextChanged,
+    ContentInserted,
+    ContentDeleted,
+    ContentMoved,
+    LayoutOnly,
+    PaymentTermsCandidate,
+    DateOrDurationCandidate,
+    PartyNameCandidate,
+    NumericValueChanged,
+    AnnotationOrLinkChanged,
+    FormFieldChanged,
+    MetadataChanged,
+    VisualSurfaceChanged,
+    UnsupportedSurface,
+    LowConfidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiEvidenceBundle {
+    pub old_node_id: Option<String>,
+    pub new_node_id: Option<String>,
+    pub section_hint: Option<String>,
+    pub old_page: Option<usize>,
+    pub new_page: Option<usize>,
+    pub old_bbox: Option<Rect>,
+    pub new_bbox: Option<Rect>,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+    pub text_hunks: Vec<TextHunk>,
+    pub provenance: Vec<Provenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiDiagnosticCount {
+    pub code: String,
+    pub count: usize,
+}
+
 impl DiffDocument {
     #[must_use]
     pub fn empty(old_fingerprint: impl Into<String>, new_fingerprint: impl Into<String>) -> Self {

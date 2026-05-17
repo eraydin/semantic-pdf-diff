@@ -261,6 +261,48 @@ fn diff_command_reports_text_changes_in_stdout_and_output_file() {
 }
 
 #[test]
+fn diff_command_emits_ai_review_json() {
+    let fixture = TestFixture::new("diff_command_emits_ai_review_json");
+    let old_pdf = fixture.write_pdf("old.pdf", "Payment is due within 30 days.");
+    let new_pdf = fixture.write_pdf("new.pdf", "Payment is due within 15 days.");
+
+    let output = run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+        "--format",
+        "ai-json",
+    ]);
+    assert_success(&output);
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("ai-json stdout should be valid JSON");
+
+    assert_eq!(json["schema_version"], "0.1.0");
+    assert_eq!(json["source_schema_version"], "0.1.0");
+    assert_eq!(json["summary"]["total_changes"], 1);
+    assert_eq!(
+        json["review_items"][0]["change_id"],
+        json["question_hints"][0]["supporting_change_ids"][0]
+    );
+    let tags = json["review_items"][0]["tags"]
+        .as_array()
+        .expect("tags should be an array")
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(tags.contains(&"PaymentTermsCandidate"));
+    assert!(tags.contains(&"NumericValueChanged"));
+    assert_eq!(
+        json["review_items"][0]["evidence"]["old_text"],
+        "Payment is due within 30 days."
+    );
+    assert_eq!(
+        json["review_items"][0]["evidence"]["new_text"],
+        "Payment is due within 15 days."
+    );
+}
+
+#[test]
 fn diff_fail_on_changes_exits_one_only_when_changes_exist() {
     let fixture = TestFixture::new("diff_fail_on_changes");
     let old_pdf = fixture.write_pdf("old.pdf", "Annual revenue was 10 million.");

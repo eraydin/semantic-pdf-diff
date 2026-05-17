@@ -55,7 +55,8 @@ minimal_old.pdf + minimal_new.pdf
 - `pdf_semantic` owns layout blocks, semantic nodes, reading order, and anchors.
 - `diff_core` owns matching, text hunks, move detection, confidence, and neutral
   severity defaults.
-- `diff_report` owns stable JSON, Markdown, and later HTML/SVG report generation.
+- `diff_report` owns stable JSON, AI review JSON, Markdown, and HTML report
+  generation; SVG overlays remain deferred.
 - `spdfdiff_cli` owns the public CLI shape: `diff`, `inspect`, `extract`, and
   `corpus`.
 
