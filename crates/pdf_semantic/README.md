@@ -15,6 +15,8 @@ raw PDF text extraction and semantic diff matching.
   aligned text-grid tables.
 - Best-effort table row/cell evidence for aligned text grids, including cell
   text, bounding boxes, provenance, and column positions.
+- Table border hint evidence from page-scoped rectangle paths when it overlaps a
+  detected table candidate.
 - Deterministic semantic anchors with strong normalized-text hashes, weak text
   signatures, geometry buckets, and optional heading context.
 - Tagged-PDF structure summaries when `pdf_core` parses a simple
@@ -38,7 +40,7 @@ confidence so reports can explain why a PDF comparison changed.
 
 The layout heuristics are deterministic and conservative, but they are not a
 general document-understanding engine. Complex multi-column flow, arbitrary
-table reconstruction, style semantics, OCR cleanup, and full tagged-PDF parent
-tree behavior remain incremental compatibility work. Uncertain content should
-stay as paragraph or candidate evidence rather than being promoted to a false
-high-confidence semantic structure.
+robust arbitrary table reconstruction, style semantics, OCR cleanup, and full
+tagged-PDF parent tree behavior remain incremental compatibility work.
+Uncertain content should stay as paragraph or candidate evidence rather than
+being promoted to a false high-confidence semantic structure.

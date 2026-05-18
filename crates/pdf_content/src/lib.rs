@@ -1,4 +1,4 @@
-use spdfdiff_types::{Diagnostic, ObjectId, Provenance, ResourceLimits};
+use spdfdiff_types::{Diagnostic, ObjectId, Provenance, Rect, ResourceLimits};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContentProgram {
@@ -77,6 +77,10 @@ pub enum ContentOp {
         d: f32,
         e: f32,
         f: f32,
+        source: Provenance,
+    },
+    AppendRectangle {
+        rect: Rect,
         source: Provenance,
     },
     BeginMarkedContent {
@@ -281,6 +285,27 @@ fn build_operation(operator: &str, stack: &[Token], source: Provenance) -> Optio
             f: stack.last().and_then(Token::as_number)?,
             source,
         }),
+        "re" => {
+            let x = stack
+                .get(stack.len().checked_sub(4)?)
+                .and_then(Token::as_number)?;
+            let y = stack
+                .get(stack.len().checked_sub(3)?)
+                .and_then(Token::as_number)?;
+            let width = stack
+                .get(stack.len().checked_sub(2)?)
+                .and_then(Token::as_number)?;
+            let height = stack.last().and_then(Token::as_number)?;
+            Some(ContentOp::AppendRectangle {
+                rect: Rect {
+                    x0: x.min(x + width),
+                    y0: y.min(y + height),
+                    x1: x.max(x + width),
+                    y1: y.max(y + height),
+                },
+                source,
+            })
+        }
         "BMC" => Some(ContentOp::BeginMarkedContent {
             tag: stack.last().and_then(Token::as_name)?.to_owned(),
             mcid: None,
@@ -324,7 +349,6 @@ fn is_recognized_non_text_operator(operator: &str) -> bool {
             | "v"
             | "y"
             | "h"
-            | "re"
             | "S"
             | "s"
             | "f"
@@ -806,7 +830,15 @@ mod tests {
         ));
         assert!(matches!(
             program.operations[1],
-            ContentOp::RecognizedNonText { ref operator, .. } if operator == "re"
+            ContentOp::AppendRectangle {
+                rect: Rect {
+                    x0: 10.0,
+                    y0: 20.0,
+                    x1: 40.0,
+                    y1: 60.0,
+                },
+                ..
+            }
         ));
         assert!(matches!(
             program.operations[2],

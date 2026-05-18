@@ -305,6 +305,8 @@ struct ExtractTableReport {
     rows: usize,
     columns: usize,
     cells: Vec<Vec<String>>,
+    border_hints: usize,
+    border_boxes: Vec<Rect>,
     confidence: f32,
 }
 
@@ -657,17 +659,19 @@ fn semantic_document_from_document(
         .root_object_id
         .is_some()
         .then(|| semantic_tagged_structure_summary(&tagged_structure));
-    pdf_semantic::build_semantic_document_with_tagged_structure(
+    pdf_semantic::build_semantic_document_with_tagged_structure_and_table_hints(
         fingerprint,
         &extraction.runs,
         extraction.diagnostics,
         tagged_summary,
+        extraction.table_border_hints,
     )
 }
 
 struct ExtractedTextRuns {
     runs: Vec<pdf_text::TextRun>,
     diagnostics: Vec<Diagnostic>,
+    table_border_hints: Vec<pdf_semantic::TableBorderHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -728,6 +732,7 @@ fn extract_text_runs_from_document(
         return ExtractedTextRuns {
             runs: Vec::new(),
             diagnostics,
+            table_border_hints: Vec::new(),
         };
     }
     let mut programs: Vec<(usize, ContentProgram)> = Vec::new();
@@ -756,8 +761,10 @@ fn extract_text_runs_from_document(
     let mut diagnostics = document.diagnostics.clone();
     diagnostics.extend(font_resources.diagnostics.clone());
     let mut has_vector_graphics = false;
+    let mut table_border_hints = Vec::new();
     for (page_index, mut program) in programs {
         has_vector_graphics |= program_has_vector_graphics(&program);
+        table_border_hints.extend(table_border_hints_from_program(&program));
         let tounicode_result = apply_tounicode_maps(&mut program, document, &font_resources);
         let applied_tounicode = tounicode_result.applied;
         diagnostics.extend(tounicode_result.diagnostics);
@@ -782,7 +789,11 @@ fn extract_text_runs_from_document(
         has_vector_graphics,
         &mut diagnostics,
     );
-    ExtractedTextRuns { runs, diagnostics }
+    ExtractedTextRuns {
+        runs,
+        diagnostics,
+        table_border_hints,
+    }
 }
 
 fn append_unsupported_feature_diagnostics(
@@ -872,7 +883,11 @@ fn extract_ocr_text_runs_from_document(
         }
     }
 
-    ExtractedTextRuns { runs, diagnostics }
+    ExtractedTextRuns {
+        runs,
+        diagnostics,
+        table_border_hints: Vec::new(),
+    }
 }
 
 fn ocr_images(
@@ -1682,13 +1697,45 @@ fn byte_pattern_count(bytes: &[u8], pattern: &[u8]) -> usize {
 }
 
 fn program_has_vector_graphics(program: &ContentProgram) -> bool {
-    program.operations.iter().any(|operation| {
-        matches!(
-            operation,
-            ContentOp::RecognizedNonText { operator, .. }
-                if is_vector_graphics_operator(operator)
-        )
+    program.operations.iter().any(|operation| match operation {
+        ContentOp::AppendRectangle { .. } => true,
+        ContentOp::RecognizedNonText { operator, .. } => is_vector_graphics_operator(operator),
+        ContentOp::BeginText { .. }
+        | ContentOp::EndText { .. }
+        | ContentOp::SetFont { .. }
+        | ContentOp::MoveTextPosition { .. }
+        | ContentOp::MoveToNextLine { .. }
+        | ContentOp::SetTextLeading { .. }
+        | ContentOp::SetCharacterSpacing { .. }
+        | ContentOp::SetWordSpacing { .. }
+        | ContentOp::SetHorizontalScaling { .. }
+        | ContentOp::SetTextMatrix { .. }
+        | ContentOp::ShowText { .. }
+        | ContentOp::ShowAdjustedText { .. }
+        | ContentOp::SaveGraphicsState { .. }
+        | ContentOp::RestoreGraphicsState { .. }
+        | ContentOp::ConcatMatrix { .. }
+        | ContentOp::BeginMarkedContent { .. }
+        | ContentOp::EndMarkedContent { .. }
+        | ContentOp::Unknown { .. } => false,
     })
+}
+
+fn table_border_hints_from_program(program: &ContentProgram) -> Vec<pdf_semantic::TableBorderHint> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| {
+            let ContentOp::AppendRectangle { rect, source } = operation else {
+                return None;
+            };
+            Some(pdf_semantic::TableBorderHint {
+                page_index: source.page_index.unwrap_or(0),
+                bbox: *rect,
+                source: vec![source.clone()],
+            })
+        })
+        .collect()
 }
 
 fn is_vector_graphics_operator(operator: &str) -> bool {
@@ -1770,6 +1817,7 @@ fn apply_tounicode_maps(
             | ContentOp::SaveGraphicsState { .. }
             | ContentOp::RestoreGraphicsState { .. }
             | ContentOp::ConcatMatrix { .. }
+            | ContentOp::AppendRectangle { .. }
             | ContentOp::BeginMarkedContent { .. }
             | ContentOp::EndMarkedContent { .. }
             | ContentOp::RecognizedNonText { .. }
@@ -2237,9 +2285,10 @@ fn render_extract_report(
                     out.push_str(&format!("- {}\n", text));
                     if let Some(table) = &node.table {
                         out.push_str(&format!(
-                            "  table: {} rows x {} columns, confidence {:.2}\n",
+                            "  table: {} rows x {} columns, {} border hints, confidence {:.2}\n",
                             table.rows.len(),
                             table.column_x_positions.len(),
+                            table.border_hints.len(),
                             table.confidence
                         ));
                     }
@@ -2274,6 +2323,8 @@ fn extract_table_reports(document: &pdf_semantic::SemanticDocument) -> Vec<Extra
                     .iter()
                     .map(|row| row.cells.iter().map(|cell| cell.text.clone()).collect())
                     .collect(),
+                border_hints: table.border_hints.len(),
+                border_boxes: table.border_hints.iter().map(|hint| hint.bbox).collect(),
                 confidence: table.confidence,
             })
         })
@@ -2551,6 +2602,44 @@ mod tests {
 
         let markdown = render_extract_report(&semantic, ReportFormat::Md);
         assert!(markdown.contains("table: 2 rows x 2 columns"));
+    }
+
+    #[test]
+    fn extract_report_serializes_table_border_hint_evidence() {
+        let semantic = pdf_semantic::build_semantic_document_with_table_hints(
+            "table",
+            &[
+                text_run("a1", "A1", 10.0, 100.0),
+                text_run("a2", "A2", 70.0, 100.0),
+                text_run("b1", "B1", 10.0, 84.0),
+                text_run("b2", "B2", 70.0, 84.0),
+            ],
+            Vec::new(),
+            vec![pdf_semantic::TableBorderHint {
+                page_index: 0,
+                bbox: Rect {
+                    x0: 8.0,
+                    y0: 82.0,
+                    x1: 82.0,
+                    y1: 114.0,
+                },
+                source: vec![Provenance {
+                    page_index: Some(0),
+                    content_op_index: Some(2),
+                    ..Provenance::unknown()
+                }],
+            }],
+        );
+        let json = render_extract_report(&semantic, ReportFormat::Json);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("extract JSON should parse");
+
+        assert_eq!(value["tables"][0]["border_hints"], 1);
+        assert_eq!(value["tables"][0]["border_boxes"][0]["x0"], 8.0);
+        assert_eq!(value["tables"][0]["confidence"], 0.75);
+
+        let markdown = render_extract_report(&semantic, ReportFormat::Md);
+        assert!(markdown.contains("1 border hints"));
     }
 
     fn text_run(id: &str, text: &str, x: f32, y: f32) -> pdf_text::TextRun {

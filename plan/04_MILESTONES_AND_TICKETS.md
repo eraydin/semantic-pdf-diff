@@ -20,7 +20,7 @@ Legend:
 | Milestone 2 — Fixture generator and corpus runner | Partial | Corpus runner exists; reusable fixture writer and full fixture snapshot matrix remain incomplete. |
 | Milestone 3 — Page tree and content stream parsing | Implemented | Page tree traversal, inherited page attributes, content stream resolution, tokenization, and text operator interpretation are covered. |
 | Milestone 4 — Text extraction | Implemented | Text extraction, ToUnicode, glyph positioning, text-run grouping, and the public font resource model are covered. |
-| Milestone 5 — Layout and semantic extraction | Partial | Blocks, headings, lists, anchors, and simple aligned text-grid table row/cell candidates exist; rectangle/path table-border hints and robust arbitrary table reconstruction remain. |
+| Milestone 5 — Layout and semantic extraction | Partial | Blocks, headings, lists, anchors, simple aligned text-grid table row/cell candidates, and rectangle table-border hints exist; robust arbitrary table reconstruction remains. |
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
 | Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, CLI commands, outputs, and exit behavior are covered. |
 | Milestone 8 — Hardening | Implemented | Incremental metadata, fonts, tagged PDFs, benchmark, malformed-input checks, and standalone parser/content fuzz targets exist. |
@@ -52,7 +52,7 @@ Legend:
 | M4-T4 — Text run grouping | Implemented | Text runs preserve raw text, normalized text, glyph raw bytes, bboxes, source provenance, and stable output order. |
 | M5-T1 — Line and block clustering | Implemented | Baseline clustering, x ordering, paragraph grouping, bboxes, and two-column reading order are tested. |
 | M5-T2 — Heading candidates | Implemented | Controlled heading heuristic and confidence tests exist. |
-| M5-T3 — Lists and table candidates | Partial | Bullet/numbered list and simple aligned text-grid table row/cell candidates exist; rectangle/path table-border hints remain future work. |
+| M5-T3 — Lists and table candidates | Implemented | Bullet/numbered lists, simple aligned text-grid table row/cell candidates, rectangle border hints, and table evidence reporting are implemented. |
 | M5-T4 — Semantic anchors | Implemented | Strong/weak text anchors, geometry buckets, and heading context are tested for stability. |
 | M6-T1 — Exact and fuzzy matching | Implemented | Exact anchors, fuzzy edited paragraph matching, move relabeling, low-confidence unmatched cases, and bounded fallback matching are tested. |
 | M6-T2 — Text hunks | Implemented | Token-level hunks, numeric replacements, small character fallback, and report output are implemented. |

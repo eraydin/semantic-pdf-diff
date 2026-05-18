@@ -56,7 +56,15 @@ pub struct TaggedStructureElementSummary {
 pub struct TableStructure {
     pub rows: Vec<TableRow>,
     pub column_x_positions: Vec<f32>,
+    pub border_hints: Vec<TableBorderHint>,
     pub confidence: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableBorderHint {
+    pub page_index: usize,
+    pub bbox: Rect,
+    pub source: Vec<Provenance>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,7 +112,23 @@ pub fn build_semantic_document(
     runs: &[TextRun],
     diagnostics: Vec<Diagnostic>,
 ) -> SemanticDocument {
-    build_semantic_document_with_tagged_structure(fingerprint, runs, diagnostics, None)
+    build_semantic_document_with_table_hints(fingerprint, runs, diagnostics, Vec::new())
+}
+
+#[must_use]
+pub fn build_semantic_document_with_table_hints(
+    fingerprint: impl Into<String>,
+    runs: &[TextRun],
+    diagnostics: Vec<Diagnostic>,
+    table_border_hints: Vec<TableBorderHint>,
+) -> SemanticDocument {
+    build_semantic_document_with_tagged_structure_and_table_hints(
+        fingerprint,
+        runs,
+        diagnostics,
+        None,
+        table_border_hints,
+    )
 }
 
 #[must_use]
@@ -113,6 +137,23 @@ pub fn build_semantic_document_with_tagged_structure(
     runs: &[TextRun],
     diagnostics: Vec<Diagnostic>,
     tagged_structure: Option<TaggedStructureSummary>,
+) -> SemanticDocument {
+    build_semantic_document_with_tagged_structure_and_table_hints(
+        fingerprint,
+        runs,
+        diagnostics,
+        tagged_structure,
+        Vec::new(),
+    )
+}
+
+#[must_use]
+pub fn build_semantic_document_with_tagged_structure_and_table_hints(
+    fingerprint: impl Into<String>,
+    runs: &[TextRun],
+    diagnostics: Vec<Diagnostic>,
+    tagged_structure: Option<TaggedStructureSummary>,
+    table_border_hints: Vec<TableBorderHint>,
 ) -> SemanticDocument {
     let tagged_nodes = tagged_structure
         .as_ref()
@@ -142,6 +183,7 @@ pub fn build_semantic_document_with_tagged_structure(
         reindex_nodes(&mut nodes);
         nodes
     };
+    attach_table_border_hints(&mut nodes, &table_border_hints);
     assign_semantic_anchors(&mut nodes);
 
     SemanticDocument {
@@ -517,8 +559,69 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
     Some(TableStructure {
         rows: row_drafts,
         column_x_positions,
+        border_hints: Vec::new(),
         confidence: 0.65,
     })
+}
+
+fn attach_table_border_hints(nodes: &mut [SemanticNode], hints: &[TableBorderHint]) {
+    if hints.is_empty() {
+        return;
+    }
+
+    let mut ordered_hints = hints.to_vec();
+    ordered_hints.sort_by(|left, right| {
+        left.page_index
+            .cmp(&right.page_index)
+            .then_with(|| {
+                left.bbox
+                    .x0
+                    .partial_cmp(&right.bbox.x0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                left.bbox
+                    .y0
+                    .partial_cmp(&right.bbox.y0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                left.bbox
+                    .x1
+                    .partial_cmp(&right.bbox.x1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                left.bbox
+                    .y1
+                    .partial_cmp(&right.bbox.y1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    for node in nodes {
+        if node.kind != SemanticNodeKind::TableCandidate {
+            continue;
+        }
+        let Some(node_bbox) = node.bbox else {
+            continue;
+        };
+        let Some(table) = &mut node.table else {
+            continue;
+        };
+        table.border_hints = ordered_hints
+            .iter()
+            .filter(|hint| {
+                hint.page_index == node.page_index
+                    && rects_overlap(expand_rect(node_bbox, 4.0), hint.bbox)
+            })
+            .cloned()
+            .collect();
+        if !table.border_hints.is_empty() {
+            table.confidence = table.confidence.max(0.75);
+            node.confidence = table.confidence;
+        }
+    }
 }
 
 fn classify_list_candidates(nodes: &mut [SemanticNode]) {
@@ -660,6 +763,19 @@ fn union_rect(left: Rect, right: Rect) -> Rect {
         x1: left.x1.max(right.x1),
         y1: left.y1.max(right.y1),
     }
+}
+
+fn expand_rect(rect: Rect, amount: f32) -> Rect {
+    Rect {
+        x0: rect.x0 - amount,
+        y0: rect.y0 - amount,
+        x1: rect.x1 + amount,
+        y1: rect.y1 + amount,
+    }
+}
+
+fn rects_overlap(left: Rect, right: Rect) -> bool {
+    left.x0 <= right.x1 && left.x1 >= right.x0 && left.y0 <= right.y1 && left.y1 >= right.y0
 }
 
 #[cfg(test)]
@@ -894,6 +1010,39 @@ mod tests {
         assert_eq!(table.rows[0].cells[1].text, "A2");
         assert_eq!(table.rows[1].cells[0].text, "B1");
         assert_eq!(table.rows[1].cells[1].text, "B2");
+    }
+
+    #[test]
+    fn attaches_border_hints_to_matching_table_candidate() {
+        let runs = vec![
+            text_run("a1", "A1", 0, rect(10.0, 100.0, 20.0, 112.0)),
+            text_run("a2", "A2", 0, rect(70.0, 100.0, 80.0, 112.0)),
+            text_run("b1", "B1", 0, rect(10.0, 84.0, 20.0, 96.0)),
+            text_run("b2", "B2", 0, rect(70.0, 84.0, 80.0, 96.0)),
+        ];
+        let document = build_semantic_document_with_table_hints(
+            "fixture",
+            &runs,
+            Vec::new(),
+            vec![TableBorderHint {
+                page_index: 0,
+                bbox: rect(8.0, 82.0, 82.0, 114.0),
+                source: vec![Provenance {
+                    page_index: Some(0),
+                    content_op_index: Some(4),
+                    ..Provenance::unknown()
+                }],
+            }],
+        );
+
+        let table = document.nodes[0]
+            .table
+            .as_ref()
+            .expect("aligned runs should preserve table evidence");
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
+        assert_eq!(document.nodes[0].confidence, 0.75);
+        assert_eq!(table.border_hints.len(), 1);
+        assert_eq!(table.border_hints[0].bbox, rect(8.0, 82.0, 82.0, 114.0));
     }
 
     #[test]

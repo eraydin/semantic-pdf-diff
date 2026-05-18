@@ -18,7 +18,8 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   summaries and incremental-update offsets when present.
 - `extract <file.pdf>` runs parse/content/text/semantic extraction across parsed
   page content and reports paragraph text, aligned text-grid table row/cell
-  evidence, diagnostics, and tagged-structure summaries.
+  evidence, rectangle table-border hints, diagnostics, and tagged-structure
+  summaries.
 - `corpus <folder>` scans `.pdf` files, runs parse/extract for each file, and
   writes stable aggregate totals, per-file status, extracted node counts, and
   diagnostic-code frequencies. With `--manifest <json>`, it also checks required
@@ -43,7 +44,8 @@ spdfdiff corpus samples --manifest samples\compatibility_corpus_manifest.json --
 - Extracted paragraph text and deterministic text hunks.
 - Moved blocks and layout-only changes when text anchors and bounding boxes
   support them.
-- Simple aligned text-grid table candidates with row/cell evidence.
+- Simple aligned text-grid table candidates with row/cell and rectangle
+  border-hint evidence.
 - Image XObject payload changes by deterministic stream hash.
 - Selected report-facing document surfaces such as link/annotation
   dictionaries, embedded-file/FileSpec objects, outline-like objects, and
@@ -66,6 +68,6 @@ OCR is an adapter path, not a replacement for parser/content diagnostics.
 ## Current Compatibility Boundary
 
 Native vector graphic comparison, full annotation/link semantics, renderer-grade
-visual diffing, arbitrary table-cell semantics, and style classification remain
-incremental compatibility work. Unsupported surfaces are reported through stable
-diagnostics instead of being silently treated as supported semantic diffs.
+visual diffing, robust arbitrary table reconstruction, and style classification
+remain incremental compatibility work. Unsupported surfaces are reported through
+stable diagnostics instead of being silently treated as supported semantic diffs.

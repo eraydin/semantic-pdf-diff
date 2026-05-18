@@ -13,6 +13,8 @@ preserve text/layout evidence without building a full PDF renderer.
   `TD`, `Tm`, `T*`, `Tc`, `Tw`, `Tz`, and `TL`.
 - Graphics-state operators used by text extraction, including `q`, `Q`, and
   `cm`.
+- Typed rectangle path preservation for `re`, including deterministic bounding
+  boxes and provenance for downstream table-border hints.
 - Recognition of common non-text drawing, color, clipping, marked-content, and
   XObject operators so ordinary visual content does not become
   `CONTENT_OPERATOR_UNKNOWN` noise.
