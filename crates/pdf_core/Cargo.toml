@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Low-level PDF parsing primitives for semantic PDF diffing."
+description = "Low-level PDF parser foundation for semantic PDF diff and comparison tools."
+readme = "README.md"
+keywords = ["pdf", "parser", "diff", "semantic", "comparison"]
+categories = ["parser-implementations", "text-processing"]
 
 [dependencies]
 flate2.workspace = true

@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "JSON and human-readable report generation."
+description = "Stable JSON, Markdown, HTML, and AI-review reports for semantic PDF comparison."
+readme = "README.md"
+keywords = ["pdf", "diff", "semantic", "report", "comparison"]
+categories = ["text-processing"]
 
 [dependencies]
 serde_json.workspace = true
