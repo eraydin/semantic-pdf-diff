@@ -6,9 +6,10 @@ Current vertical-slice extraction clusters positioned text runs into determinist
 paragraph nodes using page index, baseline proximity, x ordering, and vertical
 gap thresholds. It can mark controlled larger short paragraphs as
 `HeadingCandidate`, basic bullet/numbered items as `ListCandidate`, and simple
-grid-like short text runs as `TableCandidate`. Each node also receives
-deterministic semantic anchors: strong normalized-text hash, weak text signature,
-geometry bucket, and optional heading context.
+aligned text grids as `TableCandidate` nodes with best-effort row/cell
+evidence. Each node also receives deterministic semantic anchors: strong
+normalized-text hash, weak text signature, geometry bucket, and optional heading
+context.
 
 `SemanticDocument` can also carry a tagged-structure summary when `pdf_core`
 successfully parses a simple `/StructTreeRoot`. When structure elements map to

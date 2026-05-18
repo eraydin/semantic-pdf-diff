@@ -1664,6 +1664,7 @@ mod tests {
                     page_index: 0,
                     bbox: None,
                     normalized_text: Some(text),
+                    table: None,
                     anchor: SemanticAnchor::unknown(),
                     source: vec![Provenance::unknown()],
                     confidence: 1.0,

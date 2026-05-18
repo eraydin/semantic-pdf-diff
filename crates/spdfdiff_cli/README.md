@@ -10,8 +10,9 @@ Current command behavior:
   parser/object diagnostics plus simple tagged-structure and parent-tree
   summaries when present.
 - `extract`: runs parse/content/text/semantic extraction across parsed page
-  content and reports extracted paragraph text, diagnostics summary, and simple
-  tagged-structure summary when present.
+  content and reports extracted paragraph text, simple aligned text-grid table
+  row/cell evidence, diagnostics summary, and simple tagged-structure summary
+  when present.
 - `corpus`: scans a folder for `.pdf` files, runs parse/extract for each file,
   and writes stable aggregate totals (`total`, `parsed`, `partial`, `failed`),
   per-file status, extracted node counts, and diagnostic-code frequency.

@@ -3,6 +3,7 @@ use spdfdiff_types::{Diagnostic, ObjectId, Provenance, Rect};
 
 const LINE_BASELINE_TOLERANCE: f32 = 3.0;
 const PARAGRAPH_GAP_MULTIPLIER: f32 = 1.8;
+const TABLE_COLUMN_TOLERANCE: f32 = 8.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticDocument {
@@ -19,6 +20,7 @@ pub struct SemanticNode {
     pub page_index: usize,
     pub bbox: Option<Rect>,
     pub normalized_text: Option<String>,
+    pub table: Option<TableStructure>,
     pub anchor: SemanticAnchor,
     pub source: Vec<Provenance>,
     pub confidence: f32,
@@ -50,6 +52,26 @@ pub struct TaggedStructureElementSummary {
     pub children: Vec<TaggedStructureElementSummary>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableStructure {
+    pub rows: Vec<TableRow>,
+    pub column_x_positions: Vec<f32>,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableRow {
+    pub cells: Vec<TableCell>,
+    pub bbox: Rect,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableCell {
+    pub text: String,
+    pub bbox: Rect,
+    pub source: Vec<Provenance>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemanticNodeKind {
     Page,
@@ -67,6 +89,7 @@ struct TextLine {
     bbox: Rect,
     text: String,
     source: Vec<Provenance>,
+    cells: Vec<TableCell>,
 }
 
 impl TextLine {
@@ -183,20 +206,29 @@ fn tagged_element_to_node(
     let mut text = String::new();
     let mut source = Vec::new();
     let mut bbox = element_runs[0].bbox;
+    let mut cells = Vec::new();
     for run in element_runs {
         append_text(&mut text, &run.normalized_text);
         bbox = union_rect(bbox, run.bbox);
         source.push(run.source.clone());
+        cells.push(table_cell_from_run(run));
     }
+    let kind = tagged_structure_kind(&element.structure_type);
+    let table = if kind == SemanticNodeKind::TableCandidate {
+        table_structure_from_cells(&cells)
+    } else {
+        None
+    };
     Some(SemanticNode {
         id: format!("tag{index:04}"),
-        kind: tagged_structure_kind(&element.structure_type),
+        kind,
         page_index: source
             .first()
             .and_then(|source| source.page_index)
             .unwrap_or(0),
         bbox: Some(bbox),
         normalized_text: Some(text),
+        table,
         anchor: SemanticAnchor::unknown(),
         source,
         confidence: 0.9,
@@ -276,12 +308,14 @@ fn cluster_lines(runs: &[TextRun]) -> Vec<TextLine> {
             append_text(&mut line.text, &run.normalized_text);
             line.bbox = union_rect(line.bbox, run.bbox);
             line.source.push(run.source.clone());
+            line.cells.push(table_cell_from_run(run));
         } else {
             lines.push(TextLine {
                 page_index,
                 bbox: run.bbox,
                 text: run.normalized_text.clone(),
                 source: vec![run.source.clone()],
+                cells: vec![table_cell_from_run(run)],
             });
         }
     }
@@ -303,6 +337,7 @@ fn cluster_paragraphs(lines: &[TextLine]) -> Vec<SemanticNode> {
                 append_text(&mut paragraph.text, &line.text);
                 paragraph.bbox = union_rect(paragraph.bbox, line.bbox);
                 paragraph.source.extend(line.source.clone());
+                paragraph.cells.extend(line.cells.clone());
                 continue;
             }
 
@@ -324,6 +359,7 @@ fn line_to_node(index: usize, line: &TextLine) -> SemanticNode {
         page_index: line.page_index,
         bbox: Some(line.bbox),
         normalized_text: Some(line.text.clone()),
+        table: table_structure_from_cells(&line.cells),
         anchor: SemanticAnchor::unknown(),
         source: line.source.clone(),
         confidence: 0.7,
@@ -386,22 +422,103 @@ fn classify_table_candidates(nodes: &mut [SemanticNode]) {
         if node.kind != SemanticNodeKind::Paragraph {
             continue;
         }
-        if is_table_candidate(node) {
+        if let Some(table) = &node.table {
             node.kind = SemanticNodeKind::TableCandidate;
-            node.confidence = 0.55;
+            node.confidence = table.confidence;
         }
     }
 }
 
-fn is_table_candidate(node: &SemanticNode) -> bool {
-    let Some(text) = node.normalized_text.as_deref() else {
-        return false;
-    };
-    let tokens = text.split_whitespace().collect::<Vec<_>>();
-    node.source.len() >= 4
-        && tokens.len() >= 4
-        && tokens.len() <= node.source.len() + 2
-        && tokens.iter().all(|token| token.len() <= 16)
+fn table_cell_from_run(run: &TextRun) -> TableCell {
+    TableCell {
+        text: run.normalized_text.clone(),
+        bbox: run.bbox,
+        source: vec![run.source.clone()],
+    }
+}
+
+fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
+    if cells.len() < 4 {
+        return None;
+    }
+    if cells
+        .iter()
+        .any(|cell| cell.text.split_whitespace().count() > 2 || cell.text.len() > 32)
+    {
+        return None;
+    }
+
+    let mut ordered_cells = cells.to_vec();
+    ordered_cells.sort_by(|left, right| {
+        right
+            .bbox
+            .y0
+            .partial_cmp(&left.bbox.y0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.bbox
+                    .x0
+                    .partial_cmp(&right.bbox.x0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    let mut row_drafts: Vec<TableRow> = Vec::new();
+    for cell in ordered_cells {
+        if let Some(row) = row_drafts
+            .iter_mut()
+            .find(|row| (row.bbox.y0 - cell.bbox.y0).abs() <= LINE_BASELINE_TOLERANCE)
+        {
+            row.bbox = union_rect(row.bbox, cell.bbox);
+            row.cells.push(cell);
+        } else {
+            row_drafts.push(TableRow {
+                bbox: cell.bbox,
+                cells: vec![cell],
+            });
+        }
+    }
+
+    if row_drafts.len() < 2 {
+        return None;
+    }
+
+    for row in &mut row_drafts {
+        row.cells.sort_by(|left, right| {
+            left.bbox
+                .x0
+                .partial_cmp(&right.bbox.x0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    let expected_columns = row_drafts[0].cells.len();
+    if expected_columns < 2
+        || row_drafts
+            .iter()
+            .any(|row| row.cells.len() != expected_columns)
+    {
+        return None;
+    }
+
+    let column_x_positions = row_drafts[0]
+        .cells
+        .iter()
+        .map(|cell| cell.bbox.x0)
+        .collect::<Vec<_>>();
+    for row in &row_drafts[1..] {
+        for (cell, column_x) in row.cells.iter().zip(&column_x_positions) {
+            if (cell.bbox.x0 - column_x).abs() > TABLE_COLUMN_TOLERANCE {
+                return None;
+            }
+        }
+    }
+
+    Some(TableStructure {
+        rows: row_drafts,
+        column_x_positions,
+        confidence: 0.65,
+    })
 }
 
 fn classify_list_candidates(nodes: &mut [SemanticNode]) {
@@ -762,11 +879,21 @@ mod tests {
 
         assert_eq!(document.nodes.len(), 1);
         assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
-        assert_eq!(document.nodes[0].confidence, 0.55);
+        assert_eq!(document.nodes[0].confidence, 0.65);
         assert_eq!(
             document.nodes[0].normalized_text.as_deref(),
             Some("A1 A2 B1 B2")
         );
+        let table = document.nodes[0]
+            .table
+            .as_ref()
+            .expect("aligned runs should preserve table evidence");
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.column_x_positions, vec![10.0, 70.0]);
+        assert_eq!(table.rows[0].cells[0].text, "A1");
+        assert_eq!(table.rows[0].cells[1].text, "A2");
+        assert_eq!(table.rows[1].cells[0].text, "B1");
+        assert_eq!(table.rows[1].cells[1].text, "B2");
     }
 
     #[test]
@@ -783,6 +910,20 @@ mod tests {
         );
 
         assert_eq!(document.nodes[0].kind, SemanticNodeKind::Paragraph);
+    }
+
+    #[test]
+    fn keeps_misaligned_short_runs_as_paragraph_not_table() {
+        let runs = vec![
+            text_run("a1", "A1", 0, rect(10.0, 100.0, 20.0, 112.0)),
+            text_run("a2", "A2", 0, rect(70.0, 100.0, 80.0, 112.0)),
+            text_run("b1", "B1", 0, rect(10.0, 84.0, 20.0, 96.0)),
+            text_run("b2", "B2", 0, rect(95.0, 84.0, 105.0, 96.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::Paragraph);
+        assert!(document.nodes[0].table.is_none());
     }
 
     #[test]

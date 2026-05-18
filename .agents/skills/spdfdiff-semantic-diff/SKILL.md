@@ -18,6 +18,9 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
 - Cluster lines and blocks deterministically using page index, reading order, and geometry.
 - Prefer `Candidate`-style node kinds or `UnknownBlock` over false confidence.
 - Preserve page spans, bounding boxes, normalized text, style hints, provenance, and confidence.
+- Preserve simple aligned text-grid table evidence as deterministic rows/cells
+  when the geometry supports it; keep uncertain table-like text as low-scope
+  paragraph/unknown content instead of inventing cell structure.
 - Tagged-PDF structure and marked-content IDs are compatibility-gate surfaces:
   parse simple structure trees, keep diagnostics stable, and use tagged reading
   order only when MCID-to-text mapping is explicit and confidence-bearing.

@@ -214,8 +214,21 @@ struct InspectReport<'a> {
 struct ExtractReport<'a> {
     file: &'a str,
     paragraphs: usize,
+    table_candidates: usize,
+    table_cells: usize,
+    tables: Vec<ExtractTableReport>,
     diagnostic_count: usize,
     tagged_structure: Option<TaggedStructureReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExtractTableReport {
+    node_id: String,
+    page: usize,
+    rows: usize,
+    columns: usize,
+    cells: Vec<Vec<String>>,
+    confidence: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1935,9 +1948,17 @@ fn render_extract_report(
 ) -> String {
     match format {
         ReportFormat::Json => {
+            let tables = extract_table_reports(document);
+            let table_cells = tables
+                .iter()
+                .map(|table| table.cells.iter().map(Vec::len).sum::<usize>())
+                .sum();
             let report = ExtractReport {
                 file: &document.fingerprint,
                 paragraphs: document.nodes.len(),
+                table_candidates: tables.len(),
+                table_cells,
+                tables,
                 diagnostic_count: document.diagnostics.len(),
                 tagged_structure: document
                     .tagged_structure
@@ -1957,6 +1978,14 @@ fn render_extract_report(
             for node in &document.nodes {
                 if let Some(text) = &node.normalized_text {
                     out.push_str(&format!("- {}\n", text));
+                    if let Some(table) = &node.table {
+                        out.push_str(&format!(
+                            "  table: {} rows x {} columns, confidence {:.2}\n",
+                            table.rows.len(),
+                            table.column_x_positions.len(),
+                            table.confidence
+                        ));
+                    }
                 }
             }
             out
@@ -1969,6 +1998,29 @@ fn render_extract_report(
             )
         }
     }
+}
+
+fn extract_table_reports(document: &pdf_semantic::SemanticDocument) -> Vec<ExtractTableReport> {
+    document
+        .nodes
+        .iter()
+        .filter(|node| node.kind == pdf_semantic::SemanticNodeKind::TableCandidate)
+        .filter_map(|node| {
+            let table = node.table.as_ref()?;
+            Some(ExtractTableReport {
+                node_id: node.id.clone(),
+                page: node.page_index,
+                rows: table.rows.len(),
+                columns: table.column_x_positions.len(),
+                cells: table
+                    .rows
+                    .iter()
+                    .map(|row| row.cells.iter().map(|cell| cell.text.clone()).collect())
+                    .collect(),
+                confidence: table.confidence,
+            })
+        })
+        .collect()
 }
 
 fn escape_html(value: &str) -> String {
@@ -2174,6 +2226,52 @@ mod tests {
                 .expect("extract should succeed");
         let markdown = render_extract_report(&semantic, ReportFormat::Md);
         assert!(markdown.contains("- Hello"));
+    }
+
+    #[test]
+    fn extract_report_serializes_table_candidate_evidence() {
+        let semantic = pdf_semantic::build_semantic_document(
+            "table",
+            &[
+                text_run("a1", "A1", 10.0, 100.0),
+                text_run("a2", "A2", 70.0, 100.0),
+                text_run("b1", "B1", 10.0, 84.0),
+                text_run("b2", "B2", 70.0, 84.0),
+            ],
+            Vec::new(),
+        );
+        let json = render_extract_report(&semantic, ReportFormat::Json);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("extract JSON should parse");
+
+        assert_eq!(value["table_candidates"], 1);
+        assert_eq!(value["table_cells"], 4);
+        assert_eq!(value["tables"][0]["rows"], 2);
+        assert_eq!(value["tables"][0]["columns"], 2);
+        assert_eq!(value["tables"][0]["cells"][1][1], "B2");
+
+        let markdown = render_extract_report(&semantic, ReportFormat::Md);
+        assert!(markdown.contains("table: 2 rows x 2 columns"));
+    }
+
+    fn text_run(id: &str, text: &str, x: f32, y: f32) -> pdf_text::TextRun {
+        pdf_text::TextRun {
+            id: id.to_owned(),
+            text: text.to_owned(),
+            normalized_text: text.to_owned(),
+            glyphs: Vec::new(),
+            bbox: Rect {
+                x0: x,
+                y0: y,
+                x1: x + 10.0,
+                y1: y + 12.0,
+            },
+            source: Provenance {
+                page_index: Some(0),
+                ..Provenance::unknown()
+            },
+            marked_content: None,
+        }
     }
 
     #[test]
