@@ -27,6 +27,8 @@ enum Command {
         format: DiffReportFormat,
         #[arg(long)]
         output: Option<PathBuf>,
+        #[arg(long, default_value_t = 2.0)]
+        layout_tolerance_pt: f32,
         #[arg(long)]
         fail_on_changes: bool,
     },
@@ -105,6 +107,7 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
             new_pdf,
             format,
             output,
+            layout_tolerance_pt,
             fail_on_changes,
         } => {
             let old_bytes = std::fs::read(&old_pdf)
@@ -116,6 +119,10 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
                 &old_bytes,
                 &display_file_name(&new_pdf),
                 &new_bytes,
+                DiffConfig {
+                    layout_tolerance_pt,
+                    ..DiffConfig::default()
+                },
             )?;
             let rendered = render_diff(&document, format);
             write_or_print(rendered, output)?;
@@ -353,13 +360,14 @@ fn diff_pdf_bytes(
     old_bytes: &[u8],
     new_fingerprint: &str,
     new_bytes: &[u8],
+    diff_config: DiffConfig,
 ) -> Result<DiffDocument, PdfDiffError> {
     let config = ParseConfig::default();
     let old_document = pdf_core::PdfDocument::parse_with_config(old_bytes, config)?;
     let new_document = pdf_core::PdfDocument::parse_with_config(new_bytes, config)?;
     let old = semantic_document_from_document(old_fingerprint, &old_document, config);
     let new = semantic_document_from_document(new_fingerprint, &new_document, config);
-    let mut diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+    let mut diff = diff_semantic_documents(&old, &new, diff_config);
     append_image_payload_changes(&mut diff, &old_document, &new_document);
     append_document_surface_changes(&mut diff, &old_document, &new_document);
     Ok(diff)
@@ -1259,6 +1267,7 @@ fn push_surface_change(
         old_node: old_surface.map(|surface| surface_evidence(FileRole::Old, surface)),
         new_node: new_surface.map(|surface| surface_evidence(FileRole::New, surface)),
         text_hunks: Vec::new(),
+        layout_diff: None,
         confidence: 0.8,
         reason,
     };
@@ -1321,6 +1330,7 @@ fn push_image_payload_change(
         old_node: old_image.map(|image| image_payload_evidence(FileRole::Old, image)),
         new_node: new_image.map(|image| image_payload_evidence(FileRole::New, image)),
         text_hunks: Vec::new(),
+        layout_diff: None,
         confidence: 1.0,
         reason,
     };
@@ -1976,7 +1986,7 @@ mod tests {
     fn diffs_minimal_pdf_text() {
         let old_pdf = minimal_pdf("Hello");
         let new_pdf = minimal_pdf("Hello world");
-        let diff = diff_pdf_bytes("old", &old_pdf, "new", &new_pdf)
+        let diff = diff_pdf_bytes("old", &old_pdf, "new", &new_pdf, DiffConfig::default())
             .expect("minimal vertical slice should diff");
 
         assert_eq!(diff.summary.modified, 1);
@@ -1986,7 +1996,7 @@ mod tests {
     fn diffs_text_across_multiple_content_streams() {
         let old_pdf = multi_stream_pdf("world");
         let new_pdf = multi_stream_pdf("there");
-        let diff = diff_pdf_bytes("old", &old_pdf, "new", &new_pdf)
+        let diff = diff_pdf_bytes("old", &old_pdf, "new", &new_pdf, DiffConfig::default())
             .expect("multi-stream vertical slice should diff");
 
         assert_eq!(diff.summary.modified, 1);
@@ -2039,6 +2049,7 @@ mod tests {
             &image_payload_pdf(b"x"),
             "new",
             &image_payload_pdf(b"y"),
+            DiffConfig::default(),
         )
         .expect("image payload diff should complete");
 

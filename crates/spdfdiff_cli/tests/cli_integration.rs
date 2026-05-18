@@ -261,6 +261,40 @@ fn diff_command_reports_text_changes_in_stdout_and_output_file() {
 }
 
 #[test]
+fn diff_command_respects_layout_tolerance_option() {
+    let fixture = TestFixture::new("diff_command_layout_tolerance");
+    let old_pdf = fixture.write_pdf_at("old.pdf", "Stable paragraph", 72.0, 720.0);
+    let new_pdf = fixture.write_pdf_at("new.pdf", "Stable paragraph", 75.0, 720.0);
+
+    let default_output = run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+    ]);
+    assert_success(&default_output);
+    let default_json: Value =
+        serde_json::from_slice(&default_output.stdout).expect("diff stdout should be valid JSON");
+    assert_eq!(default_json["summary"]["layout_changed"], 1);
+    assert_eq!(
+        default_json["changes"][0]["layout_diff"]["delta_x"],
+        serde_json::json!(3.0)
+    );
+
+    let tolerant_output = run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+        "--layout-tolerance-pt",
+        "4.0",
+    ]);
+    assert_success(&tolerant_output);
+    let tolerant_json: Value =
+        serde_json::from_slice(&tolerant_output.stdout).expect("diff stdout should be valid JSON");
+    assert_eq!(tolerant_json["summary"]["layout_changed"], 0);
+    assert_eq!(tolerant_json["changes"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn diff_command_emits_ai_review_json() {
     let fixture = TestFixture::new("diff_command_emits_ai_review_json");
     let old_pdf = fixture.write_pdf("old.pdf", "Payment is due within 30 days.");
@@ -1246,6 +1280,12 @@ impl TestFixture {
         path
     }
 
+    fn write_pdf_at(&self, name: &str, text: &str, x: f32, y: f32) -> PathBuf {
+        let path = self.path(name);
+        fs::write(&path, minimal_pdf_at(text, x, y)).expect("PDF fixture should be written");
+        path
+    }
+
     fn write_mock_ocr_command(&self) -> PathBuf {
         #[cfg(windows)]
         {
@@ -1284,7 +1324,11 @@ impl Drop for TestFixture {
 }
 
 fn minimal_pdf(text: &str) -> Vec<u8> {
-    let content = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET\n");
+    minimal_pdf_at(text, 72.0, 720.0)
+}
+
+fn minimal_pdf_at(text: &str, x: f32, y: f32) -> Vec<u8> {
+    let content = format!("BT /F1 12 Tf {x:.2} {y:.2} Td ({text}) Tj ET\n");
     format!(
         "%PDF-1.7\n\
          1 0 obj\n\

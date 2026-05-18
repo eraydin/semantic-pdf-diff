@@ -29,6 +29,9 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
   use deterministic fallback matching instead of allocating unbounded matrices.
 - Detect moved content separately from delete plus insert when confidence supports it.
 - Keep layout-only changes separate from text modifications.
+- Preserve structured layout evidence through `spdfdiff_types::LayoutDiff`,
+  including old/new bounding boxes, bbox deltas, page changes, and reading-order
+  changes when the engine reports layout-only movement or moved content.
 - Emit deterministic text hunks for modified nodes. Keep numeric value changes at
   token granularity, and use character-level fallback only for small non-numeric
   word replacements where it adds useful localized evidence.

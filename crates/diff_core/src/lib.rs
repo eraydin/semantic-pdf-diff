@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use pdf_semantic::{SemanticDocument, SemanticNode};
 use spdfdiff_types::{
-    ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, SemanticChange, SemanticNodeEvidence,
-    TextHunk, TextHunkGranularity, TextHunkKind, TextRange,
+    ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, LayoutDiff, Rect, SemanticChange,
+    SemanticNodeEvidence, TextHunk, TextHunkGranularity, TextHunkKind, TextRange,
 };
 
 const DEFAULT_MAX_MATCH_MATRIX_CELLS: usize = 1_000_000;
@@ -112,6 +112,8 @@ pub fn diff_semantic_documents_with_classifier(
             emit_layout_change_if_needed(
                 &old.nodes[old_end],
                 &new.nodes[new_end],
+                old_end,
+                new_end,
                 config,
                 &mut document,
                 classifier,
@@ -251,6 +253,13 @@ fn emit_unmatched_range(
                 reason: format!("{reason}; fuzzy_match_score={:.3}", fuzzy_match.score),
                 confidence: fuzzy_match.score,
                 text_hunks,
+                layout_diff: layout_diff_if_bbox_changed(
+                    old_node,
+                    new_node,
+                    fuzzy_match.old_index,
+                    fuzzy_match.new_index,
+                    config.layout_tolerance_pt,
+                ),
             },
             classifier,
         );
@@ -539,6 +548,7 @@ fn push_change(
             reason: reason.to_owned(),
             confidence: 0.9,
             text_hunks: Vec::new(),
+            layout_diff: None,
         },
         classifier,
     );
@@ -548,6 +558,7 @@ struct ChangeDetails {
     reason: String,
     confidence: f32,
     text_hunks: Vec<TextHunk>,
+    layout_diff: Option<LayoutDiff>,
 }
 
 fn push_change_with_confidence(
@@ -566,6 +577,7 @@ fn push_change_with_confidence(
         old_node: old_node.map(to_evidence),
         new_node: new_node.map(to_evidence),
         text_hunks: details.text_hunks,
+        layout_diff: details.layout_diff,
         confidence: details.confidence,
         reason: details.reason,
     };
@@ -589,6 +601,8 @@ fn push_change_with_confidence(
 fn emit_layout_change_if_needed(
     old_node: &SemanticNode,
     new_node: &SemanticNode,
+    old_order: usize,
+    new_order: usize,
     config: DiffConfig,
     document: &mut DiffDocument,
     classifier: &impl SeverityClassifier,
@@ -596,12 +610,20 @@ fn emit_layout_change_if_needed(
     if !layout_changed(old_node, new_node, config.layout_tolerance_pt) {
         return;
     }
-    push_change(
+    push_change_with_confidence(
         document,
         ChangeKind::LayoutChanged,
         Some(old_node),
         Some(new_node),
-        "paragraph text is unchanged but page or bounding box moved beyond tolerance",
+        ChangeDetails {
+            reason: "paragraph text is unchanged but page or bounding box moved beyond tolerance"
+                .to_owned(),
+            confidence: 0.9,
+            text_hunks: Vec::new(),
+            layout_diff: Some(layout_diff_for_nodes(
+                old_node, new_node, old_order, new_order,
+            )),
+        },
         classifier,
     );
 }
@@ -619,6 +641,76 @@ fn layout_changed(old_node: &SemanticNode, new_node: &SemanticNode, tolerance: f
         }
         (Some(_), None) | (None, Some(_)) => true,
         (None, None) => false,
+    }
+}
+
+fn layout_diff_if_bbox_changed(
+    old_node: &SemanticNode,
+    new_node: &SemanticNode,
+    old_order: usize,
+    new_order: usize,
+    tolerance: f32,
+) -> Option<LayoutDiff> {
+    layout_changed(old_node, new_node, tolerance)
+        .then(|| layout_diff_for_nodes(old_node, new_node, old_order, new_order))
+}
+
+fn layout_diff_for_nodes(
+    old_node: &SemanticNode,
+    new_node: &SemanticNode,
+    old_order: usize,
+    new_order: usize,
+) -> LayoutDiff {
+    layout_diff_from_parts(
+        old_node.bbox,
+        new_node.bbox,
+        old_node.page_index,
+        new_node.page_index,
+        old_order != new_order,
+    )
+}
+
+fn layout_diff_for_evidence(
+    old_node: Option<&SemanticNodeEvidence>,
+    new_node: Option<&SemanticNodeEvidence>,
+    reading_order_changed: bool,
+) -> LayoutDiff {
+    layout_diff_from_parts(
+        old_node.and_then(|node| node.bbox),
+        new_node.and_then(|node| node.bbox),
+        old_node.map_or(0, |node| node.page),
+        new_node.map_or(0, |node| node.page),
+        reading_order_changed,
+    )
+}
+
+fn layout_diff_from_parts(
+    old_bbox: Option<Rect>,
+    new_bbox: Option<Rect>,
+    old_page: usize,
+    new_page: usize,
+    reading_order_changed: bool,
+) -> LayoutDiff {
+    let (delta_x, delta_y, delta_width, delta_height) =
+        if let (Some(old_bbox), Some(new_bbox)) = (old_bbox, new_bbox) {
+            (
+                Some(new_bbox.x0 - old_bbox.x0),
+                Some(new_bbox.y0 - old_bbox.y0),
+                Some(new_bbox.width() - old_bbox.width()),
+                Some(new_bbox.height() - old_bbox.height()),
+            )
+        } else {
+            (None, None, None, None)
+        };
+    LayoutDiff {
+        old_bbox,
+        new_bbox,
+        delta_x,
+        delta_y,
+        delta_width,
+        delta_height,
+        page_changed: old_page != new_page,
+        reading_order_changed,
     }
 }
 
@@ -1146,6 +1238,11 @@ fn relabel_insert_delete_pairs_as_moves(
         let change = &mut document.changes[insert_index];
         change.kind = ChangeKind::Moved;
         change.old_node = old_evidence;
+        change.layout_diff = Some(layout_diff_for_evidence(
+            change.old_node.as_ref(),
+            change.new_node.as_ref(),
+            true,
+        ));
         change.reason = "paragraph text moved to a different reading-order position".into();
         change.severity = classifier.classify(change);
         consumed_deleted.insert(deleted_index);
@@ -1453,8 +1550,22 @@ mod tests {
 
     #[test]
     fn detects_moved_paragraph_from_insert_delete_pair() {
-        let old = document_with_texts("old", &["Alpha", "Beta", "Gamma"]);
-        let new = document_with_texts("new", &["Beta", "Alpha", "Gamma"]);
+        let old = document_with_positioned_texts(
+            "old",
+            &[
+                ("Alpha", 0.0, 10.0),
+                ("Beta", 0.0, 20.0),
+                ("Gamma", 0.0, 0.0),
+            ],
+        );
+        let new = document_with_positioned_texts(
+            "new",
+            &[
+                ("Beta", 0.0, 20.0),
+                ("Alpha", 40.0, 10.0),
+                ("Gamma", 0.0, 0.0),
+            ],
+        );
 
         let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
 
@@ -1463,6 +1574,13 @@ mod tests {
         assert_eq!(diff.summary.deleted, 0);
         assert_eq!(diff.changes.len(), 1);
         assert_eq!(diff.changes[0].kind, ChangeKind::Moved);
+        let layout_diff = diff.changes[0]
+            .layout_diff
+            .as_ref()
+            .expect("moved content should keep layout evidence");
+        assert_eq!(layout_diff.delta_x, Some(40.0));
+        assert_eq!(layout_diff.delta_y, Some(0.0));
+        assert!(layout_diff.reading_order_changed);
     }
 
     struct MajorClassifier;
@@ -1500,6 +1618,16 @@ mod tests {
         assert_eq!(diff.summary.modified, 0);
         assert_eq!(diff.changes[0].kind, ChangeKind::LayoutChanged);
         assert_eq!(diff.changes[0].severity, ChangeSeverity::Minor);
+        let layout_diff = diff.changes[0]
+            .layout_diff
+            .as_ref()
+            .expect("layout-only change should include structured evidence");
+        assert_eq!(layout_diff.delta_x, Some(12.0));
+        assert_eq!(layout_diff.delta_y, Some(0.0));
+        assert_eq!(layout_diff.delta_width, Some(0.0));
+        assert_eq!(layout_diff.delta_height, Some(0.0));
+        assert!(!layout_diff.page_changed);
+        assert!(!layout_diff.reading_order_changed);
     }
 
     #[test]
@@ -1559,6 +1687,25 @@ mod tests {
             x1: x + 10.0,
             y1: y + 10.0,
         });
+        document
+    }
+
+    fn document_with_positioned_texts(
+        fingerprint: &str,
+        texts: &[(&str, f32, f32)],
+    ) -> SemanticDocument {
+        let mut document = document_with_owned_texts(
+            fingerprint,
+            texts.iter().map(|(text, _, _)| *text).map(str::to_owned),
+        );
+        for (node, (_, x, y)) in document.nodes.iter_mut().zip(texts) {
+            node.bbox = Some(spdfdiff_types::Rect {
+                x0: *x,
+                y0: *y,
+                x1: *x + 10.0,
+                y1: *y + 10.0,
+            });
+        }
         document
     }
 }

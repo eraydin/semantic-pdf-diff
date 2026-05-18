@@ -503,6 +503,19 @@ Acceptance:
 - tiny changes below tolerance ignored;
 - moved text with changed location reports both move and layout evidence.
 
+Current implementation:
+
+- `spdfdiff_types::LayoutDiff` preserves old/new bounding boxes, bbox deltas,
+  page-change evidence, and reading-order-change evidence in JSON and AI-review
+  JSON;
+- `diff_core` attaches layout evidence to layout-only changes, fuzzy matched
+  modifications with bbox/page movement, and moved content relabeled from
+  insert/delete pairs;
+- `spdfdiff diff --layout-tolerance-pt` exposes the bbox/page movement tolerance
+  for CLI runs;
+- Markdown and HTML reports summarize layout deltas next to text and source
+  evidence.
+
 #### M6-T4 — Summary and severity
 
 Implement:

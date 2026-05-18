@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use spdfdiff_types::{
     AiConfidenceBucket, AiDiagnosticCount, AiEvidenceBundle, AiReviewAnswer, AiReviewItem,
     AiReviewQuestionHint, AiReviewReport, AiReviewSummary, AiReviewTag, ChangeKind, DiffDocument,
-    PdfDiffError, Rect, SemanticChange,
+    LayoutDiff, PdfDiffError, Rect, SemanticChange,
 };
 
 pub fn to_json(document: &DiffDocument) -> Result<String, PdfDiffError> {
@@ -110,6 +110,12 @@ th{background:#f0f4f8}.change{margin:16px 0;border:1px solid #d9e2ec}.change h3{
                     ));
                 }
                 output.push_str("</div>");
+            }
+            if let Some(layout_diff) = &change.layout_diff {
+                output.push_str(&format!(
+                    "<div class=\"meta\"><strong>Layout diff</strong>: {}</div>",
+                    escape_html(&layout_diff_summary(layout_diff))
+                ));
             }
             output.push_str("</section>");
         }
@@ -451,6 +457,7 @@ fn evidence_bundle(change: &SemanticChange) -> AiEvidenceBundle {
         old_text: change.old_node.as_ref().and_then(|node| node.text.clone()),
         new_text: change.new_node.as_ref().and_then(|node| node.text.clone()),
         text_hunks: change.text_hunks.clone(),
+        layout_diff: change.layout_diff.clone(),
         provenance,
     }
 }
@@ -650,6 +657,12 @@ pub fn to_markdown(document: &DiffDocument) -> String {
                 }
                 output.push('\n');
             }
+            if let Some(layout_diff) = &change.layout_diff {
+                output.push_str(&format!(
+                    "  - Layout diff: {}\n",
+                    layout_diff_summary(layout_diff)
+                ));
+            }
         }
         output.push('\n');
     }
@@ -720,6 +733,33 @@ fn push_evidence_line(
     output.push('\n');
 }
 
+fn layout_diff_summary(layout_diff: &LayoutDiff) -> String {
+    let mut parts = Vec::new();
+    if let Some(delta_x) = layout_diff.delta_x {
+        parts.push(format!("dx={delta_x:.2}"));
+    }
+    if let Some(delta_y) = layout_diff.delta_y {
+        parts.push(format!("dy={delta_y:.2}"));
+    }
+    if let Some(delta_width) = layout_diff.delta_width {
+        parts.push(format!("dw={delta_width:.2}"));
+    }
+    if let Some(delta_height) = layout_diff.delta_height {
+        parts.push(format!("dh={delta_height:.2}"));
+    }
+    if layout_diff.page_changed {
+        parts.push("page_changed=true".to_owned());
+    }
+    if layout_diff.reading_order_changed {
+        parts.push("reading_order_changed=true".to_owned());
+    }
+    if parts.is_empty() {
+        "bbox changed without numeric delta".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
 fn hunk_label(hunk: &spdfdiff_types::TextHunk) -> String {
     match &hunk.granularity {
         Some(granularity) => format!("{:?}/{:?}", hunk.kind, granularity),
@@ -775,6 +815,26 @@ mod tests {
                 old_text: Some("10".into()),
                 new_text: Some("12".into()),
             }],
+            layout_diff: Some(LayoutDiff {
+                old_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 700.0,
+                    x1: 240.0,
+                    y1: 716.0,
+                }),
+                new_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 682.0,
+                    x1: 246.0,
+                    y1: 698.0,
+                }),
+                delta_x: Some(0.0),
+                delta_y: Some(-18.0),
+                delta_width: Some(6.0),
+                delta_height: Some(0.0),
+                page_changed: false,
+                reading_order_changed: false,
+            }),
             confidence: 0.9,
             reason: "paragraph text differs".into(),
         });
@@ -786,6 +846,7 @@ mod tests {
         assert!(markdown.contains("Old page 1 `old-node`: Annual revenue was 10 million."));
         assert!(markdown.contains("New page 1 `new-node`: Annual revenue was 12 million."));
         assert!(markdown.contains("`Replaced` \"10\" -> \"12\""));
+        assert!(markdown.contains("Layout diff: dx=0.00, dy=-18.00, dw=6.00, dh=0.00"));
     }
 
     #[test]
@@ -821,6 +882,26 @@ mod tests {
                 source: vec![Provenance::unknown()],
             }),
             text_hunks: Vec::new(),
+            layout_diff: Some(LayoutDiff {
+                old_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 700.0,
+                    x1: 240.0,
+                    y1: 716.0,
+                }),
+                new_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 682.0,
+                    x1: 246.0,
+                    y1: 698.0,
+                }),
+                delta_x: Some(0.0),
+                delta_y: Some(-18.0),
+                delta_width: Some(6.0),
+                delta_height: Some(0.0),
+                page_changed: false,
+                reading_order_changed: false,
+            }),
             confidence: 0.9,
             reason: "paragraph text differs".into(),
         });
@@ -833,6 +914,8 @@ mod tests {
         assert!(html.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
         assert!(html.contains("data-change=\"change-0000\""));
         assert!(html.contains("bbox [72.00, 700.00, 240.00, 716.00] in PDF user space"));
+        assert!(html.contains("Layout diff"));
+        assert!(html.contains("dx=0.00, dy=-18.00, dw=6.00, dh=0.00"));
         assert!(html.contains("Annual revenue was 10 million."));
         assert!(html.contains("Annual revenue was 12 million."));
         assert!(!html.contains("src=\"http"));
@@ -869,6 +952,7 @@ mod tests {
                 old_text: Some("30".into()),
                 new_text: Some("15".into()),
             }],
+            layout_diff: None,
             confidence: 0.91,
             reason: "paragraph text differs".into(),
         });

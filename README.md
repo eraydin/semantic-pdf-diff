@@ -27,9 +27,10 @@ public-alpha claims. Unsupported vector, annotation, and missing text-layer
 surfaces are emitted as stable diagnostics instead of being silently treated as
 fully supported semantic diffs.
 The diff engine also emits structured word-level text hunks for modified
-paragraphs and compares selected report-facing document surfaces, including
-image payloads, link/annotation dictionaries, embedded-file/FileSpec objects,
-outline-like objects, and metadata/XMP objects by deterministic object hashes.
+paragraphs, structured layout evidence for moved or layout-shifted blocks, and
+compares selected report-facing document surfaces, including image payloads,
+link/annotation dictionaries, embedded-file/FileSpec objects, outline-like
+objects, and metadata/XMP objects by deterministic object hashes.
 These object-level comparisons preserve evidence but are not yet full semantic
 annotation, attachment, outline, or metadata interpreters.
 Common non-text drawing, color, clipping, marked-content, and XObject operators
@@ -121,6 +122,12 @@ Return exit code `1` when changes are found:
 
 ```powershell
 .\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --fail-on-changes
+```
+
+Adjust the layout-only change tolerance, in PDF user-space points:
+
+```powershell
+.\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --layout-tolerance-pt 4.0
 ```
 
 Use OCR for image-only/scanned PDFs:
