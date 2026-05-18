@@ -16,7 +16,7 @@ Legend:
 | --- | --- | --- |
 | Milestone 0 — Repository skeleton | Implemented | Workspace, shared types, lints, and CI foundation are in place. |
 | Milestone 1 — Minimal PDF parser | Implemented | Primitive, indirect object, classic xref/trailer, and stream decoding coverage exists. |
-| Milestone 1.5 — Safety and modern-PDF compatibility gate | Partial | Resource limits, xref streams, and object streams are implemented; corpus manifest and release threshold remain. |
+| Milestone 1.5 — Safety and modern-PDF compatibility gate | Implemented | Resource limits, xref streams, object streams, and manifest-driven corpus release thresholds are implemented. |
 | Milestone 2 — Fixture generator and corpus runner | Partial | Corpus runner exists; reusable fixture writer and full fixture snapshot matrix remain incomplete. |
 | Milestone 3 — Page tree and content stream parsing | Implemented | Page tree traversal, inherited page attributes, content stream resolution, tokenization, and text operator interpretation are covered. |
 | Milestone 4 — Text extraction | Partial | Text extraction, ToUnicode, and glyph positioning work; full public font resource model remains limited. |
@@ -38,7 +38,7 @@ Legend:
 | M1.5-T1 — Resource limits | Implemented | File, object, reference-depth, stream, decoded-stream, content-op, and page-count limit checks have stable `RESOURCE_LIMIT_*` errors/tests. |
 | M1.5-T2 — Xref stream parser | Implemented | Controlled `/Type /XRef` streams, `/W`, `/Index`, compressed entries, and malformed variants are tested. |
 | M1.5-T3 — Object stream extraction | Implemented | Controlled `/ObjStm` extraction resolves embedded objects with provenance; malformed object streams fail softly. |
-| M1.5-T4 — Compatibility corpus gate | Partial | `spdfdiff corpus` emits deterministic per-file and diagnostic counts, but there is no committed corpus manifest or release-blocker threshold yet. |
+| M1.5-T4 — Compatibility corpus gate | Implemented | `spdfdiff corpus` emits deterministic per-file and diagnostic counts, supports the committed sample manifest, declared diff pairs, and release-blocking gate thresholds. |
 | M2-T1 — Minimal PDF writer for tests | Partial | Deterministic test helpers generate minimal PDFs, but there is no reusable test-only writer module with viewer/opening coverage. |
 | M2-T2 — Diff pair fixtures | Partial | Synthetic and real-sample diff pairs are covered by integration tests, but expected snapshots are not present for the full generated fixture matrix. |
 | M2-T3 — Corpus runner | Implemented | `spdfdiff corpus <folder> --output <json>` reports parsed/partial/failed files and diagnostics without stopping at first failure. |

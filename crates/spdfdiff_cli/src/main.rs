@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use diff_core::{DiffConfig, diff_semantic_documents};
 use pdf_content::{ContentOp, ContentProgram};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use spdfdiff_types::{
     ByteRange, ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, FileRole, ObjectId,
     ParseConfig, PdfDiffError, Provenance, Rect, SemanticChange, SemanticNodeEvidence,
@@ -49,7 +49,11 @@ enum Command {
     Corpus {
         folder: PathBuf,
         #[arg(long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
         output: PathBuf,
+        #[arg(long)]
+        fail_on_gate: bool,
     },
     Benchmark {
         #[arg(long, default_value_t = 50)]
@@ -158,10 +162,22 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
             let rendered = render_extract_report(&semantic, format);
             write_or_print(rendered, output)?;
         }
-        Command::Corpus { folder, output } => {
-            let report = build_corpus_report(&folder, ParseConfig::default())?;
-            std::fs::write(&output, report)
+        Command::Corpus {
+            folder,
+            manifest,
+            output,
+            fail_on_gate,
+        } => {
+            let manifest = manifest.as_deref().map(load_corpus_manifest).transpose()?;
+            let report =
+                build_corpus_report_model(&folder, ParseConfig::default(), manifest.as_ref())?;
+            let gate_failed = report.gate.as_ref().is_some_and(|gate| !gate.passed);
+            let rendered = to_json_pretty(&report)?;
+            std::fs::write(&output, rendered)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+            if fail_on_gate && gate_failed {
+                return Ok(1);
+            }
         }
         Command::Benchmark { pages, output } => {
             let report = run_synthetic_benchmark(pages)?;
@@ -181,7 +197,67 @@ struct CorpusReport {
     partial: usize,
     failed: usize,
     diagnostic_counts: BTreeMap<String, usize>,
+    diff_diagnostic_counts: BTreeMap<String, usize>,
+    diff_pairs: Vec<CorpusDiffPairReport>,
+    gate: Option<CorpusGateReport>,
     files: Vec<CorpusFileReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CorpusManifest {
+    schema_version: String,
+    #[serde(default)]
+    required_files: Vec<String>,
+    #[serde(default)]
+    diff_pairs: Vec<CorpusManifestDiffPair>,
+    #[serde(default)]
+    thresholds: CorpusGateThresholds,
+}
+
+#[derive(Debug, Deserialize)]
+struct CorpusManifestDiffPair {
+    name: String,
+    old_file: String,
+    new_file: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+struct CorpusGateThresholds {
+    #[serde(default)]
+    min_parsed_files: Option<usize>,
+    #[serde(default)]
+    max_missing_required_files: usize,
+    #[serde(default)]
+    max_failed_files: usize,
+    #[serde(default)]
+    max_failed_diff_pairs: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CorpusDiffPairReport {
+    name: String,
+    old_file: String,
+    new_file: String,
+    status: CorpusDiffPairStatus,
+    changes: usize,
+    diagnostics: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CorpusDiffPairStatus {
+    Diffed,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
+struct CorpusGateReport {
+    manifest_schema_version: String,
+    passed: bool,
+    thresholds: CorpusGateThresholds,
+    missing_required_files: Vec<String>,
+    failures: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -264,7 +340,27 @@ struct BenchmarkTimings {
     total: u128,
 }
 
+fn load_corpus_manifest(path: &Path) -> Result<CorpusManifest, PdfDiffError> {
+    let bytes =
+        std::fs::read(path).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        PdfDiffError::InvalidInput(format!(
+            "failed to parse corpus manifest {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(test)]
 fn build_corpus_report(folder: &Path, config: ParseConfig) -> Result<String, PdfDiffError> {
+    to_json_pretty(&build_corpus_report_model(folder, config, None)?)
+}
+
+fn build_corpus_report_model(
+    folder: &Path,
+    config: ParseConfig,
+    manifest: Option<&CorpusManifest>,
+) -> Result<CorpusReport, PdfDiffError> {
     let mut paths = Vec::new();
     for entry in
         std::fs::read_dir(folder).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?
@@ -283,6 +379,10 @@ fn build_corpus_report(folder: &Path, config: ParseConfig) -> Result<String, Pdf
     let mut partial = 0usize;
     let mut files = Vec::new();
     let mut diagnostic_counts = BTreeMap::new();
+    let discovered_files = paths
+        .iter()
+        .map(|path| display_file_name(path))
+        .collect::<Vec<_>>();
     for path in paths {
         let file = display_file_name(&path);
         match std::fs::read(&path) {
@@ -335,15 +435,152 @@ fn build_corpus_report(folder: &Path, config: ParseConfig) -> Result<String, Pdf
         }
     }
 
-    to_json_pretty(&CorpusReport {
+    let (diff_pairs, diff_diagnostic_counts) = build_corpus_diff_pair_reports(folder, manifest)?;
+    let gate = manifest.map(|manifest| {
+        build_corpus_gate_report(manifest, &discovered_files, parsed, failed, &diff_pairs)
+    });
+
+    Ok(CorpusReport {
         folder: display_file_name(folder),
         total,
         parsed,
         partial,
         failed,
         diagnostic_counts,
+        diff_diagnostic_counts,
+        diff_pairs,
+        gate,
         files,
     })
+}
+
+fn build_corpus_diff_pair_reports(
+    folder: &Path,
+    manifest: Option<&CorpusManifest>,
+) -> Result<(Vec<CorpusDiffPairReport>, BTreeMap<String, usize>), PdfDiffError> {
+    let Some(manifest) = manifest else {
+        return Ok((Vec::new(), BTreeMap::new()));
+    };
+    let mut reports = Vec::new();
+    let mut diagnostic_counts = BTreeMap::new();
+    for pair in &manifest.diff_pairs {
+        let old_path = folder.join(&pair.old_file);
+        let new_path = folder.join(&pair.new_file);
+        let report = match (std::fs::read(&old_path), std::fs::read(&new_path)) {
+            (Ok(old_bytes), Ok(new_bytes)) => match diff_pdf_bytes(
+                &pair.old_file,
+                &old_bytes,
+                &pair.new_file,
+                &new_bytes,
+                DiffConfig::default(),
+            ) {
+                Ok(document) => {
+                    let diagnostics = document
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| diagnostic.code.clone())
+                        .collect::<Vec<_>>();
+                    for code in &diagnostics {
+                        *diagnostic_counts.entry(code.clone()).or_insert(0) += 1;
+                    }
+                    CorpusDiffPairReport {
+                        name: pair.name.clone(),
+                        old_file: pair.old_file.clone(),
+                        new_file: pair.new_file.clone(),
+                        status: CorpusDiffPairStatus::Diffed,
+                        changes: document.changes.len(),
+                        diagnostics,
+                        error: None,
+                    }
+                }
+                Err(error) => CorpusDiffPairReport {
+                    name: pair.name.clone(),
+                    old_file: pair.old_file.clone(),
+                    new_file: pair.new_file.clone(),
+                    status: CorpusDiffPairStatus::Failed,
+                    changes: 0,
+                    diagnostics: Vec::new(),
+                    error: Some(error.to_string()),
+                },
+            },
+            (Err(error), _) => CorpusDiffPairReport {
+                name: pair.name.clone(),
+                old_file: pair.old_file.clone(),
+                new_file: pair.new_file.clone(),
+                status: CorpusDiffPairStatus::Failed,
+                changes: 0,
+                diagnostics: Vec::new(),
+                error: Some(format!("failed to read {}: {error}", pair.old_file)),
+            },
+            (_, Err(error)) => CorpusDiffPairReport {
+                name: pair.name.clone(),
+                old_file: pair.old_file.clone(),
+                new_file: pair.new_file.clone(),
+                status: CorpusDiffPairStatus::Failed,
+                changes: 0,
+                diagnostics: Vec::new(),
+                error: Some(format!("failed to read {}: {error}", pair.new_file)),
+            },
+        };
+        reports.push(report);
+    }
+    Ok((reports, diagnostic_counts))
+}
+
+fn build_corpus_gate_report(
+    manifest: &CorpusManifest,
+    discovered_files: &[String],
+    parsed: usize,
+    failed: usize,
+    diff_pairs: &[CorpusDiffPairReport],
+) -> CorpusGateReport {
+    let mut missing_required_files = manifest
+        .required_files
+        .iter()
+        .filter(|file| !discovered_files.contains(file))
+        .cloned()
+        .collect::<Vec<_>>();
+    missing_required_files.sort();
+    let failed_diff_pairs = diff_pairs
+        .iter()
+        .filter(|pair| matches!(pair.status, CorpusDiffPairStatus::Failed))
+        .count();
+
+    let mut failures = Vec::new();
+    if let Some(minimum) = manifest.thresholds.min_parsed_files {
+        if parsed < minimum {
+            failures.push(format!(
+                "parsed file count {parsed} is below minimum {minimum}"
+            ));
+        }
+    }
+    if missing_required_files.len() > manifest.thresholds.max_missing_required_files {
+        failures.push(format!(
+            "missing required file count {} exceeds maximum {}",
+            missing_required_files.len(),
+            manifest.thresholds.max_missing_required_files
+        ));
+    }
+    if failed > manifest.thresholds.max_failed_files {
+        failures.push(format!(
+            "failed file count {failed} exceeds maximum {}",
+            manifest.thresholds.max_failed_files
+        ));
+    }
+    if failed_diff_pairs > manifest.thresholds.max_failed_diff_pairs {
+        failures.push(format!(
+            "failed diff pair count {failed_diff_pairs} exceeds maximum {}",
+            manifest.thresholds.max_failed_diff_pairs
+        ));
+    }
+
+    CorpusGateReport {
+        manifest_schema_version: manifest.schema_version.clone(),
+        passed: failures.is_empty(),
+        thresholds: manifest.thresholds,
+        missing_required_files,
+        failures,
+    }
 }
 
 fn display_file_name(path: &Path) -> String {
@@ -2355,6 +2592,47 @@ mod tests {
         assert_eq!(value["files"][0]["file"], "a.pdf");
         assert_eq!(value["files"][1]["file"], "b.pdf");
         assert_eq!(value["diagnostic_counts"]["MISSING_TOUNICODE"], 1);
+
+        std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
+    }
+
+    #[test]
+    fn corpus_report_evaluates_manifest_gate_and_diff_pairs() {
+        let folder = PathBuf::from("target/spdfdiff_cli_tests/corpus_manifest");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("fixture folder should be created");
+        std::fs::write(folder.join("old.pdf"), minimal_pdf("Hello"))
+            .expect("old fixture should be written");
+        std::fs::write(folder.join("new.pdf"), minimal_pdf("Hello world"))
+            .expect("new fixture should be written");
+        let manifest = CorpusManifest {
+            schema_version: "1".to_owned(),
+            required_files: vec![
+                "old.pdf".to_owned(),
+                "new.pdf".to_owned(),
+                "missing.pdf".to_owned(),
+            ],
+            diff_pairs: vec![CorpusManifestDiffPair {
+                name: "fixture".to_owned(),
+                old_file: "old.pdf".to_owned(),
+                new_file: "new.pdf".to_owned(),
+            }],
+            thresholds: CorpusGateThresholds {
+                min_parsed_files: Some(3),
+                max_missing_required_files: 0,
+                max_failed_files: 0,
+                max_failed_diff_pairs: 0,
+            },
+        };
+
+        let report = build_corpus_report_model(&folder, ParseConfig::default(), Some(&manifest))
+            .expect("manifest corpus report should render");
+        assert_eq!(report.diff_pairs.len(), 1);
+        assert_eq!(report.diff_pairs[0].changes, 1);
+        let gate = report.gate.expect("manifest should produce gate report");
+        assert!(!gate.passed);
+        assert_eq!(gate.missing_required_files, vec!["missing.pdf"]);
+        assert_eq!(gate.failures.len(), 2);
 
         std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
     }

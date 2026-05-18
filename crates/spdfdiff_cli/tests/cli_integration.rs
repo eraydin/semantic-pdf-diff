@@ -1087,6 +1087,45 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert!(report["diagnostic_counts"]["MISSING_PAGE_CONTENT"].is_null());
 }
 
+#[test]
+fn corpus_command_evaluates_committed_sample_manifest_gate() {
+    let fixture = TestFixture::new("corpus_command_manifest_gate");
+    let corpus = fixture.path("real_corpus");
+    fs::create_dir_all(&corpus).expect("real-sample corpus directory should be created");
+    for sample in real_sample_pdf_names().iter().copied() {
+        fs::copy(real_sample_pdf(sample), corpus.join(sample))
+            .expect("real sample should be copied");
+    }
+    let output_path = fixture.path("manifest-corpus.json");
+    let manifest = sample_file("compatibility_corpus_manifest.json");
+
+    let output = run_spdfdiff([
+        "corpus",
+        path_arg(&corpus).as_str(),
+        "--manifest",
+        path_arg(&manifest).as_str(),
+        "--output",
+        path_arg(&output_path).as_str(),
+        "--fail-on-gate",
+    ]);
+    assert_success(&output);
+
+    let report = read_json(&output_path);
+    assert_eq!(report["gate"]["passed"], true);
+    assert_eq!(report["gate"]["manifest_schema_version"], "1");
+    assert_eq!(
+        report["gate"]["missing_required_files"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(report["diff_pairs"].as_array().unwrap().len(), 20);
+    assert_eq!(report["diff_pairs"][0]["name"], "annotations");
+    assert_eq!(report["diff_pairs"][0]["status"], "diffed");
+    assert!(report["diff_diagnostic_counts"].is_object());
+}
+
 fn run_spdfdiff<const N: usize>(args: [&str; N]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_spdfdiff"))
         .args(args)

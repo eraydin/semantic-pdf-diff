@@ -54,6 +54,11 @@ review artifact with summary counts, question hints, neutral candidate tags,
 confidence buckets, explanation templates, semantic node identities, and
 prompt-ready evidence bundles. It does not call an LLM and does not make legal
 or business conclusions.
+The `corpus` command can also evaluate a committed compatibility manifest with
+required sample files, diff pairs, diagnostic counts, and release-blocking
+thresholds. Use `--manifest samples\compatibility_corpus_manifest.json` and
+`--fail-on-gate` to make the command return exit code `1` when the compatibility
+gate fails.
 
 The `pdf_core` library crate also exposes parser APIs for:
 

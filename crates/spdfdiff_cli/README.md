@@ -15,7 +15,10 @@ Current command behavior:
   when present.
 - `corpus`: scans a folder for `.pdf` files, runs parse/extract for each file,
   and writes stable aggregate totals (`total`, `parsed`, `partial`, `failed`),
-  per-file status, extracted node counts, and diagnostic-code frequency.
+  per-file status, extracted node counts, and diagnostic-code frequency. With
+  `--manifest <json>`, it also checks required files, runs declared diff pairs,
+  emits diff diagnostic counts, and reports a deterministic release gate; with
+  `--fail-on-gate`, a failed gate exits with code `1`.
 
 The CLI compares image XObject payloads and selected annotation, attachment,
 outline, and metadata objects by deterministic hash and emits object-level
