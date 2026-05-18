@@ -1055,7 +1055,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 40);
     assert_eq!(report["parsed"], 40);
-    assert_eq!(report["partial"], 40);
+    assert_eq!(report["partial"], 35);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
@@ -1071,10 +1071,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
         report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"],
         30
     );
-    assert_eq!(
-        report["diagnostic_counts"]["MISSING_TOUNICODE_CID_FONT"],
-        32
-    );
+    assert!(report["diagnostic_counts"]["MISSING_TOUNICODE_CID_FONT"].is_null());
     assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 6);
     assert_eq!(report["diagnostic_counts"]["TAGGED_MCID_DETECTED"], 2);
     assert_eq!(

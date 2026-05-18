@@ -19,7 +19,7 @@ Legend:
 | Milestone 1.5 — Safety and modern-PDF compatibility gate | Implemented | Resource limits, xref streams, object streams, and manifest-driven corpus release thresholds are implemented. |
 | Milestone 2 — Fixture generator and corpus runner | Partial | Corpus runner exists; reusable fixture writer and full fixture snapshot matrix remain incomplete. |
 | Milestone 3 — Page tree and content stream parsing | Implemented | Page tree traversal, inherited page attributes, content stream resolution, tokenization, and text operator interpretation are covered. |
-| Milestone 4 — Text extraction | Partial | Text extraction, ToUnicode, and glyph positioning work; full public font resource model remains limited. |
+| Milestone 4 — Text extraction | Implemented | Text extraction, ToUnicode, glyph positioning, text-run grouping, and the public font resource model are covered. |
 | Milestone 5 — Layout and semantic extraction | Partial | Blocks, headings, lists, anchors, and simple aligned text-grid table row/cell candidates exist; rectangle/path table-border hints and robust arbitrary table reconstruction remain. |
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
 | Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, CLI commands, outputs, and exit behavior are covered. |
@@ -46,7 +46,7 @@ Legend:
 | M3-T2 — Content stream resolver | Implemented | Single stream, content-stream arrays, multi-stream pages, and all parsed pages are covered with provenance and diagnostics. |
 | M3-T3 — Content tokenizer | Implemented | Content tokenizer handles numbers, names, strings, arrays, dictionaries, operators, `TJ`, and unknown operators. |
 | M3-T4 — Text operator interpreter | Implemented | MVP text operators and graphics-state save/restore are interpreted with matrix/position tests. |
-| M4-T1 — Font resource model | Partial | Font references and `/ToUnicode` maps are discovered for extraction, but a full public font resource model with subtype/encoding capture is still limited. |
+| M4-T1 — Font resource model | Implemented | Font resource lookup captures resource names, object IDs, subtype, base font, encoding, descendant fonts, and `/ToUnicode` references with missing-resource diagnostics. |
 | M4-T2 — ToUnicode parser MVP | Implemented | `bfchar`, `bfrange`, multi-byte hex mapping, and unsupported CMap diagnostics are tested. |
 | M4-T3 — Glyph positioning MVP | Implemented | Text matrix, font size, spacing, `TJ` adjustment, width heuristics, and non-empty bboxes are covered. |
 | M4-T4 — Text run grouping | Implemented | Text runs preserve raw text, normalized text, glyph raw bytes, bboxes, source provenance, and stable output order. |

@@ -710,13 +710,21 @@ fn extract_text_runs_from_document(
     config: ParseConfig,
 ) -> ExtractedTextRuns {
     let contents = document.page_contents();
+    let font_resources = pdf_text::font_resources_from_document(document);
     if contents.is_empty() {
         let mut diagnostics = document.diagnostics.clone();
+        diagnostics.extend(font_resources.diagnostics.clone());
         diagnostics.push(spdfdiff_types::Diagnostic::warning(
             "MISSING_PAGE_CONTENT",
             "no page content stream was available for extraction",
         ));
-        append_unsupported_feature_diagnostics(document, true, false, &mut diagnostics);
+        append_unsupported_feature_diagnostics(
+            document,
+            &font_resources,
+            true,
+            false,
+            &mut diagnostics,
+        );
         return ExtractedTextRuns {
             runs: Vec::new(),
             diagnostics,
@@ -746,10 +754,11 @@ fn extract_text_runs_from_document(
     }
     let mut runs = Vec::new();
     let mut diagnostics = document.diagnostics.clone();
+    diagnostics.extend(font_resources.diagnostics.clone());
     let mut has_vector_graphics = false;
     for (page_index, mut program) in programs {
         has_vector_graphics |= program_has_vector_graphics(&program);
-        let tounicode_result = apply_tounicode_maps(&mut program, document);
+        let tounicode_result = apply_tounicode_maps(&mut program, document, &font_resources);
         let applied_tounicode = tounicode_result.applied;
         diagnostics.extend(tounicode_result.diagnostics);
         let extraction = pdf_text::extract_text_runs(&program, page_index);
@@ -768,6 +777,7 @@ fn extract_text_runs_from_document(
     }
     append_unsupported_feature_diagnostics(
         document,
+        &font_resources,
         runs.is_empty(),
         has_vector_graphics,
         &mut diagnostics,
@@ -777,6 +787,7 @@ fn extract_text_runs_from_document(
 
 fn append_unsupported_feature_diagnostics(
     document: &pdf_core::PdfDocument,
+    font_resources: &pdf_text::FontResourceSet,
     has_no_text_runs: bool,
     has_vector_graphics: bool,
     diagnostics: &mut Vec<Diagnostic>,
@@ -809,7 +820,7 @@ fn append_unsupported_feature_diagnostics(
         ));
     }
 
-    append_font_diagnostics(document, diagnostics);
+    append_font_diagnostics(font_resources, diagnostics);
     append_tagged_pdf_diagnostics(document, diagnostics);
 }
 
@@ -1130,15 +1141,14 @@ fn pdf_usize_after_name(body: &str, key: &str) -> Option<usize> {
     value_after_pdf_name(body, key)?.parse().ok()
 }
 
-fn append_font_diagnostics(document: &pdf_core::PdfDocument, diagnostics: &mut Vec<Diagnostic>) {
-    let cid_missing_count = document
-        .objects
-        .iter()
-        .filter(|object| {
-            (document_has_object_token(object, "/Subtype /Type0")
-                || document_has_object_token(object, "/CIDFontType"))
-                && !document_has_object_token(object, "/ToUnicode")
-        })
+fn append_font_diagnostics(
+    font_resources: &pdf_text::FontResourceSet,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let cid_missing_count = font_resources
+        .fonts
+        .values()
+        .filter(|font| font.is_cid_or_type0() && font.to_unicode.is_none())
         .count();
     if cid_missing_count > 0 {
         diagnostics.push(Diagnostic::warning(
@@ -1714,8 +1724,9 @@ struct ToUnicodeApplyResult {
 fn apply_tounicode_maps(
     program: &mut ContentProgram,
     document: &pdf_core::PdfDocument,
+    font_resources: &pdf_text::FontResourceSet,
 ) -> ToUnicodeApplyResult {
-    let maps = font_tounicode_maps(document);
+    let maps = font_tounicode_maps(document, font_resources);
     if maps.maps.is_empty() {
         return ToUnicodeApplyResult {
             applied: false,
@@ -1777,28 +1788,22 @@ struct ToUnicodeMaps {
     diagnostics: Vec<Diagnostic>,
 }
 
-fn font_tounicode_maps(document: &pdf_core::PdfDocument) -> ToUnicodeMaps {
+fn font_tounicode_maps(
+    document: &pdf_core::PdfDocument,
+    font_resources: &pdf_text::FontResourceSet,
+) -> ToUnicodeMaps {
     let objects_by_id = document
         .objects
         .iter()
         .map(|object| (object.id, object))
         .collect::<BTreeMap<_, _>>();
-    let mut font_to_cmap = BTreeMap::new();
-    for object in &document.objects {
-        if let Some(cmap_id) = reference_after_key(&object.body, "ToUnicode") {
-            font_to_cmap.insert(object.id, cmap_id);
-        }
-    }
 
     let mut maps = BTreeMap::new();
     let mut diagnostics = Vec::new();
-    for object in &document.objects {
-        for (font_name, font_object_id) in named_references(&object.body) {
-            let Some(cmap_object_id) = font_to_cmap.get(&font_object_id) else {
-                continue;
-            };
+    for (font_name, font_resource) in &font_resources.fonts {
+        if let Some(cmap_object_id) = font_resource.to_unicode {
             let Some(cmap_stream) = objects_by_id
-                .get(cmap_object_id)
+                .get(&cmap_object_id)
                 .and_then(|object| object.stream.as_ref())
             else {
                 continue;
@@ -1806,7 +1811,7 @@ fn font_tounicode_maps(document: &pdf_core::PdfDocument) -> ToUnicodeMaps {
             let cmap = parse_tounicode_cmap_with_diagnostics(&cmap_stream.bytes);
             diagnostics.extend(cmap.diagnostics);
             if !cmap.map.is_empty() {
-                maps.insert(font_name, cmap.map);
+                maps.insert(font_name.clone(), cmap.map);
             }
         }
     }
@@ -1816,26 +1821,6 @@ fn font_tounicode_maps(document: &pdf_core::PdfDocument) -> ToUnicodeMaps {
 fn reference_after_key(body: &str, key: &str) -> Option<ObjectId> {
     let start = body.find(&format!("/{key}"))? + key.len() + 1;
     parse_reference_at(&body[start..])
-}
-
-fn named_references(body: &str) -> Vec<(String, ObjectId)> {
-    let tokens = body_tokens(body);
-    let mut references = Vec::new();
-    for index in 0..tokens.len().saturating_sub(3) {
-        let Some(name) = tokens[index].strip_prefix('/') else {
-            continue;
-        };
-        let Ok(number) = tokens[index + 1].parse::<u32>() else {
-            continue;
-        };
-        let Ok(generation) = tokens[index + 2].parse::<u16>() else {
-            continue;
-        };
-        if tokens[index + 3] == "R" {
-            references.push((name.to_owned(), ObjectId { number, generation }));
-        }
-    }
-    references
 }
 
 fn parse_reference_at(body: &str) -> Option<ObjectId> {
@@ -2427,6 +2412,32 @@ mod tests {
     }
 
     #[test]
+    fn does_not_report_cid_descendant_missing_tounicode_when_type0_parent_has_map() {
+        let semantic = semantic_document_from_pdf(
+            "cid-font-with-map",
+            &cid_font_with_tounicode_pdf(),
+            ParseConfig::default(),
+        )
+        .expect("CID-font extraction should use the Type0 ToUnicode map");
+
+        let text = semantic
+            .nodes
+            .iter()
+            .filter_map(|node| node.normalized_text.as_deref())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert_eq!(text, "C");
+        assert!(
+            semantic
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "MISSING_TOUNICODE_CID_FONT"
+                    && diagnostic.code != "MISSING_TOUNICODE")
+        );
+    }
+
+    #[test]
     fn reports_tagged_pdf_structure_markers() {
         let semantic = semantic_document_from_pdf("tagged", &tagged_pdf(), ParseConfig::default())
             .expect("tagged PDF extraction should complete with diagnostics");
@@ -2592,31 +2603,6 @@ mod tests {
             cmap.diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "CMAP_UNSUPPORTED_RANGE")
-        );
-    }
-
-    #[test]
-    fn finds_font_resource_references_for_tounicode_maps() {
-        let refs = named_references("<</LQYSYM 18 0 R/KFDXKX 22 0 R>>");
-
-        assert_eq!(
-            refs,
-            vec![
-                (
-                    "LQYSYM".into(),
-                    ObjectId {
-                        number: 18,
-                        generation: 0
-                    }
-                ),
-                (
-                    "KFDXKX".into(),
-                    ObjectId {
-                        number: 22,
-                        generation: 0
-                    }
-                )
-            ]
         );
     }
 
@@ -2838,6 +2824,42 @@ endobj
 endobj
 6 0 obj
 << /Type /Font /Subtype /CIDFontType2 /BaseFont /CIDFont >>
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn cid_font_with_tounicode_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 38 >>
+stream
+BT /F1 12 Tf 72 720 Td <0026> Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /CIDFont /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CIDFont >>
+endobj
+7 0 obj
+<< /Length 39 >>
+stream
+1 beginbfchar
+<0026> <0043>
+endbfchar
+endstream
 endobj
 "
         .as_bytes()

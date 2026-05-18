@@ -11,6 +11,7 @@ keywords = ["pdf", "text", "extract", "diff", "semantic"]
 categories = ["text-processing"]
 
 [dependencies]
+pdf_core.workspace = true
 pdf_content.workspace = true
 spdfdiff_types.workspace = true
 

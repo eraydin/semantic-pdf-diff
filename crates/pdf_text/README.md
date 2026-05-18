@@ -15,6 +15,8 @@ marked-content references. It is the text-extraction stage used by
 - Glyph token evidence, raw text bytes, normalized text, and approximate
   bounding boxes.
 - Marked-content tag and `/MCID` preservation for tagged-PDF mapping.
+- A public font resource model with resource name, object ID, subtype,
+  base-font, encoding, descendant-font, and `/ToUnicode` references.
 - Whitespace normalization for deterministic downstream matching.
 - `MISSING_TOUNICODE` diagnostics when extraction falls back to literal or hex
   string bytes instead of a Unicode map.
@@ -27,9 +29,9 @@ marked-content references. It is the text-extraction stage used by
 pdf_content ContentProgram -> pdf_text TextRun values -> pdf_semantic nodes
 ```
 
-The current CLI applies a narrow `/ToUnicode` CMap mapping before calling this
-crate when page resources expose a decoded CMap stream. A fuller public font
-resource model remains planned work.
+The current CLI uses this crate's font resource model, then applies a narrow
+`/ToUnicode` CMap mapping before text-run extraction when page resources expose
+a decoded CMap stream. Broader font decoding and shaping remain planned work.
 
 ## Current Compatibility Boundary
 

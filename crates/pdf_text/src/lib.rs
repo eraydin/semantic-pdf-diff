@@ -1,5 +1,6 @@
 use pdf_content::{ContentOp, ContentProgram};
-use spdfdiff_types::{Diagnostic, LineSegment, Point, Provenance, Rect};
+use spdfdiff_types::{Diagnostic, LineSegment, ObjectId, Point, Provenance, Rect};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphToken {
@@ -33,6 +34,97 @@ pub struct MarkedContentRef {
 pub struct TextExtraction {
     pub runs: Vec<TextRun>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontResourceSet {
+    pub fonts: BTreeMap<String, FontResource>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontResource {
+    pub resource_name: String,
+    pub object_id: ObjectId,
+    pub subtype: Option<String>,
+    pub base_font: Option<String>,
+    pub encoding: Option<String>,
+    pub to_unicode: Option<ObjectId>,
+    pub descendant_font_object_ids: Vec<ObjectId>,
+    pub descendant_subtypes: Vec<String>,
+}
+
+impl FontResource {
+    #[must_use]
+    pub fn is_cid_or_type0(&self) -> bool {
+        self.subtype.as_deref() == Some("Type0")
+            || self
+                .descendant_subtypes
+                .iter()
+                .any(|subtype| subtype.starts_with("CIDFont"))
+    }
+}
+
+#[must_use]
+pub fn font_resources_from_document(document: &pdf_core::PdfDocument) -> FontResourceSet {
+    let objects_by_id = document
+        .objects
+        .iter()
+        .map(|object| (object.id, object))
+        .collect::<BTreeMap<_, _>>();
+    let mut fonts = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+
+    for object in &document.objects {
+        if is_font_object_body(&object.body) {
+            continue;
+        }
+
+        let scoped_font_references = font_resource_references(&object.body);
+        for (resource_name, object_id) in named_references(&object.body) {
+            let Some(font_object) = objects_by_id.get(&object_id) else {
+                continue;
+            };
+            if !is_font_object_body(&font_object.body) {
+                continue;
+            }
+            fonts.insert(
+                resource_name.clone(),
+                font_resource_from_object(
+                    resource_name,
+                    object_id,
+                    font_object.body.as_str(),
+                    &objects_by_id,
+                ),
+            );
+        }
+
+        let mut diagnosed_scoped_references = BTreeSet::new();
+        for (resource_name, object_id) in scoped_font_references {
+            if !diagnosed_scoped_references.insert((resource_name.clone(), object_id)) {
+                continue;
+            }
+            match objects_by_id.get(&object_id) {
+                Some(font_object) if is_font_object_body(&font_object.body) => {}
+                Some(_) => diagnostics.push(Diagnostic::warning(
+                    "FONT_RESOURCE_NOT_FONT",
+                    format!(
+                        "font resource /{resource_name} points to non-font object {}",
+                        object_id.number
+                    ),
+                )),
+                None => diagnostics.push(Diagnostic::warning(
+                    "MISSING_FONT_RESOURCE",
+                    format!(
+                        "font resource /{resource_name} points to missing object {}",
+                        object_id.number
+                    ),
+                )),
+            }
+        }
+    }
+
+    FontResourceSet { fonts, diagnostics }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -244,6 +336,133 @@ fn approximate_glyph_width(character: char) -> f32 {
     }
 }
 
+fn font_resource_from_object(
+    resource_name: String,
+    object_id: ObjectId,
+    body: &str,
+    objects_by_id: &BTreeMap<ObjectId, &pdf_core::PdfObject>,
+) -> FontResource {
+    let descendant_font_object_ids = named_references(body)
+        .into_iter()
+        .filter_map(|(name, object_id)| (name == "DescendantFonts").then_some(object_id))
+        .collect::<Vec<_>>();
+    let descendant_subtypes = descendant_font_object_ids
+        .iter()
+        .filter_map(|object_id| objects_by_id.get(object_id))
+        .filter_map(|object| name_after_key(&object.body, "Subtype"))
+        .collect::<Vec<_>>();
+
+    FontResource {
+        resource_name,
+        object_id,
+        subtype: name_after_key(body, "Subtype"),
+        base_font: name_after_key(body, "BaseFont"),
+        encoding: value_after_pdf_name(body, "Encoding"),
+        to_unicode: reference_after_key(body, "ToUnicode"),
+        descendant_font_object_ids,
+        descendant_subtypes,
+    }
+}
+
+fn font_resource_references(body: &str) -> Vec<(String, ObjectId)> {
+    body.match_indices("/Font")
+        .flat_map(|(font_index, _)| {
+            let after_font = &body[font_index + "/Font".len()..];
+            let Some(dictionary_start) = after_font.find("<<") else {
+                return Vec::new();
+            };
+            let after_dictionary_start = &after_font[dictionary_start + "<<".len()..];
+            let Some(dictionary_end) = after_dictionary_start.find(">>") else {
+                return Vec::new();
+            };
+            named_references(&after_dictionary_start[..dictionary_end])
+        })
+        .collect()
+}
+
+fn is_font_object_body(body: &str) -> bool {
+    body.contains("/Type /Font")
+        || body.contains("/Subtype /Type0")
+        || body.contains("/Subtype /Type1")
+        || body.contains("/Subtype /TrueType")
+        || body.contains("/Subtype /CIDFontType")
+}
+
+fn named_references(body: &str) -> Vec<(String, ObjectId)> {
+    let tokens = body_tokens(body);
+    let mut references = Vec::new();
+    for index in 0..tokens.len().saturating_sub(3) {
+        let Some(name) = tokens[index].strip_prefix('/') else {
+            continue;
+        };
+        let Ok(number) = tokens[index + 1].parse::<u32>() else {
+            continue;
+        };
+        let Ok(generation) = tokens[index + 2].parse::<u16>() else {
+            continue;
+        };
+        if tokens[index + 3] == "R" {
+            references.push((name.to_owned(), ObjectId { number, generation }));
+        }
+    }
+    references
+}
+
+fn reference_after_key(body: &str, key: &str) -> Option<ObjectId> {
+    let start = body.find(&format!("/{key}"))? + key.len() + 1;
+    parse_reference_at(&body[start..])
+}
+
+fn parse_reference_at(body: &str) -> Option<ObjectId> {
+    let tokens = body_tokens(body);
+    let number = tokens.first()?.parse().ok()?;
+    let generation = tokens.get(1)?.parse().ok()?;
+    if tokens.get(2)? != "R" {
+        return None;
+    }
+    Some(ObjectId { number, generation })
+}
+
+fn name_after_key(body: &str, key: &str) -> Option<String> {
+    value_after_pdf_name(body, key).and_then(|value| value.strip_prefix('/').map(ToOwned::to_owned))
+}
+
+fn value_after_pdf_name(body: &str, key: &str) -> Option<String> {
+    let start = body.find(&format!("/{key}"))? + key.len() + 1;
+    let remaining = body[start..].trim_start();
+    if let Some(value) = remaining.strip_prefix('(') {
+        return value
+            .split_once(')')
+            .map(|(value, _)| value.chars().take(120).collect());
+    }
+    if let Some(value) = remaining.strip_prefix('/') {
+        return value
+            .split_whitespace()
+            .next()
+            .map(|value| format!("/{value}"));
+    }
+    Some(
+        remaining
+            .split_whitespace()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(120)
+            .collect::<String>(),
+    )
+}
+
+fn body_tokens(body: &str) -> Vec<String> {
+    body.replace("<<", " ")
+        .replace(">>", " ")
+        .replace('/', " /")
+        .replace(['[', ']'], " ")
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 trait DiagnosticExt {
     fn with_page(self, page_index: usize) -> Self;
 }
@@ -340,5 +559,170 @@ mod tests {
                 mcid: Some(3),
             })
         );
+    }
+
+    #[test]
+    fn builds_font_resource_model_from_page_resources() {
+        let document = pdf_core::PdfDocument::parse(font_resource_pdf().as_slice())
+            .expect("font resource fixture should parse");
+        let resources = font_resources_from_document(&document);
+        let font = resources.fonts.get("F1").expect("F1 should resolve");
+
+        assert!(resources.diagnostics.is_empty());
+        assert_eq!(font.resource_name, "F1");
+        assert_eq!(
+            font.object_id,
+            ObjectId {
+                number: 5,
+                generation: 0
+            }
+        );
+        assert_eq!(font.subtype.as_deref(), Some("Type0"));
+        assert_eq!(font.base_font.as_deref(), Some("CIDFont"));
+        assert_eq!(font.encoding.as_deref(), Some("/Identity-H"));
+        assert_eq!(
+            font.to_unicode,
+            Some(ObjectId {
+                number: 7,
+                generation: 0
+            })
+        );
+        assert_eq!(
+            font.descendant_font_object_ids,
+            vec![ObjectId {
+                number: 6,
+                generation: 0
+            }]
+        );
+        assert_eq!(font.descendant_subtypes, vec!["CIDFontType2".to_owned()]);
+        assert!(font.is_cid_or_type0());
+    }
+
+    #[test]
+    fn builds_font_resource_model_from_indirect_resource_dictionary() {
+        let document = pdf_core::PdfDocument::parse(indirect_font_resource_pdf().as_slice())
+            .expect("indirect font resource fixture should parse");
+        let resources = font_resources_from_document(&document);
+
+        assert!(resources.diagnostics.is_empty());
+        assert_eq!(
+            resources
+                .fonts
+                .get("FIndirect")
+                .expect("FIndirect should resolve")
+                .to_unicode,
+            Some(ObjectId {
+                number: 7,
+                generation: 0
+            })
+        );
+    }
+
+    #[test]
+    fn font_resource_model_reports_missing_font_objects() {
+        let document = pdf_core::PdfDocument::parse(missing_font_resource_pdf().as_slice())
+            .expect("missing-font fixture should parse");
+        let resources = font_resources_from_document(&document);
+
+        assert!(resources.fonts.is_empty());
+        assert!(
+            resources
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MISSING_FONT_RESOURCE")
+        );
+    }
+
+    fn font_resource_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 38 >>
+stream
+BT /F1 12 Tf 72 720 Td (Hello) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /CIDFont /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CIDFont >>
+endobj
+7 0 obj
+<< /Length 0 >>
+stream
+
+endstream
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn indirect_font_resource_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources 8 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 38 >>
+stream
+BT /FIndirect 12 Tf 72 720 Td (Hello) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /CIDFont /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /CIDFont >>
+endobj
+7 0 obj
+<< /Length 0 >>
+stream
+
+endstream
+endobj
+8 0 obj
+<< /Font << /FIndirect 5 0 R >> >>
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn missing_font_resource_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /Missing 99 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 38 >>
+stream
+BT /Missing 12 Tf 72 720 Td (Hello) Tj ET
+endstream
+endobj
+"
+        .as_bytes()
+        .to_vec()
     }
 }
