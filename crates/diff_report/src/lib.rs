@@ -148,32 +148,8 @@ struct OverlayRect {
 fn push_html_overlays(output: &mut String, document: &DiffDocument) {
     let mut overlays: BTreeMap<(&'static str, usize), Vec<OverlayRect>> = BTreeMap::new();
     for change in &document.changes {
-        if let Some(evidence) = &change.old_node
-            && let Some(bbox) = evidence.bbox
-            && is_reportable_rect(bbox)
-        {
-            overlays
-                .entry(("Old", evidence.page))
-                .or_default()
-                .push(OverlayRect {
-                    change_id: change.id.clone(),
-                    node_id: evidence.node_id.clone(),
-                    bbox,
-                });
-        }
-        if let Some(evidence) = &change.new_node
-            && let Some(bbox) = evidence.bbox
-            && is_reportable_rect(bbox)
-        {
-            overlays
-                .entry(("New", evidence.page))
-                .or_default()
-                .push(OverlayRect {
-                    change_id: change.id.clone(),
-                    node_id: evidence.node_id.clone(),
-                    bbox,
-                });
-        }
+        push_overlay_rect(&mut overlays, "Old", change, change.old_node.as_ref());
+        push_overlay_rect(&mut overlays, "New", change, change.new_node.as_ref());
     }
     if overlays.is_empty() {
         return;
@@ -199,6 +175,31 @@ fn push_html_overlays(output: &mut String, document: &DiffDocument) {
         output.push_str("</section>");
     }
     output.push_str("</div>");
+}
+
+fn push_overlay_rect(
+    overlays: &mut BTreeMap<(&'static str, usize), Vec<OverlayRect>>,
+    role: &'static str,
+    change: &SemanticChange,
+    evidence: Option<&spdfdiff_types::SemanticNodeEvidence>,
+) {
+    let Some(evidence) = evidence else {
+        return;
+    };
+    let Some(bbox) = evidence.bbox else {
+        return;
+    };
+    if !is_reportable_rect(bbox) {
+        return;
+    }
+    overlays
+        .entry((role, evidence.page))
+        .or_default()
+        .push(OverlayRect {
+            change_id: change.id.clone(),
+            node_id: evidence.node_id.clone(),
+            bbox,
+        });
 }
 
 fn push_svg_overlay(output: &mut String, rects: &[OverlayRect]) {
