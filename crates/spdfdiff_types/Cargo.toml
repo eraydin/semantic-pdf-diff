@@ -1,11 +1,14 @@
 [package]
 name = "spdfdiff_types"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared semantic PDF diff types, diagnostics, provenance, and limits."
+description = "Shared data model, diagnostics, provenance, and limits for semantic PDF diff tools."
+readme = "README.md"
+keywords = ["pdf", "diff", "semantic", "types", "comparison"]
+categories = ["text-processing"]
 
 [dependencies]
 serde.workspace = true
