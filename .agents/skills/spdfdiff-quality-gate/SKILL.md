@@ -27,6 +27,7 @@ When relevant, also run or add:
 
 ```bash
 cargo test --workspace --features fuzzing
+cargo check --manifest-path fuzz/Cargo.toml --bins
 cargo bench --workspace
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
 spdfdiff corpus samples --manifest samples/compatibility_corpus_manifest.json --output corpus_report.json --fail-on-gate
@@ -50,3 +51,6 @@ Only run extended commands when the needed features/tools exist.
 - Confirm resource-limit and diagnostic behavior for hostile or malformed inputs.
 - Confirm report-facing output remains deterministic.
 - Confirm `AGENTS.md` and plan files remain aligned if public workflow rules changed.
+- For fuzzing slices, confirm standalone targets compile through
+  `cargo check --manifest-path fuzz/Cargo.toml --bins`; run `cargo fuzz run`
+  locally when `cargo-fuzz` is installed and time budget allows.

@@ -201,7 +201,6 @@ Targets:
 fuzz_targets/parse_pdf.rs
 fuzz_targets/parse_object.rs
 fuzz_targets/parse_content_stream.rs
-fuzz_targets/parse_tounicode.rs
 ```
 
 Fuzzing acceptance:
@@ -211,6 +210,14 @@ Fuzzing acceptance:
 - no infinite loops;
 - no stack overflow on deeply nested objects;
 - decompressed output never exceeds configured limits.
+
+Current implementation:
+
+- standalone `cargo-fuzz` targets live under `fuzz/fuzz_targets` for
+  whole-PDF parsing, primitive/object parsing, and content stream tokenization;
+- seed corpora live under `fuzz/corpus`;
+- `/ToUnicode` fuzzing remains tied to the existing feature-gated malformed
+  tests until the CMap parser is moved behind a public library API.
 
 ## 7. Compatibility-gate tests
 

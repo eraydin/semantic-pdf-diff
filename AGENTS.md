@@ -86,7 +86,9 @@ minimal_old.pdf + minimal_new.pdf
   MediaBox/CropBox dimensions, and rotation,
   simple `/StructTreeRoot` structure-tree parsing with structure types,
   parent-tree entries, and MCID references, encrypted-PDF rejection, and
-  resource-limit enforcement for parser-owned limits.
+  resource-limit enforcement for parser-owned limits, plus deterministic
+  incremental-update metadata for repeated `startxref` and trailer `/Prev`
+  offsets.
 - This is still a `compatibility-gate` parser foundation, not a public-alpha
   compatibility claim. Public-alpha still requires corpus metrics, documented
   unsupported cases, and broader extraction/report evidence.
@@ -132,3 +134,12 @@ cargo test --workspace
 If Rust tooling is unavailable locally, state that clearly and run the non-Cargo
 checks that are available. Do not claim Cargo verification passed unless it actually
 ran successfully.
+
+For fuzzing-target changes, also run:
+
+```bash
+cargo check --manifest-path fuzz/Cargo.toml --bins
+```
+
+Run `cargo fuzz run <target>` when `cargo-fuzz` is installed and the time budget
+allows.

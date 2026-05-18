@@ -1,0 +1,36 @@
+[package]
+name = "semantic-pdf-diff-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.85"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pdf_content = { path = "../crates/pdf_content" }
+pdf_core = { path = "../crates/pdf_core" }
+spdfdiff_types = { path = "../crates/spdfdiff_types" }
+
+[[bin]]
+name = "parse_pdf"
+path = "fuzz_targets/parse_pdf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_object"
+path = "fuzz_targets/parse_object.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_content_stream"
+path = "fuzz_targets/parse_content_stream.rs"
+test = false
+doc = false
+bench = false

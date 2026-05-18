@@ -15,6 +15,15 @@ pub struct PdfDocument {
     pub objects: Vec<PdfObject>,
     pub pages: Vec<PdfPage>,
     pub diagnostics: Vec<Diagnostic>,
+    pub incremental_update: Option<IncrementalUpdateInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrementalUpdateInfo {
+    pub revision_count: usize,
+    pub selected_startxref_offset: Option<usize>,
+    pub prior_startxref_offsets: Vec<usize>,
+    pub trailer_prev_offsets: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +215,11 @@ impl PdfDocument {
                 "UNSUPPORTED_ENCRYPTION: encrypted or protected PDF is not supported".into(),
             ));
         }
-        append_incremental_update_diagnostics(bytes, &mut document.diagnostics);
+        document.incremental_update = incremental_update_info(bytes);
+        append_incremental_update_diagnostics(
+            document.incremental_update.as_ref(),
+            &mut document.diagnostics,
+        );
         document.objects = match parse_object_store(bytes, config) {
             Ok(store) => pdf_objects_from_object_store(store.objects),
             Err(error) => {
@@ -703,25 +716,83 @@ fn parent_tree_value_object_ids(value: &PdfPrimitive) -> Vec<ObjectId> {
     }
 }
 
-fn append_incremental_update_diagnostics(bytes: &[u8], diagnostics: &mut Vec<Diagnostic>) {
+fn incremental_update_info(bytes: &[u8]) -> Option<IncrementalUpdateInfo> {
     let revision_count = keyword_count(bytes, b"startxref");
-    if revision_count > 1 {
+    let startxref_offsets = startxref_offsets(bytes);
+    let trailer_prev_offsets = trailer_prev_offsets(bytes);
+    if revision_count <= 1 && trailer_prev_offsets.is_empty() {
+        return None;
+    }
+
+    Some(IncrementalUpdateInfo {
+        revision_count,
+        selected_startxref_offset: startxref_offsets.last().copied(),
+        prior_startxref_offsets: startxref_offsets
+            .get(..startxref_offsets.len().saturating_sub(1))
+            .unwrap_or_default()
+            .to_vec(),
+        trailer_prev_offsets,
+    })
+}
+
+fn append_incremental_update_diagnostics(
+    info: Option<&IncrementalUpdateInfo>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(info) = info else {
+        return;
+    };
+    if info.revision_count > 1 {
         diagnostics.push(Diagnostic::info(
             "INCREMENTAL_UPDATE_DETECTED",
             format!(
-                "PDF contains {revision_count} startxref sections; the latest revision was selected"
+                "PDF contains {} startxref sections; the latest revision was selected",
+                info.revision_count
             ),
         ));
     }
-    if bytes
-        .windows(b"/Prev".len())
-        .any(|window| window == b"/Prev")
-    {
+    if !info.trailer_prev_offsets.is_empty() {
         diagnostics.push(Diagnostic::info(
             "PRIOR_REVISION_PRESENT",
-            "xref trailer contains /Prev; prior revision data is present but not reported separately",
+            "xref trailer contains /Prev; prior revision offsets are exposed in parser metadata",
         ));
     }
+}
+
+fn startxref_offsets(bytes: &[u8]) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(marker) = find_keyword(bytes, cursor, b"startxref") {
+        let mut parser = XrefParser::new(bytes, marker + b"startxref".len());
+        parser.skip_ascii_whitespace();
+        if let Ok(offset) = parser.read_usize("startxref offset") {
+            offsets.push(offset);
+        }
+        cursor = marker + b"startxref".len();
+    }
+    offsets
+}
+
+fn trailer_prev_offsets(bytes: &[u8]) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(marker) = find_keyword(bytes, cursor, b"/Prev") {
+        cursor = marker + b"/Prev".len();
+        skip_ascii_whitespace_bytes(bytes, &mut cursor);
+        let start = cursor;
+        while matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
+            cursor += 1;
+        }
+        if cursor > start {
+            if let Ok(value) = std::str::from_utf8(&bytes[start..cursor])
+                .unwrap_or_default()
+                .parse::<usize>()
+            {
+                offsets.push(value);
+            }
+        }
+    }
+    offsets
 }
 
 fn keyword_count(bytes: &[u8], keyword: &[u8]) -> usize {
@@ -2232,6 +2303,7 @@ fn parse_header(bytes: &[u8]) -> Result<PdfDocument, PdfDiffError> {
         objects: Vec::new(),
         pages: Vec::new(),
         diagnostics: Vec::new(),
+        incremental_update: None,
     })
 }
 
@@ -3379,6 +3451,10 @@ endobj
 
         let document = PdfDocument::parse(&bytes)
             .expect("incremental fixture should recover by scanning objects");
+        let incremental_update = document
+            .incremental_update
+            .as_ref()
+            .expect("incremental metadata should be exposed");
 
         assert!(document.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == "INCREMENTAL_UPDATE_DETECTED"
@@ -3389,6 +3465,19 @@ endobj
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "PRIOR_REVISION_PRESENT")
+        );
+        assert_eq!(incremental_update.revision_count, 2);
+        assert_eq!(
+            incremental_update.selected_startxref_offset,
+            Some(second_xref_offset)
+        );
+        assert_eq!(
+            incremental_update.prior_startxref_offsets,
+            vec![previous_xref_offset]
+        );
+        assert_eq!(
+            incremental_update.trailer_prev_offsets,
+            vec![previous_xref_offset]
         );
     }
 

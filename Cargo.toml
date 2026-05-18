@@ -9,6 +9,7 @@ members = [
     "crates/diff_report",
     "crates/spdfdiff_cli",
 ]
+exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]

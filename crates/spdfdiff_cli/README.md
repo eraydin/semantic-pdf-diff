@@ -15,7 +15,7 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   `1` when a completed diff contains changes.
 - `inspect <file.pdf>` parses a PDF with `pdf_core` and reports deterministic
   parser/object diagnostics plus simple tagged-structure and parent-tree
-  summaries when present.
+  summaries and incremental-update offsets when present.
 - `extract <file.pdf>` runs parse/content/text/semantic extraction across parsed
   page content and reports paragraph text, aligned text-grid table row/cell
   evidence, diagnostics, and tagged-structure summaries.

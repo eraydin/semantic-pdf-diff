@@ -28,8 +28,9 @@ description: Implement or review semantic-pdf-diff low-level parser work in crat
   broad unsupported diagnostics for them.
 - Incremental-update markers and xref recovery should be diagnostic-backed:
   select the latest `startxref` marker, emit prior-revision diagnostics when
-  `/Prev` is present, and emit `XREF_RECOVERY_USED` only when an actual xref
-  surface failed and indirect-object scanning recovered the file.
+  `/Prev` is present, expose deterministic incremental-update offset metadata,
+  and emit `XREF_RECOVERY_USED` only when an actual xref surface failed and
+  indirect-object scanning recovered the file.
 - Do not call unsupported modern PDF variants malformed when partial recovery is possible. Add exact diagnostics or stable `PdfDiffError` text for unsupported variants and malformed compatibility-gate cases.
 - Resource-limit failures should include stable `RESOURCE_LIMIT_*` code text.
 - Keep output deterministic: object ordering, diagnostics, and summaries must not depend on hash-map iteration.

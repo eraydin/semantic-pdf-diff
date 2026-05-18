@@ -42,13 +42,13 @@ Large exact-anchor and fuzzy block comparisons are resource-bounded; when a
 comparison would exceed configured matrix limits, the diff engine emits a stable
 diagnostic and uses deterministic fallback matching instead of allocating an
 unbounded matrix.
-Incremental-update markers, xref recovery, CID/Type0 fonts without `/ToUnicode`,
-simple tagged-PDF structure trees, parent-tree entries, and marked-content IDs
-are surfaced as stable diagnostics and extract/inspect summaries so hardening
-gaps stay visible in corpus output. When structure elements map cleanly to
-marked-content text runs, semantic extraction builds high-confidence tagged
-nodes in tagged reading order before falling back to layout heuristics for
-unmapped text.
+Incremental-update markers, repeated `startxref` offsets, trailer `/Prev`
+offsets, xref recovery, CID/Type0 fonts without `/ToUnicode`, simple tagged-PDF
+structure trees, parent-tree entries, and marked-content IDs are surfaced as
+stable diagnostics and extract/inspect summaries so hardening gaps stay visible
+in corpus output. When structure elements map cleanly to marked-content text
+runs, semantic extraction builds high-confidence tagged nodes in tagged reading
+order before falling back to layout heuristics for unmapped text.
 For agent workflows, `diff --format ai-json` emits a compact deterministic
 review artifact with summary counts, question hints, neutral candidate tags,
 confidence buckets, explanation templates, semantic node identities, and
@@ -70,6 +70,8 @@ The `pdf_core` library crate also exposes parser APIs for:
 - controlled `/Type /ObjStm` object streams through `ObjectStore`;
 - simple `/StructTreeRoot` structure trees with structure types, parent-tree
   entries, and MCID references;
+- incremental-update metadata for repeated `startxref` sections and trailer
+  `/Prev` offsets;
 - resource limits for file size, object count, reference depth, stream bytes,
   decoded stream bytes, content operators, and page count.
 
@@ -159,6 +161,20 @@ Run the synthetic 50-page benchmark gate:
 
 The benchmark report includes deterministic phase timing fields for parse,
 extract, semantic, diff, and report work, plus the target threshold result.
+
+## Fuzzing
+
+Standalone `cargo-fuzz` targets live under `fuzz/` for parser and content-stream
+hardening:
+
+```powershell
+cargo fuzz run parse_pdf
+cargo fuzz run parse_object
+cargo fuzz run parse_content_stream
+```
+
+The committed seed corpora cover minimal, truncated, stream-object, primitive,
+and malformed content-stream cases.
 
 ## Versioning And Releases
 

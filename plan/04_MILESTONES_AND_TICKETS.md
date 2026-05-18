@@ -23,7 +23,7 @@ Legend:
 | Milestone 5 — Layout and semantic extraction | Partial | Blocks, headings, lists, anchors, and simple aligned text-grid table row/cell candidates exist; rectangle/path table-border hints and robust arbitrary table reconstruction remain. |
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
 | Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, CLI commands, outputs, and exit behavior are covered. |
-| Milestone 8 — Hardening | Partial | Incremental markers, fonts, tagged PDFs, benchmark, and malformed-input checks exist; prior-revision exposure and standalone fuzz targets remain. |
+| Milestone 8 — Hardening | Implemented | Incremental metadata, fonts, tagged PDFs, benchmark, malformed-input checks, and standalone parser/content fuzz targets exist. |
 
 ### Ticket Status
 
@@ -62,10 +62,10 @@ Legend:
 | M7-T2 — Markdown report | Implemented | Markdown includes summary, changes, page/evidence lines, text hunks, layout diffs, and diagnostics. |
 | M7-T3 — Basic HTML report | Implemented | Self-contained HTML side-by-side report includes page/bbox evidence and inline SVG overlays. |
 | M7-T4 — CLI integration | Implemented | `diff`, `extract`, `inspect`, `corpus`, `benchmark`, formats, outputs, OCR path, and exit-code behavior are integration-tested. |
-| M8-T1 — Incremental updates and recovery parsing | Partial | Latest `startxref`, `/Prev` diagnostics, and xref recovery exist; prior revision data is not separately exposed beyond diagnostics. |
+| M8-T1 — Incremental updates and recovery parsing | Implemented | Latest `startxref`, `/Prev` diagnostics, xref recovery, and deterministic incremental-update offset metadata are exposed. |
 | M8-T2 — Better font handling | Implemented | CID/Type0 missing-`ToUnicode` diagnostics and deterministic glyph-width heuristics are implemented. |
 | M8-T3 — Tagged PDF structure | Implemented | Simple structure trees, parent-tree summaries, MCID preservation, and tagged semantic node ordering are implemented for controlled cases. |
-| M8-T4 — Fuzzing and malformed PDFs | Partial | Feature-gated malformed-input tests exist for parser/content tokenizer, but standalone fuzz targets/corpus are not yet present. |
+| M8-T4 — Fuzzing and malformed PDFs | Implemented | Feature-gated malformed-input tests plus standalone parser/object/content fuzz targets and seed corpora exist. |
 | M8-T5 — Benchmark target | Implemented | CLI benchmark reports parse/extract/semantic/diff/report timings, threshold result, diagnostics, summary, and memory sample when available. |
 
 ## Milestone 0 — Repository skeleton
@@ -674,6 +674,8 @@ Implemented compatibility-gate behavior:
 
 - latest `startxref` is selected by the parser;
 - repeated `startxref` and trailer `/Prev` markers emit stable diagnostics;
+- `PdfDocument::incremental_update` exposes revision count, selected
+  `startxref`, prior `startxref`, and trailer `/Prev` offsets;
 - xref/object-store failures recover through indirect-object scanning with
   `XREF_RECOVERY_USED` when an xref surface was actually present.
 
@@ -720,6 +722,9 @@ Implemented compatibility-gate behavior:
 
 - `cargo test --workspace --features fuzzing` enables parser and content
   tokenizer malformed-input fuzz-target tests.
+- standalone `cargo-fuzz` targets exist for whole-PDF parsing, primitive/object
+  parsing, and content stream tokenization, with committed seed corpora under
+  `fuzz/corpus`.
 
 #### M8-T5 — Benchmark target
 

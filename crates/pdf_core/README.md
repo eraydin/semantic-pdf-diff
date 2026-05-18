@@ -23,6 +23,8 @@ silently ignoring unsupported features.
   `/Contents [...]` arrays.
 - Simple `/StructTreeRoot` and parent-tree summaries with structure type names
   and MCID references.
+- Incremental-update metadata for repeated `startxref` sections, the selected
+  latest xref offset, prior xref offsets, and trailer `/Prev` offsets.
 - Resource-limit enforcement through `spdfdiff_types::ResourceLimits`.
 
 ## Pipeline Context

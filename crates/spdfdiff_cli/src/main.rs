@@ -283,6 +283,7 @@ struct InspectReport<'a> {
     object_count: usize,
     diagnostic_count: usize,
     first_page_streams: usize,
+    incremental_update: IncrementalUpdateReport,
     tagged_structure: TaggedStructureReport,
 }
 
@@ -316,6 +317,15 @@ struct TaggedStructureReport {
     parent_tree_entries: usize,
     structure_types: Vec<String>,
     diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct IncrementalUpdateReport {
+    detected: bool,
+    revision_count: usize,
+    selected_startxref_offset: Option<usize>,
+    prior_startxref_offsets: Vec<usize>,
+    trailer_prev_offsets: Vec<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1243,6 +1253,27 @@ fn tagged_structure_report_from_semantic(
     }
 }
 
+fn incremental_update_report(
+    info: Option<&pdf_core::IncrementalUpdateInfo>,
+) -> IncrementalUpdateReport {
+    match info {
+        Some(info) => IncrementalUpdateReport {
+            detected: true,
+            revision_count: info.revision_count,
+            selected_startxref_offset: info.selected_startxref_offset,
+            prior_startxref_offsets: info.prior_startxref_offsets.clone(),
+            trailer_prev_offsets: info.trailer_prev_offsets.clone(),
+        },
+        None => IncrementalUpdateReport {
+            detected: false,
+            revision_count: 1,
+            selected_startxref_offset: None,
+            prior_startxref_offsets: Vec::new(),
+            trailer_prev_offsets: Vec::new(),
+        },
+    }
+}
+
 fn tagged_element_count(elements: &[pdf_core::TaggedStructureElement]) -> usize {
     elements
         .iter()
@@ -2147,11 +2178,13 @@ fn render_inspect_report(
         .map_or(0, |contents| contents.len());
     let tagged_structure =
         tagged_structure_report(&document.tagged_structure(ParseConfig::default()));
+    let incremental_update = incremental_update_report(document.incremental_update.as_ref());
     let report = InspectReport {
         file: fingerprint,
         object_count,
         diagnostic_count,
         first_page_streams,
+        incremental_update: incremental_update.clone(),
         tagged_structure: tagged_structure.clone(),
     };
     match format {
@@ -2159,20 +2192,22 @@ fn render_inspect_report(
             to_json_pretty(&report).unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"))
         }
         ReportFormat::Md => format!(
-            "# PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n- Tagged structure: {} elements, {} MCIDs\n",
+            "# PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n- Incremental update: {} revisions\n- Tagged structure: {} elements, {} MCIDs\n",
             fingerprint,
             object_count,
             diagnostic_count,
             first_page_streams,
+            incremental_update.revision_count,
             tagged_structure.element_count,
             tagged_structure.mcid_count
         ),
         ReportFormat::Html => format!(
-            "<!doctype html><meta charset=\"utf-8\"><pre># PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n- Tagged structure: {} elements, {} MCIDs\n</pre>",
+            "<!doctype html><meta charset=\"utf-8\"><pre># PDF Inspect\n\n- File: `{}`\n- Objects: {}\n- Diagnostics: {}\n- First-page streams: {}\n- Incremental update: {} revisions\n- Tagged structure: {} elements, {} MCIDs\n</pre>",
             escape_html(fingerprint),
             object_count,
             diagnostic_count,
             first_page_streams,
+            incremental_update.revision_count,
             tagged_structure.element_count,
             tagged_structure.mcid_count
         ),
@@ -2447,6 +2482,22 @@ mod tests {
     }
 
     #[test]
+    fn inspect_report_includes_incremental_update_offsets() {
+        let parsed = pdf_core::PdfDocument::parse(incremental_update_pdf().as_slice()).unwrap();
+        let json = render_inspect_report("incremental.pdf", &parsed, ReportFormat::Json);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON should parse");
+
+        assert_eq!(value["incremental_update"]["detected"], true);
+        assert_eq!(value["incremental_update"]["revision_count"], 2);
+        assert_eq!(
+            value["incremental_update"]["selected_startxref_offset"],
+            128
+        );
+        assert_eq!(value["incremental_update"]["prior_startxref_offsets"][0], 0);
+        assert_eq!(value["incremental_update"]["trailer_prev_offsets"][0], 42);
+    }
+
+    #[test]
     fn inspect_json_escapes_file_name() {
         let parsed = pdf_core::PdfDocument::parse(minimal_pdf("Hello").as_slice()).unwrap();
         let json =
@@ -2639,6 +2690,14 @@ mod tests {
 
     fn minimal_pdf(text: &str) -> Vec<u8> {
         format!("%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length {} >>\nstream\nBT /F1 12 Tf 72 720 Td ({text}) Tj ET\nendstream\nendobj\n", text.len() + 32).into_bytes()
+    }
+
+    fn incremental_update_pdf() -> Vec<u8> {
+        let mut pdf = minimal_pdf("Hello");
+        pdf.extend_from_slice(
+            b"xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 /Prev 42 >>\nstartxref\n0\n%%EOF\nxref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 /Prev 0 >>\nstartxref\n128\n%%EOF\n",
+        );
+        pdf
     }
 
     fn multi_stream_pdf(second_text: &str) -> Vec<u8> {
