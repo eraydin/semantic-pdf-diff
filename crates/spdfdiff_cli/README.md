@@ -10,11 +10,15 @@ Current command behavior:
   parser/object diagnostics plus simple tagged-structure and parent-tree
   summaries when present.
 - `extract`: runs parse/content/text/semantic extraction across parsed page
-  content and reports extracted paragraph text, diagnostics summary, and simple
-  tagged-structure summary when present.
+  content and reports extracted paragraph text, simple aligned text-grid table
+  row/cell evidence, diagnostics summary, and simple tagged-structure summary
+  when present.
 - `corpus`: scans a folder for `.pdf` files, runs parse/extract for each file,
   and writes stable aggregate totals (`total`, `parsed`, `partial`, `failed`),
-  per-file status, extracted node counts, and diagnostic-code frequency.
+  per-file status, extracted node counts, and diagnostic-code frequency. With
+  `--manifest <json>`, it also checks required files, runs declared diff pairs,
+  emits diff diagnostic counts, and reports a deterministic release gate; with
+  `--fail-on-gate`, a failed gate exits with code `1`.
 
 The CLI compares image XObject payloads and selected annotation, attachment,
 outline, and metadata objects by deterministic hash and emits object-level

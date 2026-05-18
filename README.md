@@ -9,26 +9,30 @@ The current CLI entry point is `spdfdiff`.
 
 The `spdfdiff diff` command currently compares extracted text from simple,
 digitally generated PDFs and writes stable diff JSON, AI review JSON, Markdown,
-or basic self-contained HTML reports.
+or self-contained HTML reports with inline SVG evidence overlays when bounding
+boxes are available.
 
-The CLI extraction path resolves page content streams across all parsed pages
-and applies simple font resource dictionaries with `/ToUnicode` CMap streams
-before building semantic text blocks. This covers the current sample PDFs that
-use Type0 fonts and hex `Tj`/`TJ` text. Image payloads are compared by
+The CLI extraction path resolves the catalog `/Pages` tree, inherited page
+resources and boxes, and page content streams across all parsed pages before
+applying simple font resource dictionaries with `/ToUnicode` CMap streams and
+building semantic text blocks. This covers the current sample PDFs that use
+Type0 fonts and hex `Tj`/`TJ` text. Image payloads are compared by
 deterministic stream hash for object-level image changes. When a PDF has no
 extractable text layer, the CLI can OCR supported high-contrast image XObjects
 by invoking an external OCR engine. Set `SPDFDIFF_OCR_COMMAND` to a command that
 accepts a generated PPM image path and writes text to stdout, or install
 `tesseract` so the CLI can call `tesseract <image> stdout --psm 6`. Native vector
 graphic comparison, annotation/link comparison, style classification, and
-table-cell semantics remain incremental compatibility work rather than
-public-alpha claims. Unsupported vector, annotation, and missing text-layer
-surfaces are emitted as stable diagnostics instead of being silently treated as
-fully supported semantic diffs.
+robust arbitrary table semantics remain incremental compatibility work rather
+than public-alpha claims. Simple aligned text-grid table candidates preserve
+best-effort row/cell evidence in extract reports, while unsupported vector,
+annotation, and missing text-layer surfaces are emitted as stable diagnostics
+instead of being silently treated as fully supported semantic diffs.
 The diff engine also emits structured word-level text hunks for modified
-paragraphs and compares selected report-facing document surfaces, including
-image payloads, link/annotation dictionaries, embedded-file/FileSpec objects,
-outline-like objects, and metadata/XMP objects by deterministic object hashes.
+paragraphs, structured layout evidence for moved or layout-shifted blocks, and
+compares selected report-facing document surfaces, including image payloads,
+link/annotation dictionaries, embedded-file/FileSpec objects, outline-like
+objects, and metadata/XMP objects by deterministic object hashes.
 These object-level comparisons preserve evidence but are not yet full semantic
 annotation, attachment, outline, or metadata interpreters.
 Common non-text drawing, color, clipping, marked-content, and XObject operators
@@ -50,6 +54,11 @@ review artifact with summary counts, question hints, neutral candidate tags,
 confidence buckets, explanation templates, semantic node identities, and
 prompt-ready evidence bundles. It does not call an LLM and does not make legal
 or business conclusions.
+The `corpus` command can also evaluate a committed compatibility manifest with
+required sample files, diff pairs, diagnostic counts, and release-blocking
+thresholds. Use `--manifest samples\compatibility_corpus_manifest.json` and
+`--fail-on-gate` to make the command return exit code `1` when the compatibility
+gate fails.
 
 The `pdf_core` library crate also exposes parser APIs for:
 
@@ -120,6 +129,12 @@ Return exit code `1` when changes are found:
 
 ```powershell
 .\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --fail-on-changes
+```
+
+Adjust the layout-only change tolerance, in PDF user-space points:
+
+```powershell
+.\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --layout-tolerance-pt 4.0
 ```
 
 Use OCR for image-only/scanned PDFs:

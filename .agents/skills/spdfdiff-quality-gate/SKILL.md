@@ -29,6 +29,7 @@ When relevant, also run or add:
 cargo test --workspace --features fuzzing
 cargo bench --workspace
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
+spdfdiff corpus samples --manifest samples/compatibility_corpus_manifest.json --output corpus_report.json --fail-on-gate
 spdfdiff benchmark --pages 50 --output benchmark.json
 ```
 

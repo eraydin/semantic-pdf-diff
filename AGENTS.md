@@ -57,8 +57,8 @@ minimal_old.pdf + minimal_new.pdf
 - `pdf_semantic` owns layout blocks, semantic nodes, reading order, and anchors.
 - `diff_core` owns matching, text hunks, move detection, confidence, and neutral
   severity defaults.
-- `diff_report` owns stable JSON, AI review JSON, Markdown, and HTML report
-  generation; SVG overlays remain deferred.
+- `diff_report` owns stable JSON, AI review JSON, Markdown, HTML report
+  generation, and deterministic inline SVG evidence overlays.
 - `spdfdiff_cli` owns the public CLI shape: `diff`, `inspect`, `extract`, and
   `corpus`.
 
@@ -82,6 +82,8 @@ minimal_old.pdf + minimal_new.pdf
   tables/trailers, no-filter, `FlateDecode`, `ASCIIHexDecode`, and
   `RunLengthDecode` streams, controlled `/Type /XRef` streams, controlled
   `/Type /ObjStm` extraction through `ObjectStore`, embedded object provenance,
+  catalog `/Pages` traversal with ordered `/Kids`, inherited page resources,
+  MediaBox/CropBox dimensions, and rotation,
   simple `/StructTreeRoot` structure-tree parsing with structure types,
   parent-tree entries, and MCID references, encrypted-PDF rejection, and
   resource-limit enforcement for parser-owned limits.

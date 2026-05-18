@@ -261,6 +261,40 @@ fn diff_command_reports_text_changes_in_stdout_and_output_file() {
 }
 
 #[test]
+fn diff_command_respects_layout_tolerance_option() {
+    let fixture = TestFixture::new("diff_command_layout_tolerance");
+    let old_pdf = fixture.write_pdf_at("old.pdf", "Stable paragraph", 72.0, 720.0);
+    let new_pdf = fixture.write_pdf_at("new.pdf", "Stable paragraph", 75.0, 720.0);
+
+    let default_output = run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+    ]);
+    assert_success(&default_output);
+    let default_json: Value =
+        serde_json::from_slice(&default_output.stdout).expect("diff stdout should be valid JSON");
+    assert_eq!(default_json["summary"]["layout_changed"], 1);
+    assert_eq!(
+        default_json["changes"][0]["layout_diff"]["delta_x"],
+        serde_json::json!(3.0)
+    );
+
+    let tolerant_output = run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+        "--layout-tolerance-pt",
+        "4.0",
+    ]);
+    assert_success(&tolerant_output);
+    let tolerant_json: Value =
+        serde_json::from_slice(&tolerant_output.stdout).expect("diff stdout should be valid JSON");
+    assert_eq!(tolerant_json["summary"]["layout_changed"], 0);
+    assert_eq!(tolerant_json["changes"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn diff_command_emits_ai_review_json() {
     let fixture = TestFixture::new("diff_command_emits_ai_review_json");
     let old_pdf = fixture.write_pdf("old.pdf", "Payment is due within 30 days.");
@@ -641,6 +675,9 @@ fn html_outputs_complete_against_real_sample_pdfs() {
         assert_self_contained_html(&html);
         assert!(html.contains("<h1>Semantic PDF Diff</h1>"));
         assert!(html.contains("<th>Old</th><th>New</th>"));
+        if html.contains("bbox [") {
+            assert!(html.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        }
         if pair.slug == "semantic-contract" {
             assert_readable_output_contains_all(
                 &html,
@@ -1050,6 +1087,45 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert!(report["diagnostic_counts"]["MISSING_PAGE_CONTENT"].is_null());
 }
 
+#[test]
+fn corpus_command_evaluates_committed_sample_manifest_gate() {
+    let fixture = TestFixture::new("corpus_command_manifest_gate");
+    let corpus = fixture.path("real_corpus");
+    fs::create_dir_all(&corpus).expect("real-sample corpus directory should be created");
+    for sample in real_sample_pdf_names().iter().copied() {
+        fs::copy(real_sample_pdf(sample), corpus.join(sample))
+            .expect("real sample should be copied");
+    }
+    let output_path = fixture.path("manifest-corpus.json");
+    let manifest = sample_file("compatibility_corpus_manifest.json");
+
+    let output = run_spdfdiff([
+        "corpus",
+        path_arg(&corpus).as_str(),
+        "--manifest",
+        path_arg(&manifest).as_str(),
+        "--output",
+        path_arg(&output_path).as_str(),
+        "--fail-on-gate",
+    ]);
+    assert_success(&output);
+
+    let report = read_json(&output_path);
+    assert_eq!(report["gate"]["passed"], true);
+    assert_eq!(report["gate"]["manifest_schema_version"], "1");
+    assert_eq!(
+        report["gate"]["missing_required_files"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(report["diff_pairs"].as_array().unwrap().len(), 20);
+    assert_eq!(report["diff_pairs"][0]["name"], "annotations");
+    assert_eq!(report["diff_pairs"][0]["status"], "diffed");
+    assert!(report["diff_diagnostic_counts"].is_object());
+}
+
 fn run_spdfdiff<const N: usize>(args: [&str; N]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_spdfdiff"))
         .args(args)
@@ -1213,7 +1289,7 @@ fn assert_readable_output_contains_all(output: &str, expected_terms: &[&str]) {
 fn assert_self_contained_html(output: &str) {
     assert!(output.starts_with("<!doctype html>"));
     assert!(
-        !output.contains("http://") && !output.contains("https://"),
+        !output.contains("src=\"http") && !output.contains("href=\"http"),
         "HTML output should not depend on external network resources: {output}"
     );
 }
@@ -1240,6 +1316,12 @@ impl TestFixture {
     fn write_pdf(&self, name: &str, text: &str) -> PathBuf {
         let path = self.path(name);
         fs::write(&path, minimal_pdf(text)).expect("PDF fixture should be written");
+        path
+    }
+
+    fn write_pdf_at(&self, name: &str, text: &str, x: f32, y: f32) -> PathBuf {
+        let path = self.path(name);
+        fs::write(&path, minimal_pdf_at(text, x, y)).expect("PDF fixture should be written");
         path
     }
 
@@ -1281,7 +1363,11 @@ impl Drop for TestFixture {
 }
 
 fn minimal_pdf(text: &str) -> Vec<u8> {
-    let content = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET\n");
+    minimal_pdf_at(text, 72.0, 720.0)
+}
+
+fn minimal_pdf_at(text: &str, x: f32, y: f32) -> Vec<u8> {
+    let content = format!("BT /F1 12 Tf {x:.2} {y:.2} Td ({text}) Tj ET\n");
     format!(
         "%PDF-1.7\n\
          1 0 obj\n\

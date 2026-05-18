@@ -235,6 +235,17 @@ Release requirements:
 - HTML/SVG overlay report;
 - corpus runner metrics.
 
+Current implementation status:
+
+- layout-only changes are detected separately from text edits with a configurable
+  layout tolerance in `diff_core`;
+- heading, list, table, and figure candidates are produced by deterministic
+  semantic extraction heuristics;
+- HTML reports include side-by-side evidence and deterministic inline SVG
+  overlays for available old/new bounding boxes in PDF user space;
+- the corpus command emits aggregate parse/partial/failure totals,
+  per-file node and diagnostic counts, and stable diagnostic-code metrics.
+
 ## Recommended v0.4.0 release name
 
 `v0.4.0 — Tagged PDF Semantics`

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use spdfdiff_types::{
     AiConfidenceBucket, AiDiagnosticCount, AiEvidenceBundle, AiReviewAnswer, AiReviewItem,
     AiReviewQuestionHint, AiReviewReport, AiReviewSummary, AiReviewTag, ChangeKind, DiffDocument,
-    PdfDiffError, SemanticChange,
+    LayoutDiff, PdfDiffError, Rect, SemanticChange,
 };
 
 pub fn to_json(document: &DiffDocument) -> Result<String, PdfDiffError> {
@@ -63,6 +63,7 @@ body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:24px;color:#
 table{border-collapse:collapse;width:100%;margin:12px 0}th,td{border:1px solid #d9e2ec;padding:8px;vertical-align:top;text-align:left}\
 th{background:#f0f4f8}.change{margin:16px 0;border:1px solid #d9e2ec}.change h3{margin:0;padding:10px;background:#f8fafc}\
 .meta{color:#52606d;font-size:0.9rem}.hunks code{display:inline-block;margin:2px 4px 2px 0;padding:2px 4px;background:#f0f4f8}\
+.overlay-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin:12px 0}.overlay{border:1px solid #d9e2ec;padding:8px;background:#fbfdff}.overlay svg{width:100%;height:auto;max-height:240px;background:#fff}.overlay rect{fill:rgba(37,99,235,.12);stroke:#2563eb;stroke-width:1.5}.overlay text{font-size:10px;fill:#102a43}\
 .diagnostic{margin:4px 0}</style><title>Semantic PDF Diff</title></head><body>",
     );
     output.push_str("<h1>Semantic PDF Diff</h1>");
@@ -77,6 +78,7 @@ th{background:#f0f4f8}.change{margin:16px 0;border:1px solid #d9e2ec}.change h3{
         output.push_str(&format!("<tr><td>{label}</td><td>{count}</td></tr>",));
     }
     output.push_str("</tbody></table>");
+    push_html_overlays(&mut output, document);
 
     output.push_str("<h2>Changes</h2>");
     if document.changes.is_empty() {
@@ -109,6 +111,12 @@ th{background:#f0f4f8}.change{margin:16px 0;border:1px solid #d9e2ec}.change h3{
                 }
                 output.push_str("</div>");
             }
+            if let Some(layout_diff) = &change.layout_diff {
+                output.push_str(&format!(
+                    "<div class=\"meta\"><strong>Layout diff</strong>: {}</div>",
+                    escape_html(&layout_diff_summary(layout_diff))
+                ));
+            }
             output.push_str("</section>");
         }
     }
@@ -128,6 +136,132 @@ th{background:#f0f4f8}.change{margin:16px 0;border:1px solid #d9e2ec}.change h3{
     }
     output.push_str("</body></html>");
     output
+}
+
+#[derive(Debug, Clone)]
+struct OverlayRect {
+    change_id: String,
+    node_id: String,
+    bbox: Rect,
+}
+
+fn push_html_overlays(output: &mut String, document: &DiffDocument) {
+    let mut overlays: BTreeMap<(&'static str, usize), Vec<OverlayRect>> = BTreeMap::new();
+    for change in &document.changes {
+        push_overlay_rect(&mut overlays, "Old", change, change.old_node.as_ref());
+        push_overlay_rect(&mut overlays, "New", change, change.new_node.as_ref());
+    }
+    if overlays.is_empty() {
+        return;
+    }
+
+    output.push_str("<h2>Page Evidence Overlays</h2>");
+    output.push_str(
+        "<p class=\"meta\">Inline SVG rectangles use PDF user-space coordinates from extracted node bounding boxes.</p>",
+    );
+    output.push_str("<div class=\"overlay-grid\">");
+    for ((role, page), mut rects) in overlays {
+        rects.sort_by(|left, right| {
+            left.change_id
+                .cmp(&right.change_id)
+                .then_with(|| left.node_id.cmp(&right.node_id))
+        });
+        output.push_str(&format!(
+            "<section class=\"overlay\"><h3>{} page {}</h3>",
+            role,
+            page + 1
+        ));
+        push_svg_overlay(output, &rects);
+        output.push_str("</section>");
+    }
+    output.push_str("</div>");
+}
+
+fn push_overlay_rect(
+    overlays: &mut BTreeMap<(&'static str, usize), Vec<OverlayRect>>,
+    role: &'static str,
+    change: &SemanticChange,
+    evidence: Option<&spdfdiff_types::SemanticNodeEvidence>,
+) {
+    let Some(evidence) = evidence else {
+        return;
+    };
+    let Some(bbox) = evidence.bbox else {
+        return;
+    };
+    if !is_reportable_rect(bbox) {
+        return;
+    }
+    overlays
+        .entry((role, evidence.page))
+        .or_default()
+        .push(OverlayRect {
+            change_id: change.id.clone(),
+            node_id: evidence.node_id.clone(),
+            bbox,
+        });
+}
+
+fn push_svg_overlay(output: &mut String, rects: &[OverlayRect]) {
+    let Some((x0, y0, x1, y1)) = overlay_bounds(rects) else {
+        return;
+    };
+    let margin = 8.0;
+    let view_x = x0 - margin;
+    let view_y = y0 - margin;
+    let view_width = (x1 - x0 + margin * 2.0).max(1.0);
+    let view_height = (y1 - y0 + margin * 2.0).max(1.0);
+    output.push_str(&format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{view_x:.2} {view_y:.2} {view_width:.2} {view_height:.2}\" role=\"img\" aria-label=\"PDF user-space evidence overlay\">"
+    ));
+    for rect in rects {
+        let (x, y, width, height) = normalized_rect(rect.bbox);
+        output.push_str(&format!(
+            "<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{width:.2}\" height=\"{height:.2}\" data-change=\"{}\" data-node=\"{}\"><title>{} {}</title></rect>",
+            escape_html(&rect.change_id),
+            escape_html(&rect.node_id),
+            escape_html(&rect.change_id),
+            escape_html(&rect.node_id)
+        ));
+        output.push_str(&format!(
+            "<text x=\"{:.2}\" y=\"{:.2}\">{}</text>",
+            x,
+            y - 2.0,
+            escape_html(&rect.change_id)
+        ));
+    }
+    output.push_str("</svg>");
+}
+
+fn overlay_bounds(rects: &[OverlayRect]) -> Option<(f32, f32, f32, f32)> {
+    let mut iter = rects.iter().map(|rect| normalized_rect(rect.bbox));
+    let (mut x0, mut y0, width, height) = iter.next()?;
+    let mut x1 = x0 + width;
+    let mut y1 = y0 + height;
+    for (x, y, width, height) in iter {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x + width);
+        y1 = y1.max(y + height);
+    }
+    Some((x0, y0, x1, y1))
+}
+
+fn normalized_rect(rect: Rect) -> (f32, f32, f32, f32) {
+    let x0 = rect.x0.min(rect.x1);
+    let y0 = rect.y0.min(rect.y1);
+    let x1 = rect.x0.max(rect.x1);
+    let y1 = rect.y0.max(rect.y1);
+    (x0, y0, (x1 - x0).max(0.1), (y1 - y0).max(0.1))
+}
+
+fn is_reportable_rect(rect: Rect) -> bool {
+    rect.x0.is_finite()
+        && rect.y0.is_finite()
+        && rect.x1.is_finite()
+        && rect.y1.is_finite()
+        && (rect.x1 - rect.x0).abs() > 0.0
+        && (rect.y1 - rect.y0).abs() > 0.0
 }
 
 fn build_ai_review_item(change: &SemanticChange) -> AiReviewItem {
@@ -324,6 +458,7 @@ fn evidence_bundle(change: &SemanticChange) -> AiEvidenceBundle {
         old_text: change.old_node.as_ref().and_then(|node| node.text.clone()),
         new_text: change.new_node.as_ref().and_then(|node| node.text.clone()),
         text_hunks: change.text_hunks.clone(),
+        layout_diff: change.layout_diff.clone(),
         provenance,
     }
 }
@@ -523,6 +658,12 @@ pub fn to_markdown(document: &DiffDocument) -> String {
                 }
                 output.push('\n');
             }
+            if let Some(layout_diff) = &change.layout_diff {
+                output.push_str(&format!(
+                    "  - Layout diff: {}\n",
+                    layout_diff_summary(layout_diff)
+                ));
+            }
         }
         output.push('\n');
     }
@@ -593,6 +734,33 @@ fn push_evidence_line(
     output.push('\n');
 }
 
+fn layout_diff_summary(layout_diff: &LayoutDiff) -> String {
+    let mut parts = Vec::new();
+    if let Some(delta_x) = layout_diff.delta_x {
+        parts.push(format!("dx={delta_x:.2}"));
+    }
+    if let Some(delta_y) = layout_diff.delta_y {
+        parts.push(format!("dy={delta_y:.2}"));
+    }
+    if let Some(delta_width) = layout_diff.delta_width {
+        parts.push(format!("dw={delta_width:.2}"));
+    }
+    if let Some(delta_height) = layout_diff.delta_height {
+        parts.push(format!("dh={delta_height:.2}"));
+    }
+    if layout_diff.page_changed {
+        parts.push("page_changed=true".to_owned());
+    }
+    if layout_diff.reading_order_changed {
+        parts.push("reading_order_changed=true".to_owned());
+    }
+    if parts.is_empty() {
+        "bbox changed without numeric delta".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
 fn hunk_label(hunk: &spdfdiff_types::TextHunk) -> String {
     match &hunk.granularity {
         Some(granularity) => format!("{:?}/{:?}", hunk.kind, granularity),
@@ -604,8 +772,8 @@ fn hunk_label(hunk: &spdfdiff_types::TextHunk) -> String {
 mod tests {
     use super::*;
     use spdfdiff_types::{
-        ChangeKind, ChangeSeverity, Provenance, SemanticChange, SemanticNodeEvidence, TextHunk,
-        TextHunkKind,
+        ChangeKind, ChangeSeverity, Provenance, Rect, SemanticChange, SemanticNodeEvidence,
+        TextHunk, TextHunkKind,
     };
 
     #[test]
@@ -619,14 +787,24 @@ mod tests {
             old_node: Some(SemanticNodeEvidence {
                 node_id: "old-node".into(),
                 page: 0,
-                bbox: None,
+                bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 700.0,
+                    x1: 240.0,
+                    y1: 716.0,
+                }),
                 text: Some("Annual revenue was 10 million.".into()),
                 source: vec![Provenance::unknown()],
             }),
             new_node: Some(SemanticNodeEvidence {
                 node_id: "new-node".into(),
                 page: 0,
-                bbox: None,
+                bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 682.0,
+                    x1: 246.0,
+                    y1: 698.0,
+                }),
                 text: Some("Annual revenue was 12 million.".into()),
                 source: vec![Provenance::unknown()],
             }),
@@ -638,6 +816,26 @@ mod tests {
                 old_text: Some("10".into()),
                 new_text: Some("12".into()),
             }],
+            layout_diff: Some(LayoutDiff {
+                old_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 700.0,
+                    x1: 240.0,
+                    y1: 716.0,
+                }),
+                new_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 682.0,
+                    x1: 246.0,
+                    y1: 698.0,
+                }),
+                delta_x: Some(0.0),
+                delta_y: Some(-18.0),
+                delta_width: Some(6.0),
+                delta_height: Some(0.0),
+                page_changed: false,
+                reading_order_changed: false,
+            }),
             confidence: 0.9,
             reason: "paragraph text differs".into(),
         });
@@ -649,6 +847,7 @@ mod tests {
         assert!(markdown.contains("Old page 1 `old-node`: Annual revenue was 10 million."));
         assert!(markdown.contains("New page 1 `new-node`: Annual revenue was 12 million."));
         assert!(markdown.contains("`Replaced` \"10\" -> \"12\""));
+        assert!(markdown.contains("Layout diff: dx=0.00, dy=-18.00, dw=6.00, dh=0.00"));
     }
 
     #[test]
@@ -662,18 +861,48 @@ mod tests {
             old_node: Some(SemanticNodeEvidence {
                 node_id: "old-node".into(),
                 page: 0,
-                bbox: None,
+                bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 700.0,
+                    x1: 240.0,
+                    y1: 716.0,
+                }),
                 text: Some("Annual revenue was 10 million.".into()),
                 source: vec![Provenance::unknown()],
             }),
             new_node: Some(SemanticNodeEvidence {
                 node_id: "new-node".into(),
                 page: 0,
-                bbox: None,
+                bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 682.0,
+                    x1: 246.0,
+                    y1: 698.0,
+                }),
                 text: Some("Annual revenue was 12 million.".into()),
                 source: vec![Provenance::unknown()],
             }),
             text_hunks: Vec::new(),
+            layout_diff: Some(LayoutDiff {
+                old_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 700.0,
+                    x1: 240.0,
+                    y1: 716.0,
+                }),
+                new_bbox: Some(Rect {
+                    x0: 72.0,
+                    y0: 682.0,
+                    x1: 246.0,
+                    y1: 698.0,
+                }),
+                delta_x: Some(0.0),
+                delta_y: Some(-18.0),
+                delta_width: Some(6.0),
+                delta_height: Some(0.0),
+                page_changed: false,
+                reading_order_changed: false,
+            }),
             confidence: 0.9,
             reason: "paragraph text differs".into(),
         });
@@ -682,10 +911,16 @@ mod tests {
 
         assert!(html.contains("<!doctype html>"));
         assert!(html.contains("<th>Old</th><th>New</th>"));
+        assert!(html.contains("<h2>Page Evidence Overlays</h2>"));
+        assert!(html.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(html.contains("data-change=\"change-0000\""));
+        assert!(html.contains("bbox [72.00, 700.00, 240.00, 716.00] in PDF user space"));
+        assert!(html.contains("Layout diff"));
+        assert!(html.contains("dx=0.00, dy=-18.00, dw=6.00, dh=0.00"));
         assert!(html.contains("Annual revenue was 10 million."));
         assert!(html.contains("Annual revenue was 12 million."));
-        assert!(!html.contains("http://"));
-        assert!(!html.contains("https://"));
+        assert!(!html.contains("src=\"http"));
+        assert!(!html.contains("href=\"http"));
     }
 
     #[test]
@@ -718,6 +953,7 @@ mod tests {
                 old_text: Some("30".into()),
                 new_text: Some("15".into()),
             }],
+            layout_diff: None,
             confidence: 0.91,
             reason: "paragraph text differs".into(),
         });

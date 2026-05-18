@@ -1,5 +1,6 @@
 use flate2::read::ZlibDecoder;
 use spdfdiff_types::{ByteRange, Diagnostic, ObjectId, ParseConfig, PdfDiffError, ResourceLimits};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,7 +9,7 @@ pub struct PdfVersion {
     pub minor: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PdfDocument {
     pub version: PdfVersion,
     pub objects: Vec<PdfObject>,
@@ -42,12 +43,17 @@ impl PdfStream {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PdfPage {
     pub page_index: usize,
     pub object_id: ObjectId,
     pub content_object_id: ObjectId,
     pub content_object_ids: Vec<ObjectId>,
+    pub media_box: Option<spdfdiff_types::Rect>,
+    pub crop_box: Option<spdfdiff_types::Rect>,
+    pub rotation: i32,
+    pub resources_object_id: Option<ObjectId>,
+    pub has_resources: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2454,40 +2460,290 @@ fn resolve_pages(
     limits: ResourceLimits,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<PdfPage>, PdfDiffError> {
-    let mut pages = Vec::new();
-    for object in objects {
-        if !is_page_object(&object.body) {
-            continue;
+    let values = parsed_object_values(objects);
+    if let Some(pages_root_id) = catalog_pages_root_id(&values) {
+        let mut pages = Vec::new();
+        let mut seen = BTreeSet::new();
+        append_pages_from_tree(
+            pages_root_id,
+            &values,
+            InheritedPageAttributes::default(),
+            limits,
+            diagnostics,
+            &mut seen,
+            &mut pages,
+        )?;
+        if !pages.is_empty() {
+            return Ok(pages);
         }
-        let content_object_ids = find_content_references(&object.body);
-        let Some(content_object_id) = content_object_ids.first().copied() else {
-            diagnostics.push(
-                Diagnostic::warning(
-                    "MISSING_CONTENT_STREAM",
-                    "page does not reference /Contents",
-                )
-                .with_object(object.id),
-            );
-            continue;
-        };
-        pages.push(PdfPage {
-            page_index: pages.len(),
-            object_id: object.id,
-            content_object_id,
-            content_object_ids,
-        });
-    }
-    if pages.len() > limits.max_pages {
-        return Err(resource_limit_error(
-            "RESOURCE_LIMIT_PAGE_COUNT",
-            format!(
-                "file has {} pages, limit is {}",
-                pages.len(),
-                limits.max_pages
-            ),
+        diagnostics.push(Diagnostic::warning(
+            "PAGE_TREE_EMPTY",
+            "catalog /Pages tree resolved without page entries; falling back to scanned page objects",
         ));
     }
+
+    scanned_pages_from_objects(objects, &values, limits, diagnostics)
+}
+
+#[derive(Debug, Clone, Default)]
+struct InheritedPageAttributes {
+    media_box: Option<spdfdiff_types::Rect>,
+    crop_box: Option<spdfdiff_types::Rect>,
+    rotation: Option<i32>,
+    resources_object_id: Option<ObjectId>,
+    has_resources: bool,
+}
+
+fn parsed_object_values(objects: &[PdfObject]) -> BTreeMap<ObjectId, PdfPrimitive> {
+    objects
+        .iter()
+        .filter_map(|object| {
+            parse_primitive(object.body.as_bytes(), ParseConfig::default())
+                .ok()
+                .map(|parsed| (object.id, parsed.value))
+        })
+        .collect()
+}
+
+fn catalog_pages_root_id(values: &BTreeMap<ObjectId, PdfPrimitive>) -> Option<ObjectId> {
+    values.values().find_map(|value| {
+        if !matches!(
+            dictionary_value(value, "Type"),
+            Some(PdfPrimitive::Name(name)) if name == "Catalog"
+        ) {
+            return None;
+        }
+        match dictionary_value(value, "Pages") {
+            Some(PdfPrimitive::Reference(id)) => Some(*id),
+            _ => None,
+        }
+    })
+}
+
+fn append_pages_from_tree(
+    object_id: ObjectId,
+    values: &BTreeMap<ObjectId, PdfPrimitive>,
+    inherited: InheritedPageAttributes,
+    limits: ResourceLimits,
+    diagnostics: &mut Vec<Diagnostic>,
+    seen: &mut BTreeSet<ObjectId>,
+    pages: &mut Vec<PdfPage>,
+) -> Result<(), PdfDiffError> {
+    if pages.len() > limits.max_pages {
+        return Err(page_count_limit_error(pages.len(), limits));
+    }
+    if !seen.insert(object_id) {
+        diagnostics.push(
+            Diagnostic::warning(
+                "PAGE_TREE_CYCLE",
+                format!("page tree cycle detected at object {}", object_id.number),
+            )
+            .with_object(object_id),
+        );
+        return Ok(());
+    }
+
+    let Some(value) = values.get(&object_id) else {
+        diagnostics.push(
+            Diagnostic::warning(
+                "PAGE_TREE_OBJECT_MISSING",
+                format!("page tree references missing object {}", object_id.number),
+            )
+            .with_object(object_id),
+        );
+        seen.remove(&object_id);
+        return Ok(());
+    };
+    let inherited = inherited.merge(value);
+    match dictionary_value(value, "Type") {
+        Some(PdfPrimitive::Name(name)) if name == "Pages" => {
+            let Some(PdfPrimitive::Array(kids)) = dictionary_value(value, "Kids") else {
+                diagnostics.push(
+                    Diagnostic::warning("PAGE_TREE_KIDS_MISSING", "pages node has no /Kids array")
+                        .with_object(object_id),
+                );
+                seen.remove(&object_id);
+                return Ok(());
+            };
+            for kid in kids {
+                match kid {
+                    PdfPrimitive::Reference(kid_id) => append_pages_from_tree(
+                        *kid_id,
+                        values,
+                        inherited.clone(),
+                        limits,
+                        diagnostics,
+                        seen,
+                        pages,
+                    )?,
+                    _ => diagnostics.push(
+                        Diagnostic::warning(
+                            "PAGE_TREE_KID_INVALID",
+                            "pages node contains a non-reference /Kids entry",
+                        )
+                        .with_object(object_id),
+                    ),
+                }
+            }
+        }
+        Some(PdfPrimitive::Name(name)) if name == "Page" => {
+            if let Some(page) = page_from_value(object_id, value, &inherited, diagnostics) {
+                pages.push(page.with_page_index(pages.len()));
+            }
+        }
+        _ => diagnostics.push(
+            Diagnostic::warning(
+                "PAGE_TREE_NODE_INVALID",
+                "page tree reference does not point to a /Page or /Pages node",
+            )
+            .with_object(object_id),
+        ),
+    }
+    seen.remove(&object_id);
+    if pages.len() > limits.max_pages {
+        return Err(page_count_limit_error(pages.len(), limits));
+    }
+    Ok(())
+}
+
+impl InheritedPageAttributes {
+    fn merge(&self, value: &PdfPrimitive) -> Self {
+        Self {
+            media_box: rect_from_array(dictionary_value(value, "MediaBox")).or(self.media_box),
+            crop_box: rect_from_array(dictionary_value(value, "CropBox")).or(self.crop_box),
+            rotation: integer_from_value(dictionary_value(value, "Rotate")).or(self.rotation),
+            resources_object_id: reference_from_value(dictionary_value(value, "Resources"))
+                .or(self.resources_object_id),
+            has_resources: dictionary_value(value, "Resources").is_some() || self.has_resources,
+        }
+    }
+}
+
+impl PdfPage {
+    fn with_page_index(mut self, page_index: usize) -> Self {
+        self.page_index = page_index;
+        self
+    }
+}
+
+fn page_from_value(
+    object_id: ObjectId,
+    value: &PdfPrimitive,
+    inherited: &InheritedPageAttributes,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<PdfPage> {
+    let content_object_ids = content_references_from_value(dictionary_value(value, "Contents"));
+    let Some(content_object_id) = content_object_ids.first().copied() else {
+        diagnostics.push(
+            Diagnostic::warning(
+                "MISSING_CONTENT_STREAM",
+                "page does not reference /Contents",
+            )
+            .with_object(object_id),
+        );
+        return None;
+    };
+    Some(PdfPage {
+        page_index: 0,
+        object_id,
+        content_object_id,
+        content_object_ids,
+        media_box: inherited.media_box,
+        crop_box: inherited.crop_box.or(inherited.media_box),
+        rotation: inherited.rotation.unwrap_or(0),
+        resources_object_id: inherited.resources_object_id,
+        has_resources: inherited.has_resources,
+    })
+}
+
+fn scanned_pages_from_objects(
+    objects: &[PdfObject],
+    values: &BTreeMap<ObjectId, PdfPrimitive>,
+    limits: ResourceLimits,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<PdfPage>, PdfDiffError> {
+    let mut pages = Vec::new();
+    for object in objects {
+        let Some(value) = values.get(&object.id) else {
+            continue;
+        };
+        if !matches!(
+            dictionary_value(value, "Type"),
+            Some(PdfPrimitive::Name(name)) if name == "Page"
+        ) {
+            continue;
+        };
+        if let Some(page) = page_from_value(
+            object.id,
+            value,
+            &InheritedPageAttributes::default().merge(value),
+            diagnostics,
+        ) {
+            pages.push(page.with_page_index(pages.len()));
+        }
+    }
+    if pages.len() > limits.max_pages {
+        return Err(page_count_limit_error(pages.len(), limits));
+    }
     Ok(pages)
+}
+
+fn page_count_limit_error(page_count: usize, limits: ResourceLimits) -> PdfDiffError {
+    resource_limit_error(
+        "RESOURCE_LIMIT_PAGE_COUNT",
+        format!("file has {page_count} pages, limit is {}", limits.max_pages),
+    )
+}
+
+fn content_references_from_value(value: Option<&PdfPrimitive>) -> Vec<ObjectId> {
+    match value {
+        Some(PdfPrimitive::Reference(id)) => vec![*id],
+        Some(PdfPrimitive::Array(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                PdfPrimitive::Reference(id) => Some(*id),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn rect_from_array(value: Option<&PdfPrimitive>) -> Option<spdfdiff_types::Rect> {
+    let Some(PdfPrimitive::Array(items)) = value else {
+        return None;
+    };
+    let [x0, y0, x1, y1] = items.as_slice() else {
+        return None;
+    };
+    Some(spdfdiff_types::Rect {
+        x0: number_from_value(x0)?,
+        y0: number_from_value(y0)?,
+        x1: number_from_value(x1)?,
+        y1: number_from_value(y1)?,
+    })
+}
+
+fn number_from_value(value: &PdfPrimitive) -> Option<f32> {
+    match value {
+        PdfPrimitive::Integer(value) => Some(*value as f32),
+        PdfPrimitive::Real(value) => Some(*value as f32),
+        _ => None,
+    }
+}
+
+fn integer_from_value(value: Option<&PdfPrimitive>) -> Option<i32> {
+    let Some(PdfPrimitive::Integer(value)) = value else {
+        return None;
+    };
+    i32::try_from(*value).ok()
+}
+
+fn reference_from_value(value: Option<&PdfPrimitive>) -> Option<ObjectId> {
+    match value {
+        Some(PdfPrimitive::Reference(id)) => Some(*id),
+        _ => None,
+    }
 }
 
 fn scan_unsupported_features(objects: &[PdfObject]) -> Vec<Diagnostic> {
@@ -2545,65 +2801,6 @@ fn scan_unsupported_features(objects: &[PdfObject]) -> Vec<Diagnostic> {
         }
     }
     diagnostics
-}
-
-fn is_page_object(body: &str) -> bool {
-    body.contains("/Type /Page") && !body.contains("/Type /Pages")
-}
-
-fn find_content_references(body: &str) -> Vec<ObjectId> {
-    let Some(start) = body
-        .find("/Contents")
-        .map(|index| index + "/Contents".len())
-    else {
-        return Vec::new();
-    };
-    let tail = body[start..].trim_start();
-    if let Some(array_body) = tail
-        .strip_prefix('[')
-        .and_then(|remaining| remaining.split_once(']').map(|(array, _)| array))
-    {
-        return references_in_text(array_body);
-    }
-    first_reference_in_text(tail).into_iter().collect()
-}
-
-fn first_reference_in_text(text: &str) -> Option<ObjectId> {
-    let tokens = reference_tokens(text);
-    parse_reference_tokens(tokens.first()?, tokens.get(1)?, tokens.get(2)?)
-}
-
-fn references_in_text(text: &str) -> Vec<ObjectId> {
-    let tokens = reference_tokens(text);
-    let mut references = Vec::new();
-    let mut index = 0;
-    while index + 2 < tokens.len() {
-        if let Some(reference) =
-            parse_reference_tokens(&tokens[index], &tokens[index + 1], &tokens[index + 2])
-        {
-            references.push(reference);
-            index += 3;
-        } else {
-            index += 1;
-        }
-    }
-    references
-}
-
-fn reference_tokens(text: &str) -> Vec<String> {
-    text.replace(['[', ']'], " ")
-        .split_ascii_whitespace()
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn parse_reference_tokens(number: &str, generation: &str, marker: &str) -> Option<ObjectId> {
-    if marker != "R" {
-        return None;
-    }
-    let number = number.parse().ok()?;
-    let generation = generation.parse().ok()?;
-    Some(ObjectId { number, generation })
 }
 
 trait DiagnosticExt {
@@ -3275,6 +3472,57 @@ endobj
     }
 
     #[test]
+    fn resolves_page_tree_order_and_inherited_page_attributes() {
+        let document = PdfDocument::parse(nested_page_tree_pdf()).expect("fixture should parse");
+
+        assert_eq!(document.pages.len(), 2);
+        assert_eq!(
+            document.pages[0].object_id,
+            ObjectId {
+                number: 5,
+                generation: 0
+            }
+        );
+        assert_eq!(
+            document.pages[1].object_id,
+            ObjectId {
+                number: 3,
+                generation: 0
+            }
+        );
+        assert_eq!(
+            document.pages[0].media_box,
+            Some(spdfdiff_types::Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 612.0,
+                y1: 792.0,
+            })
+        );
+        assert_eq!(
+            document.pages[0].crop_box,
+            Some(spdfdiff_types::Rect {
+                x0: 10.0,
+                y0: 20.0,
+                x1: 300.0,
+                y1: 400.0,
+            })
+        );
+        assert_eq!(document.pages[0].rotation, 90);
+        assert_eq!(document.pages[1].rotation, 180);
+        assert_eq!(
+            document.pages[0].resources_object_id,
+            Some(ObjectId {
+                number: 8,
+                generation: 0
+            })
+        );
+        assert!(document.pages[0].has_resources);
+        assert_eq!(document.page_contents()[0].stream_object_id.number, 6);
+        assert_eq!(document.page_contents()[1].stream_object_id.number, 4);
+    }
+
+    #[test]
     fn emits_diagnostic_for_page_without_contents() {
         let pdf = b"%PDF-1.7
 1 0 obj
@@ -3548,6 +3796,44 @@ endobj
 stream
 BT /F1 12 Tf 72 720 Td (Second page) Tj ET
 endstream
+endobj
+"
+    }
+
+    fn nested_page_tree_pdf() -> &'static [u8] {
+        b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [7 0 R] /Count 2 /MediaBox [0 0 612 792] /Resources 8 0 R /Rotate 90 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 7 0 R /Contents 4 0 R /Rotate 180 >>
+endobj
+4 0 obj
+<< /Length 44 >>
+stream
+BT /F1 12 Tf 72 720 Td (Second page) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 7 0 R /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 43 >>
+stream
+BT /F1 12 Tf 72 720 Td (First page) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Pages /Parent 2 0 R /Kids [5 0 R 3 0 R] /Count 2 /CropBox [10 20 300 400] >>
+endobj
+8 0 obj
+<< /Font << /F1 9 0 R >> >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
 endobj
 "
     }

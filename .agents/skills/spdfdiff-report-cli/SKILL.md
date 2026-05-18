@@ -1,6 +1,6 @@
 ---
 name: spdfdiff-report-cli
-description: Implement or review semantic-pdf-diff report generation and CLI work in crates/diff_report and crates/spdfdiff_cli. Use for stable JSON reports, AI review JSON, Markdown summaries, basic HTML reports, SVG overlay deferral, CLI commands, command arguments, exit codes, output files, corpus command integration, and report snapshot tests.
+description: Implement or review semantic-pdf-diff report generation and CLI work in crates/diff_report and crates/spdfdiff_cli. Use for stable JSON reports, AI review JSON, Markdown summaries, HTML reports, inline SVG evidence overlays, CLI commands, command arguments, exit codes, output files, corpus command integration, and report snapshot tests.
 ---
 
 # SPDFDiff Report CLI
@@ -9,7 +9,7 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 
 1. Read `AGENTS.md`, then read `references/report-cli-plan.md`.
 2. Keep `DiffDocument` serialization stable and machine-readable first.
-3. Treat JSON, AI review JSON, and Markdown as deterministic report outputs; keep SVG overlays deferred to the layout-aware v0.3 phase unless explicitly requested behind an unstable feature.
+3. Treat JSON, AI review JSON, Markdown, HTML, and inline SVG evidence overlays as deterministic report outputs.
 4. Keep the public CLI shape stable: `spdfdiff diff`, `inspect`, `extract`, and `corpus`.
 5. Add snapshot-style tests for report output whenever fields or ordering change.
 
@@ -22,10 +22,11 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   templates, semantic node identities, and prompt-ready evidence bundles without
   embedding an LLM or making legal/business conclusions.
 - Markdown should summarize counts, changes, page references, and diagnostics.
-- Basic HTML must not depend on external network resources.
+- HTML must not depend on external network resources.
 - Basic HTML diff reports should render old/new evidence side by side and show
-  available page/bbox evidence; keep SVG overlays deferred.
-- Report coordinates must state whether they are PDF user space or normalized page space once overlays exist.
+  available page/bbox evidence.
+- Inline SVG evidence overlays must be deterministic and must state that
+  bounding boxes are in PDF user space.
 - CLI extraction currently walks parsed page content across all pages. Diff
   reports compare image XObject payloads by deterministic stream hash and should
   emit stable unsupported-feature diagnostics for native vector graphic

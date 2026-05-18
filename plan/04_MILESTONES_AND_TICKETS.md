@@ -1,5 +1,73 @@
 # Milestones and Implementation Tickets
 
+## Implementation Status Snapshot
+
+Legend:
+
+- `Implemented`: ticket acceptance is covered by code and tests, sometimes at
+  the compatibility-gate scope noted in the ticket.
+- `Partial`: useful code exists, but one or more ticket acceptance points remain
+  incomplete or only covered by controlled heuristics.
+- `Not implemented`: no meaningful implementation found in the current codebase.
+
+### Milestone Rollup
+
+| Milestone | Status | Notes |
+| --- | --- | --- |
+| Milestone 0 — Repository skeleton | Implemented | Workspace, shared types, lints, and CI foundation are in place. |
+| Milestone 1 — Minimal PDF parser | Implemented | Primitive, indirect object, classic xref/trailer, and stream decoding coverage exists. |
+| Milestone 1.5 — Safety and modern-PDF compatibility gate | Implemented | Resource limits, xref streams, object streams, and manifest-driven corpus release thresholds are implemented. |
+| Milestone 2 — Fixture generator and corpus runner | Partial | Corpus runner exists; reusable fixture writer and full fixture snapshot matrix remain incomplete. |
+| Milestone 3 — Page tree and content stream parsing | Implemented | Page tree traversal, inherited page attributes, content stream resolution, tokenization, and text operator interpretation are covered. |
+| Milestone 4 — Text extraction | Partial | Text extraction, ToUnicode, and glyph positioning work; full public font resource model remains limited. |
+| Milestone 5 — Layout and semantic extraction | Partial | Blocks, headings, lists, anchors, and simple aligned text-grid table row/cell candidates exist; rectangle/path table-border hints and robust arbitrary table reconstruction remain. |
+| Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
+| Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, CLI commands, outputs, and exit behavior are covered. |
+| Milestone 8 — Hardening | Partial | Incremental markers, fonts, tagged PDFs, benchmark, and malformed-input checks exist; prior-revision exposure and standalone fuzz targets remain. |
+
+### Ticket Status
+
+| Ticket | Status | Evidence / remaining gap |
+| --- | --- | --- |
+| M0-T1 — Create workspace | Implemented | Rust workspace, crates, lints, CI, and shared types exist. |
+| M0-T2 — Shared error, diagnostic, resource-limit conventions | Implemented | `PdfDiffError`, stable diagnostics, `ParseConfig`, and `ResourceLimits` are shared through `spdfdiff_types`. |
+| M1-T1 — Primitive tokenizer/parser | Implemented | Primitive parser tests cover scalars, arrays, dictionaries, strings, names, comments, and malformed input. |
+| M1-T2 — Indirect objects | Implemented | Indirect object, stream object, byte-range, and unterminated-object tests pass. |
+| M1-T3 — Xref table and trailer | Implemented | Classic xref/trailer and `ObjectStore` tests pass; xref-stream handling moved beyond this ticket into M1.5-T2. |
+| M1-T4 — Stream decoding | Implemented | No-filter, `FlateDecode`, `ASCIIHexDecode`, `RunLengthDecode`, failed decode, and unsupported-filter diagnostics exist. |
+| M1.5-T1 — Resource limits | Implemented | File, object, reference-depth, stream, decoded-stream, content-op, and page-count limit checks have stable `RESOURCE_LIMIT_*` errors/tests. |
+| M1.5-T2 — Xref stream parser | Implemented | Controlled `/Type /XRef` streams, `/W`, `/Index`, compressed entries, and malformed variants are tested. |
+| M1.5-T3 — Object stream extraction | Implemented | Controlled `/ObjStm` extraction resolves embedded objects with provenance; malformed object streams fail softly. |
+| M1.5-T4 — Compatibility corpus gate | Implemented | `spdfdiff corpus` emits deterministic per-file and diagnostic counts, supports the committed sample manifest, declared diff pairs, and release-blocking gate thresholds. |
+| M2-T1 — Minimal PDF writer for tests | Partial | Deterministic test helpers generate minimal PDFs, but there is no reusable test-only writer module with viewer/opening coverage. |
+| M2-T2 — Diff pair fixtures | Partial | Synthetic and real-sample diff pairs are covered by integration tests, but expected snapshots are not present for the full generated fixture matrix. |
+| M2-T3 — Corpus runner | Implemented | `spdfdiff corpus <folder> --output <json>` reports parsed/partial/failed files and diagnostics without stopping at first failure. |
+| M3-T1 — Page tree resolver | Implemented | Catalog `/Pages` traversal, ordered `/Kids`, inherited resources, MediaBox/CropBox dimensions, rotation, and page-count limits are covered. |
+| M3-T2 — Content stream resolver | Implemented | Single stream, content-stream arrays, multi-stream pages, and all parsed pages are covered with provenance and diagnostics. |
+| M3-T3 — Content tokenizer | Implemented | Content tokenizer handles numbers, names, strings, arrays, dictionaries, operators, `TJ`, and unknown operators. |
+| M3-T4 — Text operator interpreter | Implemented | MVP text operators and graphics-state save/restore are interpreted with matrix/position tests. |
+| M4-T1 — Font resource model | Partial | Font references and `/ToUnicode` maps are discovered for extraction, but a full public font resource model with subtype/encoding capture is still limited. |
+| M4-T2 — ToUnicode parser MVP | Implemented | `bfchar`, `bfrange`, multi-byte hex mapping, and unsupported CMap diagnostics are tested. |
+| M4-T3 — Glyph positioning MVP | Implemented | Text matrix, font size, spacing, `TJ` adjustment, width heuristics, and non-empty bboxes are covered. |
+| M4-T4 — Text run grouping | Implemented | Text runs preserve raw text, normalized text, glyph raw bytes, bboxes, source provenance, and stable output order. |
+| M5-T1 — Line and block clustering | Implemented | Baseline clustering, x ordering, paragraph grouping, bboxes, and two-column reading order are tested. |
+| M5-T2 — Heading candidates | Implemented | Controlled heading heuristic and confidence tests exist. |
+| M5-T3 — Lists and table candidates | Partial | Bullet/numbered list and simple aligned text-grid table row/cell candidates exist; rectangle/path table-border hints remain future work. |
+| M5-T4 — Semantic anchors | Implemented | Strong/weak text anchors, geometry buckets, and heading context are tested for stability. |
+| M6-T1 — Exact and fuzzy matching | Implemented | Exact anchors, fuzzy edited paragraph matching, move relabeling, low-confidence unmatched cases, and bounded fallback matching are tested. |
+| M6-T2 — Text hunks | Implemented | Token-level hunks, numeric replacements, small character fallback, and report output are implemented. |
+| M6-T3 — Layout diff | Implemented | Structured layout evidence, bbox deltas, reading-order changes, tolerance config, and CLI tolerance tests are implemented. |
+| M6-T4 — Summary and severity | Implemented | Change counts, deterministic IDs/order, default severity, confidence, and classifier override tests exist. |
+| M7-T1 — JSON report | Implemented | Stable JSON schema, deterministic changes, evidence, diagnostics, text hunks, and layout evidence are emitted. |
+| M7-T2 — Markdown report | Implemented | Markdown includes summary, changes, page/evidence lines, text hunks, layout diffs, and diagnostics. |
+| M7-T3 — Basic HTML report | Implemented | Self-contained HTML side-by-side report includes page/bbox evidence and inline SVG overlays. |
+| M7-T4 — CLI integration | Implemented | `diff`, `extract`, `inspect`, `corpus`, `benchmark`, formats, outputs, OCR path, and exit-code behavior are integration-tested. |
+| M8-T1 — Incremental updates and recovery parsing | Partial | Latest `startxref`, `/Prev` diagnostics, and xref recovery exist; prior revision data is not separately exposed beyond diagnostics. |
+| M8-T2 — Better font handling | Implemented | CID/Type0 missing-`ToUnicode` diagnostics and deterministic glyph-width heuristics are implemented. |
+| M8-T3 — Tagged PDF structure | Implemented | Simple structure trees, parent-tree summaries, MCID preservation, and tagged semantic node ordering are implemented for controlled cases. |
+| M8-T4 — Fuzzing and malformed PDFs | Partial | Feature-gated malformed-input tests exist for parser/content tokenizer, but standalone fuzz targets/corpus are not yet present. |
+| M8-T5 — Benchmark target | Implemented | CLI benchmark reports parse/extract/semantic/diff/report timings, threshold result, diagnostics, summary, and memory sample when available. |
+
 ## Milestone 0 — Repository skeleton
 
 ### Goal
@@ -502,6 +570,19 @@ Acceptance:
 - layout-only fixture emits `LayoutChanged`;
 - tiny changes below tolerance ignored;
 - moved text with changed location reports both move and layout evidence.
+
+Current implementation:
+
+- `spdfdiff_types::LayoutDiff` preserves old/new bounding boxes, bbox deltas,
+  page-change evidence, and reading-order-change evidence in JSON and AI-review
+  JSON;
+- `diff_core` attaches layout evidence to layout-only changes, fuzzy matched
+  modifications with bbox/page movement, and moved content relabeled from
+  insert/delete pairs;
+- `spdfdiff diff --layout-tolerance-pt` exposes the bbox/page movement tolerance
+  for CLI runs;
+- Markdown and HTML reports summarize layout deltas next to text and source
+  evidence.
 
 #### M6-T4 — Summary and severity
 

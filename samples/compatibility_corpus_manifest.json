@@ -1,0 +1,153 @@
+{
+  "schema_version": "1",
+  "thresholds": {
+    "min_parsed_files": 40,
+    "max_missing_required_files": 0,
+    "max_failed_files": 0,
+    "max_failed_diff_pairs": 0
+  },
+  "required_files": [
+    "annotations_base_v1.pdf",
+    "annotations_visual_markup_v2.pdf",
+    "attachment_link_bundle_v1.pdf",
+    "attachment_link_bundle_v2.pdf",
+    "complex_semantic_diff_v1.pdf",
+    "complex_semantic_diff_v2.pdf",
+    "document_outline_v1.pdf",
+    "document_outline_v2.pdf",
+    "document_v1.pdf",
+    "document_v2.pdf",
+    "headers_footers_v1.pdf",
+    "headers_footers_v2.pdf",
+    "inline_formatting_v1.pdf",
+    "inline_formatting_v2.pdf",
+    "interactive_forms_v1.pdf",
+    "interactive_forms_v2.pdf",
+    "interactive_links_v1.pdf",
+    "interactive_links_v2.pdf",
+    "layered_redaction_v1.pdf",
+    "layered_redaction_v2.pdf",
+    "multicolumn_layout_v1.pdf",
+    "multicolumn_layout_v2.pdf",
+    "multipage_table_v1.pdf",
+    "multipage_table_v2.pdf",
+    "report_with_images_v1.pdf",
+    "report_with_images_v2.pdf",
+    "scanned_document_v1.pdf",
+    "scanned_document_v2.pdf",
+    "semantic_contract_v1.pdf",
+    "semantic_contract_v2.pdf",
+    "semantic_images_v1.pdf",
+    "semantic_images_v2.pdf",
+    "tagged_table_reflow_v1.pdf",
+    "tagged_table_reflow_v2.pdf",
+    "ultimate_semantic_diff_v1.pdf",
+    "ultimate_semantic_diff_v2.pdf",
+    "vector_paths_graphic_v1.pdf",
+    "vector_paths_graphic_v2.pdf",
+    "watermark_overlay_v1.pdf",
+    "watermark_overlay_v2.pdf"
+  ],
+  "diff_pairs": [
+    {
+      "name": "annotations",
+      "old_file": "annotations_base_v1.pdf",
+      "new_file": "annotations_visual_markup_v2.pdf"
+    },
+    {
+      "name": "attachment-link-bundle",
+      "old_file": "attachment_link_bundle_v1.pdf",
+      "new_file": "attachment_link_bundle_v2.pdf"
+    },
+    {
+      "name": "complex-semantic-diff",
+      "old_file": "complex_semantic_diff_v1.pdf",
+      "new_file": "complex_semantic_diff_v2.pdf"
+    },
+    {
+      "name": "document-outline",
+      "old_file": "document_outline_v1.pdf",
+      "new_file": "document_outline_v2.pdf"
+    },
+    {
+      "name": "document",
+      "old_file": "document_v1.pdf",
+      "new_file": "document_v2.pdf"
+    },
+    {
+      "name": "headers-footers",
+      "old_file": "headers_footers_v1.pdf",
+      "new_file": "headers_footers_v2.pdf"
+    },
+    {
+      "name": "inline-formatting",
+      "old_file": "inline_formatting_v1.pdf",
+      "new_file": "inline_formatting_v2.pdf"
+    },
+    {
+      "name": "interactive-forms",
+      "old_file": "interactive_forms_v1.pdf",
+      "new_file": "interactive_forms_v2.pdf"
+    },
+    {
+      "name": "interactive-links",
+      "old_file": "interactive_links_v1.pdf",
+      "new_file": "interactive_links_v2.pdf"
+    },
+    {
+      "name": "layered-redaction",
+      "old_file": "layered_redaction_v1.pdf",
+      "new_file": "layered_redaction_v2.pdf"
+    },
+    {
+      "name": "multicolumn-layout",
+      "old_file": "multicolumn_layout_v1.pdf",
+      "new_file": "multicolumn_layout_v2.pdf"
+    },
+    {
+      "name": "multipage-table",
+      "old_file": "multipage_table_v1.pdf",
+      "new_file": "multipage_table_v2.pdf"
+    },
+    {
+      "name": "report-with-images",
+      "old_file": "report_with_images_v1.pdf",
+      "new_file": "report_with_images_v2.pdf"
+    },
+    {
+      "name": "scanned-document",
+      "old_file": "scanned_document_v1.pdf",
+      "new_file": "scanned_document_v2.pdf"
+    },
+    {
+      "name": "semantic-contract",
+      "old_file": "semantic_contract_v1.pdf",
+      "new_file": "semantic_contract_v2.pdf"
+    },
+    {
+      "name": "semantic-images",
+      "old_file": "semantic_images_v1.pdf",
+      "new_file": "semantic_images_v2.pdf"
+    },
+    {
+      "name": "tagged-table-reflow",
+      "old_file": "tagged_table_reflow_v1.pdf",
+      "new_file": "tagged_table_reflow_v2.pdf"
+    },
+    {
+      "name": "ultimate-semantic-diff",
+      "old_file": "ultimate_semantic_diff_v1.pdf",
+      "new_file": "ultimate_semantic_diff_v2.pdf"
+    },
+    {
+      "name": "vector-paths-graphic",
+      "old_file": "vector_paths_graphic_v1.pdf",
+      "new_file": "vector_paths_graphic_v2.pdf"
+    },
+    {
+      "name": "watermark-overlay",
+      "old_file": "watermark_overlay_v1.pdf",
+      "new_file": "watermark_overlay_v2.pdf"
+    }
+  ]
+}

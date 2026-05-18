@@ -18,6 +18,9 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
 - Cluster lines and blocks deterministically using page index, reading order, and geometry.
 - Prefer `Candidate`-style node kinds or `UnknownBlock` over false confidence.
 - Preserve page spans, bounding boxes, normalized text, style hints, provenance, and confidence.
+- Preserve simple aligned text-grid table evidence as deterministic rows/cells
+  when the geometry supports it; keep uncertain table-like text as low-scope
+  paragraph/unknown content instead of inventing cell structure.
 - Tagged-PDF structure and marked-content IDs are compatibility-gate surfaces:
   parse simple structure trees, keep diagnostics stable, and use tagged reading
   order only when MCID-to-text mapping is explicit and confidence-bearing.
@@ -29,6 +32,9 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
   use deterministic fallback matching instead of allocating unbounded matrices.
 - Detect moved content separately from delete plus insert when confidence supports it.
 - Keep layout-only changes separate from text modifications.
+- Preserve structured layout evidence through `spdfdiff_types::LayoutDiff`,
+  including old/new bounding boxes, bbox deltas, page changes, and reading-order
+  changes when the engine reports layout-only movement or moved content.
 - Emit deterministic text hunks for modified nodes. Keep numeric value changes at
   token granularity, and use character-level fallback only for small non-numeric
   word replacements where it adds useful localized evidence.

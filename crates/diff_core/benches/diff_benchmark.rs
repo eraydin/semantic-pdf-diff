@@ -18,6 +18,7 @@ fn fifty_page_semantic_document(fingerprint: &str, changed: bool) -> SemanticDoc
                 page_index,
                 bbox: None,
                 normalized_text: Some(text),
+                table: None,
                 anchor: SemanticAnchor::unknown(),
                 source: vec![Provenance::unknown()],
                 confidence: 1.0,

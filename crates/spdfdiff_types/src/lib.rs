@@ -249,6 +249,22 @@ pub struct SemanticNodeEvidence {
     pub source: Vec<Provenance>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayoutDiff {
+    pub old_bbox: Option<Rect>,
+    pub new_bbox: Option<Rect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_y: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_height: Option<f32>,
+    pub page_changed: bool,
+    pub reading_order_changed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextHunkKind {
     Equal,
@@ -298,6 +314,8 @@ pub struct SemanticChange {
     pub new_node: Option<SemanticNodeEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub text_hunks: Vec<TextHunk>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_diff: Option<LayoutDiff>,
     pub confidence: f32,
     pub reason: String,
 }
@@ -402,6 +420,8 @@ pub struct AiEvidenceBundle {
     pub old_text: Option<String>,
     pub new_text: Option<String>,
     pub text_hunks: Vec<TextHunk>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_diff: Option<LayoutDiff>,
     pub provenance: Vec<Provenance>,
 }
 
