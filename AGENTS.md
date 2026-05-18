@@ -82,6 +82,8 @@ minimal_old.pdf + minimal_new.pdf
   tables/trailers, no-filter, `FlateDecode`, `ASCIIHexDecode`, and
   `RunLengthDecode` streams, controlled `/Type /XRef` streams, controlled
   `/Type /ObjStm` extraction through `ObjectStore`, embedded object provenance,
+  catalog `/Pages` traversal with ordered `/Kids`, inherited page resources,
+  MediaBox/CropBox dimensions, and rotation,
   simple `/StructTreeRoot` structure-tree parsing with structure types,
   parent-tree entries, and MCID references, encrypted-PDF rejection, and
   resource-limit enforcement for parser-owned limits.

@@ -18,7 +18,7 @@ Legend:
 | Milestone 1 — Minimal PDF parser | Implemented | Primitive, indirect object, classic xref/trailer, and stream decoding coverage exists. |
 | Milestone 1.5 — Safety and modern-PDF compatibility gate | Partial | Resource limits, xref streams, and object streams are implemented; corpus manifest and release threshold remain. |
 | Milestone 2 — Fixture generator and corpus runner | Partial | Corpus runner exists; reusable fixture writer and full fixture snapshot matrix remain incomplete. |
-| Milestone 3 — Page tree and content stream parsing | Partial | Content stream resolution/tokenization/interpreter are implemented; full page-tree inheritance/dimensions remain incomplete. |
+| Milestone 3 — Page tree and content stream parsing | Implemented | Page tree traversal, inherited page attributes, content stream resolution, tokenization, and text operator interpretation are covered. |
 | Milestone 4 — Text extraction | Partial | Text extraction, ToUnicode, and glyph positioning work; full public font resource model remains limited. |
 | Milestone 5 — Layout and semantic extraction | Partial | Blocks, headings, lists, anchors, and simple table candidates exist; robust table row/cell reconstruction remains. |
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
@@ -42,7 +42,7 @@ Legend:
 | M2-T1 — Minimal PDF writer for tests | Partial | Deterministic test helpers generate minimal PDFs, but there is no reusable test-only writer module with viewer/opening coverage. |
 | M2-T2 — Diff pair fixtures | Partial | Synthetic and real-sample diff pairs are covered by integration tests, but expected snapshots are not present for the full generated fixture matrix. |
 | M2-T3 — Corpus runner | Implemented | `spdfdiff corpus <folder> --output <json>` reports parsed/partial/failed files and diagnostics without stopping at first failure. |
-| M3-T1 — Page tree resolver | Partial | Pages and page content streams resolve across multiple pages, but full catalog `/Pages` traversal, inherited resources, page dimensions, CropBox, and rotation remain incomplete. |
+| M3-T1 — Page tree resolver | Implemented | Catalog `/Pages` traversal, ordered `/Kids`, inherited resources, MediaBox/CropBox dimensions, rotation, and page-count limits are covered. |
 | M3-T2 — Content stream resolver | Implemented | Single stream, content-stream arrays, multi-stream pages, and all parsed pages are covered with provenance and diagnostics. |
 | M3-T3 — Content tokenizer | Implemented | Content tokenizer handles numbers, names, strings, arrays, dictionaries, operators, `TJ`, and unknown operators. |
 | M3-T4 — Text operator interpreter | Implemented | MVP text operators and graphics-state save/restore are interpreted with matrix/position tests. |

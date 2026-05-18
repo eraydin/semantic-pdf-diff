@@ -21,9 +21,11 @@ description: Implement or review semantic-pdf-diff low-level parser work in crat
 - Never panic on invalid input. Return `PdfDiffError` or a `Diagnostic`.
 - Controlled classic xref tables, `/Type /XRef` streams, `/Type /ObjStm`
   extraction, no-filter streams, `FlateDecode`, `ASCIIHexDecode`, and
-  `RunLengthDecode` streams, and simple `/StructTreeRoot` structure-tree plus
-  `/ParentTree` entry parsing are implemented parser capabilities. Extend these
-  paths rather than reintroducing broad unsupported diagnostics for them.
+  `RunLengthDecode` streams, catalog `/Pages` traversal with ordered `/Kids`,
+  inherited page resources, MediaBox/CropBox dimensions, rotation, and simple
+  `/StructTreeRoot` structure-tree plus `/ParentTree` entry parsing are
+  implemented parser capabilities. Extend these paths rather than reintroducing
+  broad unsupported diagnostics for them.
 - Incremental-update markers and xref recovery should be diagnostic-backed:
   select the latest `startxref` marker, emit prior-revision diagnostics when
   `/Prev` is present, and emit `XREF_RECOVERY_USED` only when an actual xref

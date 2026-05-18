@@ -12,10 +12,11 @@ digitally generated PDFs and writes stable diff JSON, AI review JSON, Markdown,
 or self-contained HTML reports with inline SVG evidence overlays when bounding
 boxes are available.
 
-The CLI extraction path resolves page content streams across all parsed pages
-and applies simple font resource dictionaries with `/ToUnicode` CMap streams
-before building semantic text blocks. This covers the current sample PDFs that
-use Type0 fonts and hex `Tj`/`TJ` text. Image payloads are compared by
+The CLI extraction path resolves the catalog `/Pages` tree, inherited page
+resources and boxes, and page content streams across all parsed pages before
+applying simple font resource dictionaries with `/ToUnicode` CMap streams and
+building semantic text blocks. This covers the current sample PDFs that use
+Type0 fonts and hex `Tj`/`TJ` text. Image payloads are compared by
 deterministic stream hash for object-level image changes. When a PDF has no
 extractable text layer, the CLI can OCR supported high-contrast image XObjects
 by invoking an external OCR engine. Set `SPDFDIFF_OCR_COMMAND` to a command that
