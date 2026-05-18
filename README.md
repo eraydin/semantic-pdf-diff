@@ -9,7 +9,8 @@ The current CLI entry point is `spdfdiff`.
 
 The `spdfdiff diff` command currently compares extracted text from simple,
 digitally generated PDFs and writes stable diff JSON, AI review JSON, Markdown,
-or basic self-contained HTML reports.
+or self-contained HTML reports with inline SVG evidence overlays when bounding
+boxes are available.
 
 The CLI extraction path resolves page content streams across all parsed pages
 and applies simple font resource dictionaries with `/ToUnicode` CMap streams

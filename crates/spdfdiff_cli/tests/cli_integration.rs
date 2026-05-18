@@ -641,6 +641,9 @@ fn html_outputs_complete_against_real_sample_pdfs() {
         assert_self_contained_html(&html);
         assert!(html.contains("<h1>Semantic PDF Diff</h1>"));
         assert!(html.contains("<th>Old</th><th>New</th>"));
+        if html.contains("bbox [") {
+            assert!(html.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        }
         if pair.slug == "semantic-contract" {
             assert_readable_output_contains_all(
                 &html,
@@ -1213,7 +1216,7 @@ fn assert_readable_output_contains_all(output: &str, expected_terms: &[&str]) {
 fn assert_self_contained_html(output: &str) {
     assert!(output.starts_with("<!doctype html>"));
     assert!(
-        !output.contains("http://") && !output.contains("https://"),
+        !output.contains("src=\"http") && !output.contains("href=\"http"),
         "HTML output should not depend on external network resources: {output}"
     );
 }

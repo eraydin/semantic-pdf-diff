@@ -79,7 +79,8 @@ treated as broad visual-rendering compatibility.
 - Diff normalized text blocks and semantic blocks.
 - Detect additions, deletions, edits, moves, and layout-only changes.
 - Emit stable JSON and simple Markdown reports for the vertical slice.
-- Add basic HTML reporting when the report crate is ready; SVG overlays are a layout-aware v0.3 feature, not a v0.1 requirement.
+- Add HTML reporting with deterministic inline SVG overlays during the
+  layout-aware v0.3 phase.
 - Provide a CLI: `spdfdiff diff old.pdf new.pdf --format json|md|html`.
 
 ### Out of scope for MVP
@@ -129,7 +130,7 @@ Output should show:
 - layout-only changes separately from textual changes;
 - page and bounding-box evidence in JSON for changed blocks;
 - simple Markdown summary for human review;
-- HTML/SVG evidence overlays only after the layout-aware report phase;
+- HTML/SVG evidence overlays in the layout-aware report phase;
 - JSON output that an AI agent can consume.
 
 ## 7. Success criteria for MVP
@@ -157,7 +158,7 @@ semantic-pdf-diff/
     pdf_text/             # font decoding, ToUnicode, glyph extraction
     pdf_semantic/         # layout segmentation and semantic tree builder
     diff_core/            # matching, edit distance, move detection, severity
-    diff_report/          # JSON, Markdown, HTML reports; SVG overlays in v0.3
+    diff_report/          # JSON, Markdown, AI JSON, HTML reports, SVG overlays
     spdfdiff_cli/         # command-line binary
   tests/
     fixtures/

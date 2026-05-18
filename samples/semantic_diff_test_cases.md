@@ -21,6 +21,9 @@ Every real sample pair in this file should continue to run through:
 .\target\debug\spdfdiff.exe diff .\samples\<old>.pdf .\samples\<new>.pdf --format ai-json
 ```
 
+HTML reports are expected to remain self-contained and include inline SVG page
+evidence overlays whenever changed nodes have bounding-box evidence.
+
 The `ai-json` report is expected to be valid JSON and include:
 
 - `schema_version` and `source_schema_version`;
