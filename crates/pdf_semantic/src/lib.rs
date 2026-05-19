@@ -480,7 +480,7 @@ fn table_cell_from_run(run: &TextRun) -> TableCell {
 }
 
 fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
-    if cells.len() < 4 {
+    if cells.len() < 3 {
         return None;
     }
     if cells
@@ -534,26 +534,21 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
         });
     }
 
-    let expected_columns = row_drafts[0].cells.len();
-    if expected_columns < 2
-        || row_drafts
-            .iter()
-            .any(|row| row.cells.len() != expected_columns)
+    let column_x_positions = infer_table_columns(&row_drafts)?;
+    if column_x_positions.len() < 2 {
+        return None;
+    }
+
+    let expected_columns = column_x_positions.len();
+    if row_drafts
+        .iter()
+        .any(|row| row.cells.len() + 1 < expected_columns)
     {
         return None;
     }
 
-    let column_x_positions = row_drafts[0]
-        .cells
-        .iter()
-        .map(|cell| cell.bbox.x0)
-        .collect::<Vec<_>>();
-    for row in &row_drafts[1..] {
-        for (cell, column_x) in row.cells.iter().zip(&column_x_positions) {
-            if (cell.bbox.x0 - column_x).abs() > TABLE_COLUMN_TOLERANCE {
-                return None;
-            }
-        }
+    for row in &mut row_drafts {
+        row.cells = align_row_cells(row, &column_x_positions)?;
     }
 
     Some(TableStructure {
@@ -562,6 +557,86 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
         border_hints: Vec::new(),
         confidence: 0.65,
     })
+}
+
+fn infer_table_columns(rows: &[TableRow]) -> Option<Vec<f32>> {
+    let widest_row_columns = rows.iter().map(|row| row.cells.len()).max()?;
+    if widest_row_columns < 2 {
+        return None;
+    }
+
+    let mut x_positions = rows
+        .iter()
+        .flat_map(|row| row.cells.iter().map(|cell| cell.bbox.x0))
+        .collect::<Vec<_>>();
+    x_positions.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut columns: Vec<f32> = Vec::new();
+    for x in x_positions {
+        if let Some(existing) = columns
+            .iter_mut()
+            .find(|column| (**column - x).abs() <= TABLE_COLUMN_TOLERANCE)
+        {
+            *existing = (*existing + x) / 2.0;
+        } else {
+            columns.push(x);
+        }
+    }
+
+    (columns.len() == widest_row_columns).then_some(columns)
+}
+
+fn align_row_cells(row: &TableRow, column_x_positions: &[f32]) -> Option<Vec<TableCell>> {
+    let mut aligned: Vec<Option<TableCell>> = vec![None; column_x_positions.len()];
+    for cell in &row.cells {
+        let column_index = nearest_column_index(cell.bbox.x0, column_x_positions)?;
+        if aligned[column_index].is_some() {
+            return None;
+        }
+        aligned[column_index] = Some(cell.clone());
+    }
+
+    Some(
+        aligned
+            .into_iter()
+            .enumerate()
+            .map(|(column_index, cell)| {
+                cell.unwrap_or_else(|| blank_table_cell(row, column_x_positions, column_index))
+            })
+            .collect(),
+    )
+}
+
+fn nearest_column_index(x: f32, column_x_positions: &[f32]) -> Option<usize> {
+    column_x_positions
+        .iter()
+        .enumerate()
+        .map(|(index, column_x)| (index, (x - column_x).abs()))
+        .min_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .and_then(|(index, distance)| (distance <= TABLE_COLUMN_TOLERANCE).then_some(index))
+}
+
+fn blank_table_cell(row: &TableRow, column_x_positions: &[f32], column_index: usize) -> TableCell {
+    let x0 = column_x_positions[column_index];
+    let x1 = column_x_positions
+        .get(column_index + 1)
+        .copied()
+        .unwrap_or(row.bbox.x1)
+        .max(x0);
+    TableCell {
+        text: String::new(),
+        bbox: Rect {
+            x0,
+            y0: row.bbox.y0,
+            x1,
+            y1: row.bbox.y1,
+        },
+        source: Vec::new(),
+    }
 }
 
 fn attach_table_border_hints(nodes: &mut [SemanticNode], hints: &[TableBorderHint]) {
@@ -1010,6 +1085,30 @@ mod tests {
         assert_eq!(table.rows[0].cells[1].text, "A2");
         assert_eq!(table.rows[1].cells[0].text, "B1");
         assert_eq!(table.rows[1].cells[1].text, "B2");
+    }
+
+    #[test]
+    fn reconstructs_sparse_text_table_with_blank_cell() {
+        let runs = vec![
+            text_run("a1", "A1", 0, rect(10.0, 100.0, 20.0, 112.0)),
+            text_run("a2", "A2", 0, rect(70.0, 100.0, 80.0, 112.0)),
+            text_run("b2", "B2", 0, rect(70.0, 84.0, 80.0, 96.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 1);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
+        let table = document.nodes[0]
+            .table
+            .as_ref()
+            .expect("sparse aligned runs should preserve table evidence");
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.column_x_positions, vec![10.0, 70.0]);
+        assert_eq!(table.rows[0].cells[0].text, "A1");
+        assert_eq!(table.rows[0].cells[1].text, "A2");
+        assert_eq!(table.rows[1].cells[0].text, "");
+        assert_eq!(table.rows[1].cells[1].text, "B2");
+        assert!(table.rows[1].cells[0].source.is_empty());
     }
 
     #[test]

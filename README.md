@@ -25,10 +25,10 @@ by invoking an external OCR engine. Set `SPDFDIFF_OCR_COMMAND` to a command that
 accepts a generated PPM image path and writes text to stdout, or install
 `tesseract` so the CLI can call `tesseract <image> stdout --psm 6`. Native vector
 graphic comparison, annotation/link comparison, style classification, and
-robust arbitrary table reconstruction remain incremental compatibility work
-rather than public-alpha claims. Simple aligned text-grid table candidates
-preserve best-effort row/cell and rectangle border-hint evidence in extract
-reports, while unsupported vector,
+arbitrary merged/spanning table reconstruction remain incremental compatibility
+work rather than public-alpha claims. Simple aligned text-grid table candidates
+preserve best-effort row/cell, sparse blank-cell, and rectangle border-hint
+evidence in extract reports, while unsupported vector,
 annotation, and missing text-layer surfaces are emitted as stable diagnostics
 instead of being silently treated as fully supported semantic diffs.
 The diff engine also emits structured word-level text hunks for modified

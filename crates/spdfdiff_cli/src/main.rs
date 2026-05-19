@@ -2605,6 +2605,27 @@ mod tests {
     }
 
     #[test]
+    fn extract_report_serializes_sparse_table_blank_cells() {
+        let semantic = pdf_semantic::build_semantic_document(
+            "sparse-table",
+            &[
+                text_run("a1", "A1", 10.0, 100.0),
+                text_run("a2", "A2", 70.0, 100.0),
+                text_run("b2", "B2", 70.0, 84.0),
+            ],
+            Vec::new(),
+        );
+        let json = render_extract_report(&semantic, ReportFormat::Json);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("extract JSON should parse");
+
+        assert_eq!(value["table_candidates"], 1);
+        assert_eq!(value["table_cells"], 4);
+        assert_eq!(value["tables"][0]["cells"][1][0], "");
+        assert_eq!(value["tables"][0]["cells"][1][1], "B2");
+    }
+
+    #[test]
     fn extract_report_serializes_table_border_hint_evidence() {
         let semantic = pdf_semantic::build_semantic_document_with_table_hints(
             "table",

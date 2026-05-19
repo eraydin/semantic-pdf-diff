@@ -44,8 +44,8 @@ spdfdiff corpus samples --manifest samples\compatibility_corpus_manifest.json --
 - Extracted paragraph text and deterministic text hunks.
 - Moved blocks and layout-only changes when text anchors and bounding boxes
   support them.
-- Simple aligned text-grid table candidates with row/cell and rectangle
-  border-hint evidence.
+- Simple aligned text-grid table candidates with row/cell, sparse blank-cell,
+  and rectangle border-hint evidence.
 - Image XObject payload changes by deterministic stream hash.
 - Selected report-facing document surfaces such as link/annotation
   dictionaries, embedded-file/FileSpec objects, outline-like objects, and
@@ -68,6 +68,7 @@ OCR is an adapter path, not a replacement for parser/content diagnostics.
 ## Current Compatibility Boundary
 
 Native vector graphic comparison, full annotation/link semantics, renderer-grade
-visual diffing, robust arbitrary table reconstruction, and style classification
-remain incremental compatibility work. Unsupported surfaces are reported through
-stable diagnostics instead of being silently treated as supported semantic diffs.
+visual diffing, arbitrary merged/spanning table-cell reconstruction, and style
+classification remain incremental compatibility work. Unsupported surfaces are
+reported through stable diagnostics instead of being silently treated as
+supported semantic diffs.
