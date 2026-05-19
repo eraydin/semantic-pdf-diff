@@ -1,3 +1,5 @@
+mod support;
+
 use serde_json::Value;
 use std::{
     fs,
@@ -5,6 +7,7 @@ use std::{
     process::{Command, Output},
     sync::atomic::{AtomicUsize, Ordering},
 };
+use support::pdf_fixture::{MinimalPdf, MinimalPdfPage};
 
 static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
 
@@ -417,6 +420,24 @@ fn extract_command_reports_positioned_text_and_writes_json() {
         json["diagnostic_count"].as_u64().unwrap_or_default() >= 1,
         "literal-string fallback extraction should remain visibly diagnostic"
     );
+}
+
+#[test]
+fn minimal_pdf_fixture_writer_is_deterministic_and_parseable() {
+    let first = multi_page_minimal_pdf("First page", "Second page");
+    let second = multi_page_minimal_pdf("First page", "Second page");
+
+    assert_eq!(first, second);
+    let text = String::from_utf8(first.clone()).expect("fixture should be ASCII PDF syntax");
+    assert!(text.contains("xref\n0 8\n"));
+    assert!(text.contains("trailer\n<< /Size 8 /Root 1 0 R >>"));
+    assert!(text.contains("startxref\n"));
+    assert!(text.ends_with("%%EOF\n"));
+
+    let document =
+        pdf_core::PdfDocument::parse(&first).expect("fixture writer output should parse");
+    assert_eq!(document.objects.len(), 7);
+    assert_eq!(document.page_contents().len(), 2);
 }
 
 #[test]
@@ -1312,13 +1333,15 @@ impl TestFixture {
 
     fn write_pdf(&self, name: &str, text: &str) -> PathBuf {
         let path = self.path(name);
-        fs::write(&path, minimal_pdf(text)).expect("PDF fixture should be written");
+        fs::write(&path, MinimalPdf::single_page(text).to_bytes())
+            .expect("PDF fixture should be written");
         path
     }
 
     fn write_pdf_at(&self, name: &str, text: &str, x: f32, y: f32) -> PathBuf {
         let path = self.path(name);
-        fs::write(&path, minimal_pdf_at(text, x, y)).expect("PDF fixture should be written");
+        fs::write(&path, MinimalPdf::single_page_at(text, x, y).to_bytes())
+            .expect("PDF fixture should be written");
         path
     }
 
@@ -1360,32 +1383,13 @@ impl Drop for TestFixture {
 }
 
 fn minimal_pdf(text: &str) -> Vec<u8> {
-    minimal_pdf_at(text, 72.0, 720.0)
+    MinimalPdf::single_page(text).to_bytes()
 }
 
-fn minimal_pdf_at(text: &str, x: f32, y: f32) -> Vec<u8> {
-    let content = format!("BT /F1 12 Tf {x:.2} {y:.2} Td ({text}) Tj ET\n");
-    format!(
-        "%PDF-1.7\n\
-         1 0 obj\n\
-         << /Type /Catalog /Pages 2 0 R >>\n\
-         endobj\n\
-         2 0 obj\n\
-         << /Type /Pages /Kids [3 0 R] /Count 1 >>\n\
-         endobj\n\
-         3 0 obj\n\
-         << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\n\
-         endobj\n\
-         4 0 obj\n\
-         << /Length {} >>\n\
-         stream\n\
-         {content}\
-         endstream\n\
-         endobj\n\
-         5 0 obj\n\
-         << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n\
-         endobj\n",
-        content.len()
-    )
-    .into_bytes()
+fn multi_page_minimal_pdf(first_text: &str, second_text: &str) -> Vec<u8> {
+    MinimalPdf::new(vec![
+        MinimalPdfPage::new(first_text, 72.0, 720.0),
+        MinimalPdfPage::new(second_text, 72.0, 720.0),
+    ])
+    .to_bytes()
 }
