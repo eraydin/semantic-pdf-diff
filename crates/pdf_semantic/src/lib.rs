@@ -103,6 +103,12 @@ struct TextLine {
     cells: Vec<TableCell>,
 }
 
+#[derive(Debug, Clone)]
+struct TableRowDraft {
+    anchor_y: f32,
+    row: TableRow,
+}
+
 impl TextLine {
     fn height(&self) -> f32 {
         self.bbox.height().max(1.0)
@@ -375,9 +381,10 @@ fn cluster_paragraphs(lines: &[TextLine]) -> Vec<SemanticNode> {
         if let Some(paragraph) = &mut current {
             let vertical_gap = paragraph.bbox.y0 - line.bbox.y1;
             let gap_limit = paragraph.height().max(line.height()) * PARAGRAPH_GAP_MULTIPLIER;
+            let table_overlap =
+                vertical_gap < 0.0 && can_merge_overlapping_table_lines(paragraph, line);
             if paragraph.page_index == line.page_index
-                && vertical_gap >= 0.0
-                && vertical_gap <= gap_limit
+                && ((vertical_gap >= 0.0 && vertical_gap <= gap_limit) || table_overlap)
             {
                 append_text(&mut paragraph.text, &line.text);
                 paragraph.bbox = union_rect(paragraph.bbox, line.bbox);
@@ -395,6 +402,23 @@ fn cluster_paragraphs(lines: &[TextLine]) -> Vec<SemanticNode> {
         nodes.push(line_to_node(nodes.len(), paragraph));
     }
     nodes
+}
+
+fn can_merge_overlapping_table_lines(upper: &TextLine, lower: &TextLine) -> bool {
+    if upper.page_index != lower.page_index || upper.bbox.y0 < lower.bbox.y0 {
+        return false;
+    }
+    let cell_count = upper.cells.len() + lower.cells.len();
+    cell_count >= 3
+        && upper
+            .cells
+            .iter()
+            .chain(lower.cells.iter())
+            .all(is_short_table_cell)
+}
+
+fn is_short_table_cell(cell: &TableCell) -> bool {
+    cell.text.split_whitespace().count() <= 2 && cell.text.len() <= 32
 }
 
 fn line_to_node(index: usize, line: &TextLine) -> SemanticNode {
@@ -489,19 +513,15 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
     if cells.len() < 3 {
         return None;
     }
-    if cells
-        .iter()
-        .any(|cell| cell.text.split_whitespace().count() > 2 || cell.text.len() > 32)
-    {
+    if cells.iter().any(|cell| !is_short_table_cell(cell)) {
         return None;
     }
 
+    let typical_cell_height = median_cell_height(cells)?;
     let mut ordered_cells = cells.to_vec();
     ordered_cells.sort_by(|left, right| {
-        right
-            .bbox
-            .y0
-            .partial_cmp(&left.bbox.y0)
+        table_row_anchor_y(right, typical_cell_height)
+            .partial_cmp(&table_row_anchor_y(left, typical_cell_height))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
                 left.bbox
@@ -511,18 +531,23 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
             })
     });
 
-    let mut row_drafts: Vec<TableRow> = Vec::new();
+    let mut row_drafts: Vec<TableRowDraft> = Vec::new();
     for cell in ordered_cells {
-        if let Some(row) = row_drafts
+        let anchor_y = table_row_anchor_y(&cell, typical_cell_height);
+        if let Some(draft) = row_drafts
             .iter_mut()
-            .find(|row| (row.bbox.y0 - cell.bbox.y0).abs() <= LINE_BASELINE_TOLERANCE)
+            .find(|draft| (draft.anchor_y - anchor_y).abs() <= LINE_BASELINE_TOLERANCE)
         {
-            row.bbox = union_rect(row.bbox, cell.bbox);
-            row.cells.push(cell);
+            draft.anchor_y = (draft.anchor_y + anchor_y) / 2.0;
+            draft.row.bbox = union_rect(draft.row.bbox, cell.bbox);
+            draft.row.cells.push(cell);
         } else {
-            row_drafts.push(TableRow {
-                bbox: cell.bbox,
-                cells: vec![cell],
+            row_drafts.push(TableRowDraft {
+                anchor_y,
+                row: TableRow {
+                    bbox: cell.bbox,
+                    cells: vec![cell],
+                },
             });
         }
     }
@@ -531,8 +556,8 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
         return None;
     }
 
-    for row in &mut row_drafts {
-        row.cells.sort_by(|left, right| {
+    for draft in &mut row_drafts {
+        draft.row.cells.sort_by(|left, right| {
             left.bbox
                 .x0
                 .partial_cmp(&right.bbox.x0)
@@ -540,17 +565,30 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
         });
     }
 
-    let column_x_positions = infer_table_columns(&row_drafts)?;
+    let row_anchors = row_drafts
+        .iter()
+        .map(|draft| draft.anchor_y)
+        .collect::<Vec<_>>();
+    let mut rows = row_drafts
+        .into_iter()
+        .map(|draft| draft.row)
+        .collect::<Vec<_>>();
+
+    let column_x_positions = infer_table_columns(&rows)?;
     if column_x_positions.len() < 2 {
         return None;
     }
 
-    for row in &mut row_drafts {
-        row.cells = align_row_cells(row, &column_x_positions)?;
+    for (row_index, row) in rows.iter_mut().enumerate() {
+        row.cells = align_row_cells(row, &column_x_positions, row_index, &row_anchors)?;
+    }
+    apply_span_coverage(&mut rows, &column_x_positions)?;
+
+    for row in &rows {
         let sparse_gap_count = row
             .cells
             .iter()
-            .filter(|cell| cell.is_placeholder && cell.column_span == 1)
+            .filter(|cell| cell.is_placeholder && cell.row_span == 1 && cell.column_span == 1)
             .count();
         if sparse_gap_count > 1 {
             return None;
@@ -558,11 +596,32 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
     }
 
     Some(TableStructure {
-        rows: row_drafts,
+        rows,
         column_x_positions,
         border_hints: Vec::new(),
         confidence: 0.65,
     })
+}
+
+fn median_cell_height(cells: &[TableCell]) -> Option<f32> {
+    let mut heights = cells
+        .iter()
+        .map(|cell| cell.bbox.height())
+        .filter(|height| *height > 0.0)
+        .collect::<Vec<_>>();
+    if heights.is_empty() {
+        return None;
+    }
+    heights.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    Some(heights[(heights.len() - 1) / 2].max(1.0))
+}
+
+fn table_row_anchor_y(cell: &TableCell, typical_cell_height: f32) -> f32 {
+    if cell.bbox.height() >= typical_cell_height * 1.5 {
+        cell.bbox.y1 - typical_cell_height
+    } else {
+        cell.bbox.y0
+    }
 }
 
 fn infer_table_columns(rows: &[TableRow]) -> Option<Vec<f32>> {
@@ -592,7 +651,12 @@ fn infer_table_columns(rows: &[TableRow]) -> Option<Vec<f32>> {
     (columns.len() == widest_row_columns).then_some(columns)
 }
 
-fn align_row_cells(row: &TableRow, column_x_positions: &[f32]) -> Option<Vec<TableCell>> {
+fn align_row_cells(
+    row: &TableRow,
+    column_x_positions: &[f32],
+    row_index: usize,
+    row_anchors: &[f32],
+) -> Option<Vec<TableCell>> {
     let mut aligned: Vec<Option<TableCell>> = vec![None; column_x_positions.len()];
     for cell in &row.cells {
         let column_index = nearest_column_index(cell.bbox.x0, column_x_positions)?;
@@ -606,6 +670,7 @@ fn align_row_cells(row: &TableRow, column_x_positions: &[f32]) -> Option<Vec<Tab
             return None;
         }
         let mut spanned_cell = cell.clone();
+        spanned_cell.row_span = infer_row_span(cell, row_index, row_anchors);
         spanned_cell.column_span = column_span;
         aligned[column_index] = Some(spanned_cell);
         for (covered_column, slot) in aligned
@@ -629,6 +694,43 @@ fn align_row_cells(row: &TableRow, column_x_positions: &[f32]) -> Option<Vec<Tab
     )
 }
 
+fn apply_span_coverage(rows: &mut [TableRow], column_x_positions: &[f32]) -> Option<()> {
+    for row_index in 0..rows.len() {
+        for column_index in 0..column_x_positions.len() {
+            let Some(cell) = rows
+                .get(row_index)
+                .and_then(|row| row.cells.get(column_index))
+                .cloned()
+            else {
+                continue;
+            };
+            if cell.is_placeholder || cell.row_span <= 1 {
+                continue;
+            }
+            let row_end = row_index + cell.row_span;
+            let column_end = column_index + cell.column_span.max(1);
+            if row_end > rows.len() || column_end > column_x_positions.len() {
+                return None;
+            }
+            for covered_row in row_index..row_end {
+                for covered_column in column_index..column_end {
+                    if covered_row == row_index && covered_column == column_index {
+                        continue;
+                    }
+                    let covered = rows
+                        .get_mut(covered_row)
+                        .and_then(|row| row.cells.get_mut(covered_column))?;
+                    if !covered.is_placeholder {
+                        return None;
+                    }
+                    *covered = spanned_placeholder_cell(covered);
+                }
+            }
+        }
+    }
+    Some(())
+}
+
 fn infer_column_span(cell: &TableCell, column_index: usize, column_x_positions: &[f32]) -> usize {
     let mut column_span = 1;
     for next_column_x in column_x_positions.iter().skip(column_index + 1) {
@@ -639,6 +741,18 @@ fn infer_column_span(cell: &TableCell, column_index: usize, column_x_positions: 
         }
     }
     column_span
+}
+
+fn infer_row_span(cell: &TableCell, row_index: usize, row_anchors: &[f32]) -> usize {
+    let mut row_span = 1;
+    for next_row_anchor in row_anchors.iter().skip(row_index + 1) {
+        if cell.bbox.y0 <= *next_row_anchor + LINE_BASELINE_TOLERANCE {
+            row_span += 1;
+        } else {
+            break;
+        }
+    }
+    row_span
 }
 
 fn nearest_column_index(x: f32, column_x_positions: &[f32]) -> Option<usize> {
@@ -683,6 +797,17 @@ fn covered_table_cell(
 ) -> TableCell {
     let mut cell = blank_table_cell(row, column_x_positions, column_index);
     cell.column_span = 0;
+    cell.row_span = 0;
+    cell
+}
+
+fn spanned_placeholder_cell(cell: &TableCell) -> TableCell {
+    let mut cell = cell.clone();
+    cell.row_span = 0;
+    cell.column_span = 0;
+    cell.is_placeholder = true;
+    cell.source.clear();
+    cell.text.clear();
     cell
 }
 
@@ -1182,6 +1307,70 @@ mod tests {
         assert_eq!(table.rows[0].cells[1].column_span, 0);
         assert_eq!(table.rows[1].cells[0].column_span, 1);
         assert_eq!(table.rows[1].cells[1].column_span, 1);
+    }
+
+    #[test]
+    fn reconstructs_row_spanning_text_table_cell() {
+        let runs = vec![
+            text_run("group", "Group", 0, rect(10.0, 84.0, 20.0, 128.0)),
+            text_run("a2", "A2", 0, rect(70.0, 116.0, 80.0, 128.0)),
+            text_run("b2", "B2", 0, rect(70.0, 84.0, 80.0, 96.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 1);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
+        let table = document.nodes[0]
+            .table
+            .as_ref()
+            .expect("row-spanning aligned runs should preserve table evidence");
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.column_x_positions, vec![10.0, 70.0]);
+        assert_eq!(table.rows[0].cells[0].text, "Group");
+        assert_eq!(table.rows[0].cells[0].row_span, 2);
+        assert_eq!(table.rows[0].cells[0].column_span, 1);
+        assert_eq!(table.rows[1].cells[0].text, "");
+        assert!(table.rows[1].cells[0].is_placeholder);
+        assert_eq!(table.rows[1].cells[0].row_span, 0);
+        assert_eq!(table.rows[1].cells[0].column_span, 0);
+        assert_eq!(table.rows[1].cells[1].text, "B2");
+    }
+
+    #[test]
+    fn reconstructs_complex_merged_text_table_cell() {
+        let runs = vec![
+            text_run("merged", "Total", 0, rect(10.0, 84.0, 82.0, 128.0)),
+            text_run("a3", "A3", 0, rect(130.0, 116.0, 140.0, 128.0)),
+            text_run("b3", "B3", 0, rect(130.0, 84.0, 140.0, 96.0)),
+            text_run("c1", "C1", 0, rect(10.0, 68.0, 20.0, 80.0)),
+            text_run("c2", "C2", 0, rect(70.0, 68.0, 80.0, 80.0)),
+            text_run("c3", "C3", 0, rect(130.0, 68.0, 140.0, 80.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 1);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
+        let table = document.nodes[0]
+            .table
+            .as_ref()
+            .expect("merged aligned runs should preserve table evidence");
+        assert_eq!(table.rows.len(), 3);
+        assert_eq!(table.column_x_positions, vec![10.0, 70.0, 130.0]);
+        assert_eq!(table.rows[0].cells[0].text, "Total");
+        assert_eq!(table.rows[0].cells[0].row_span, 2);
+        assert_eq!(table.rows[0].cells[0].column_span, 2);
+        assert_eq!(table.rows[0].cells[2].text, "A3");
+        assert_eq!(table.rows[1].cells[0].text, "");
+        assert_eq!(table.rows[1].cells[1].text, "");
+        assert_eq!(table.rows[1].cells[2].text, "B3");
+        for (row_index, column_index) in [(0, 1), (1, 0), (1, 1)] {
+            assert!(table.rows[row_index].cells[column_index].is_placeholder);
+            assert_eq!(table.rows[row_index].cells[column_index].row_span, 0);
+            assert_eq!(table.rows[row_index].cells[column_index].column_span, 0);
+        }
+        assert_eq!(table.rows[2].cells[0].text, "C1");
+        assert_eq!(table.rows[2].cells[1].text, "C2");
+        assert_eq!(table.rows[2].cells[2].text, "C3");
     }
 
     #[test]

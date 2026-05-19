@@ -2672,6 +2672,36 @@ mod tests {
     }
 
     #[test]
+    fn extract_report_serializes_table_row_spans_and_merged_cells() {
+        let semantic = pdf_semantic::build_semantic_document(
+            "merged-table",
+            &[
+                text_run_with_box("merged", "Total", 10.0, 84.0, 72.0, 44.0),
+                text_run("a3", "A3", 130.0, 116.0),
+                text_run("b3", "B3", 130.0, 84.0),
+                text_run("c1", "C1", 10.0, 68.0),
+                text_run("c2", "C2", 70.0, 68.0),
+                text_run("c3", "C3", 130.0, 68.0),
+            ],
+            Vec::new(),
+        );
+        let json = render_extract_report(&semantic, ReportFormat::Json);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("extract JSON should parse");
+
+        assert_eq!(value["table_candidates"], 1);
+        assert_eq!(value["tables"][0]["cells"][0][0], "Total");
+        assert_eq!(value["tables"][0]["cell_spans"][0][0]["row_span"], 2);
+        assert_eq!(value["tables"][0]["cell_spans"][0][0]["column_span"], 2);
+        assert_eq!(value["tables"][0]["cell_spans"][0][1]["placeholder"], true);
+        assert_eq!(value["tables"][0]["cell_spans"][0][1]["row_span"], 0);
+        assert_eq!(value["tables"][0]["cell_spans"][1][0]["placeholder"], true);
+        assert_eq!(value["tables"][0]["cell_spans"][1][0]["column_span"], 0);
+        assert_eq!(value["tables"][0]["cells"][1][2], "B3");
+        assert_eq!(value["tables"][0]["cells"][2][0], "C1");
+    }
+
+    #[test]
     fn extract_report_serializes_table_border_hint_evidence() {
         let semantic = pdf_semantic::build_semantic_document_with_table_hints(
             "table",
@@ -2714,6 +2744,17 @@ mod tests {
     }
 
     fn text_run_with_width(id: &str, text: &str, x: f32, y: f32, width: f32) -> pdf_text::TextRun {
+        text_run_with_box(id, text, x, y, width, 12.0)
+    }
+
+    fn text_run_with_box(
+        id: &str,
+        text: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> pdf_text::TextRun {
         pdf_text::TextRun {
             id: id.to_owned(),
             text: text.to_owned(),
@@ -2723,7 +2764,7 @@ mod tests {
                 x0: x,
                 y0: y,
                 x1: x + width,
-                y1: y + 12.0,
+                y1: y + height,
             },
             source: Provenance {
                 page_index: Some(0),

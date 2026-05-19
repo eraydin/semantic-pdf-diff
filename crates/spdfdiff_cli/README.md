@@ -17,9 +17,9 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   parser/object diagnostics plus simple tagged-structure and parent-tree
   summaries and incremental-update offsets when present.
 - `extract <file.pdf>` runs parse/content/text/semantic extraction across parsed
-  page content and reports paragraph text, aligned text-grid table row/cell and
-  column-span evidence, rectangle table-border hints, diagnostics, and tagged-structure
-  summaries.
+  page content and reports paragraph text, aligned text-grid table row/cell,
+  row-span, column-span, merged-cell, rectangle table-border hints, diagnostics,
+  and tagged-structure summaries.
 - `corpus <folder>` scans `.pdf` files, runs parse/extract for each file, and
   writes stable aggregate totals, per-file status, extracted node counts, and
   diagnostic-code frequencies. With `--manifest <json>`, it also checks required
@@ -45,7 +45,7 @@ spdfdiff corpus samples --manifest samples\compatibility_corpus_manifest.json --
 - Moved blocks and layout-only changes when text anchors and bounding boxes
   support them.
 - Simple aligned text-grid table candidates with row/cell, sparse blank-cell,
-  column-span, and rectangle border-hint evidence.
+  row-span, column-span, merged-cell, and rectangle border-hint evidence.
 - Image XObject payload changes by deterministic stream hash.
 - Selected report-facing document surfaces such as link/annotation
   dictionaries, embedded-file/FileSpec objects, outline-like objects, and
@@ -68,7 +68,7 @@ OCR is an adapter path, not a replacement for parser/content diagnostics.
 ## Current Compatibility Boundary
 
 Native vector graphic comparison, full annotation/link semantics, renderer-grade
-visual diffing, arbitrary row-spanning or complex merged table-cell
-reconstruction, and style classification remain incremental compatibility work. Unsupported surfaces are
+visual diffing, renderer-grade table reconstruction from arbitrary drawing
+geometry, and style classification remain incremental compatibility work. Unsupported surfaces are
 reported through stable diagnostics instead of being silently treated as
 supported semantic diffs.

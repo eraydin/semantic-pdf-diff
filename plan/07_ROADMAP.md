@@ -87,7 +87,7 @@ Make layout and table comparison genuinely useful.
 
 - robust multi-column reading order;
 - header/footer detection;
-- table row/cell reconstruction;
+- broader table row/cell reconstruction beyond controlled aligned text grids;
 - table cell-level diff;
 - figure/image movement detection;
 - redaction-layer classification;

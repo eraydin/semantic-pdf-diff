@@ -14,8 +14,9 @@ raw PDF text extraction and semantic diff matching.
 - Candidate detection for controlled headings, bullet/numbered lists, and simple
   aligned text-grid tables.
 - Best-effort table row/cell evidence for aligned text grids, including sparse
-  rows with deterministic blank cells, conservative column spans, cell text,
-  bounding boxes, provenance, and column positions.
+  rows with deterministic blank cells, conservative row spans, column spans,
+  merged-cell placeholders, cell text, bounding boxes, provenance, and column
+  positions.
 - Table border hint evidence from page-scoped rectangle paths when it overlaps a
   detected table candidate.
 - Deterministic semantic anchors with strong normalized-text hashes, weak text
@@ -40,8 +41,8 @@ confidence so reports can explain why a PDF comparison changed.
 ## Current Compatibility Boundary
 
 The layout heuristics are deterministic and conservative, but they are not a
-general document-understanding engine. Complex multi-column flow, arbitrary
-row-spanning or complex merged-cell table reconstruction, style semantics, OCR
+general document-understanding engine. Complex multi-column flow, renderer-grade
+table reconstruction from arbitrary drawing geometry, style semantics, OCR
 cleanup, and full tagged-PDF parent tree behavior remain incremental
 compatibility work.
 Uncertain content should stay as paragraph or candidate evidence rather than
