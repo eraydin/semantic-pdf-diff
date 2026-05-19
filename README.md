@@ -56,8 +56,10 @@ order before falling back to layout heuristics for unmapped text.
 For agent workflows, `diff --format ai-json` emits a compact deterministic
 review artifact with summary counts, question hints, neutral candidate tags,
 confidence buckets, explanation templates, semantic node identities, and
-prompt-ready evidence bundles. It does not call an LLM and does not make legal
-or business conclusions.
+prompt-ready evidence bundles. `spdfdiff review` can pass that artifact to an
+optional local OpenAI-compatible HTTP endpoint such as `llama-server` from
+llama.cpp. The core diff path does not embed an LLM and does not make legal or
+business conclusions.
 The `corpus` command can also evaluate a committed compatibility manifest with
 required sample files, diff pairs, diagnostic counts, and release-blocking
 thresholds. Use `--manifest samples\compatibility_corpus_manifest.json` and
@@ -252,6 +254,20 @@ The AI review report includes question hints such as whether payment terms were
 modified, neutral tags such as `PaymentTermsCandidate` or `NumericValueChanged`,
 old/new semantic node IDs, section hints when detected from the changed text,
 text hunks, page/bbox evidence, provenance, and diagnostic counts.
+
+## Local LLM Review
+
+Use `review` to send deterministic AI-review JSON to a local
+OpenAI-compatible HTTP server such as llama.cpp `llama-server`:
+
+```powershell
+llama-server -m C:\models\model.gguf --host 127.0.0.1 --port 8080 -c 8192
+.\target\debug\spdfdiff.exe review .\ai-review.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output .\llm-review.json
+```
+
+The review command stores the request envelope and model response together.
+Only `http://` endpoints are supported; run local models on loopback or put TLS
+behind a local proxy.
 
 ## Parser Library Example
 

@@ -29,15 +29,34 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
 - `benchmark --pages <n>` runs the synthetic benchmark path and reports
   deterministic phase timing fields for parse, extract, semantic, diff, report,
   and total work.
+- `review <review.ai.json>` sends deterministic AI-review JSON to an optional
+  OpenAI-compatible HTTP endpoint such as local llama.cpp `llama-server` and
+  writes a request/response envelope. This is outside the deterministic diff
+  path.
 
 ## Example
 
 ```powershell
 spdfdiff diff old.pdf new.pdf --format html --output diff.html
 spdfdiff diff old.pdf new.pdf --format ai-json --output review.json
+spdfdiff review review.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output llm-review.json
 spdfdiff extract old.pdf --format json --output extract.json
 spdfdiff corpus samples --manifest samples\compatibility_corpus_manifest.json --output corpus.json --fail-on-gate
 ```
+
+## Local LLM Review
+
+The `review` command targets local OpenAI-compatible HTTP servers. For
+llama.cpp:
+
+```powershell
+llama-server -m C:\models\model.gguf --host 127.0.0.1 --port 8080 -c 8192
+spdfdiff review review.ai.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output review.llm.json
+```
+
+The command supports optional `--api-key`, `--timeout-seconds`, and
+`--max-review-items`. It supports plain `http://` endpoints so local-first
+review works without adding TLS or hosted provider dependencies.
 
 ## What It Compares Today
 

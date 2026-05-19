@@ -141,7 +141,7 @@ Make output maximally useful to AI agents without embedding an LLM in the core e
 - clause/section identity tracking;
 - change explanation templates;
 - prompt-ready evidence bundles;
-- optional external LLM adapter crate.
+- optional external OpenAI-compatible LLM adapter.
 
 ### Expected result
 
@@ -160,8 +160,10 @@ buckets, change explanation templates, semantic node identities, section hints
 when visible in changed text, prompt-ready evidence bundles, and diagnostic
 counts. The existing `diff_core::SeverityClassifier` hook supports
 caller-provided severity policy while the default classifier stays neutral and
-does not emit legal/business `Critical` severity. No LLM is embedded in the
-engine; an optional external adapter crate remains future ecosystem work.
+does not emit legal/business `Critical` severity. `spdfdiff review` can send the
+deterministic AI-review JSON to an optional local OpenAI-compatible HTTP
+endpoint such as llama.cpp `llama-server`, while keeping the core diff engine
+LLM-free.
 
 ## Phase 6 — Library ecosystem and integrations
 

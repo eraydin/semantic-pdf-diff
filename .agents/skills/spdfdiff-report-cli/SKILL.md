@@ -47,6 +47,7 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   - `spdfdiff extract file.pdf --format json`
   - `spdfdiff corpus tests/fixtures/real_world --output corpus_report.json`
   - `spdfdiff benchmark --pages 50 --output benchmark.json`
+  - `spdfdiff review review.ai.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output review.llm.json`
 - Exit codes must match `plan/01_ARCHITECTURE.md`.
 - Missing input files and unsupported encrypted/protected PDFs need useful user-facing errors.
 

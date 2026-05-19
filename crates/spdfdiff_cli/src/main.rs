@@ -3,13 +3,15 @@ use diff_core::{DiffConfig, diff_semantic_documents};
 use pdf_content::{ContentOp, ContentProgram};
 use serde::{Deserialize, Serialize};
 use spdfdiff_types::{
-    ByteRange, ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, FileRole, ObjectId,
-    ParseConfig, PdfDiffError, Provenance, Rect, SemanticChange, SemanticNodeEvidence,
+    AiReviewReport, ByteRange, ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, FileRole,
+    ObjectId, ParseConfig, PdfDiffError, Provenance, Rect, SemanticChange, SemanticNodeEvidence,
 };
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Parser)]
 #[command(name = "spdfdiff", version, about = "Semantic PDF diff CLI")]
@@ -60,6 +62,21 @@ enum Command {
         pages: usize,
         #[arg(long)]
         output: PathBuf,
+    },
+    Review {
+        ai_json: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:8080/v1")]
+        endpoint: String,
+        #[arg(long, default_value = "local-model")]
+        model: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        api_key: Option<String>,
+        #[arg(long, default_value_t = 120)]
+        timeout_seconds: u64,
+        #[arg(long, default_value_t = 20)]
+        max_review_items: usize,
     },
 }
 
@@ -184,6 +201,25 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
             let rendered = to_json_pretty(&report)?;
             std::fs::write(&output, rendered)
                 .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+        }
+        Command::Review {
+            ai_json,
+            endpoint,
+            model,
+            output,
+            api_key,
+            timeout_seconds,
+            max_review_items,
+        } => {
+            let report = review_ai_json_with_openai_compatible(
+                &ai_json,
+                &endpoint,
+                &model,
+                api_key.as_deref(),
+                Duration::from_secs(timeout_seconds),
+                max_review_items,
+            )?;
+            write_or_print(to_json_pretty(&report)?, output)?;
         }
     }
     Ok(0)
@@ -358,6 +394,93 @@ struct BenchmarkTimings {
     diff: u128,
     report: u128,
     total: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalLlmReviewReport {
+    schema_version: String,
+    provider: String,
+    endpoint: String,
+    model: String,
+    source: ExternalLlmReviewSource,
+    request: OpenAiChatRequest,
+    response: ExternalLlmReviewResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalLlmReviewSource {
+    ai_review_schema_version: String,
+    source_schema_version: String,
+    old_fingerprint: String,
+    new_fingerprint: String,
+    total_changes: usize,
+    review_items_sent: usize,
+    diagnostic_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalLlmReviewResponse {
+    status_code: u16,
+    model: Option<String>,
+    finish_reason: Option<String>,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LlmReviewPromptInput<'a> {
+    task: &'a str,
+    old_fingerprint: &'a str,
+    new_fingerprint: &'a str,
+    summary: &'a spdfdiff_types::AiReviewSummary,
+    question_hints: &'a [spdfdiff_types::AiReviewQuestionHint],
+    review_items: &'a [spdfdiff_types::AiReviewItem],
+    diagnostic_summary: &'a [spdfdiff_types::AiDiagnosticCount],
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiChatRequest {
+    model: String,
+    messages: Vec<OpenAiChatMessage>,
+    temperature: f32,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChatResponse {
+    model: Option<String>,
+    choices: Vec<OpenAiChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChatChoice {
+    message: OpenAiChatChoiceMessage,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChatChoiceMessage {
+    content: String,
+}
+
+#[derive(Debug)]
+struct HttpEndpoint {
+    host: String,
+    port: u16,
+    authority: String,
+    path: String,
+}
+
+#[derive(Debug)]
+struct HttpResponseParts {
+    status_code: u16,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
 }
 
 fn load_corpus_manifest(path: &Path) -> Result<CorpusManifest, PdfDiffError> {
@@ -623,6 +746,266 @@ fn write_or_print(rendered: String, output: Option<PathBuf>) -> Result<(), PdfDi
         println!("{rendered}");
         Ok(())
     }
+}
+
+fn review_ai_json_with_openai_compatible(
+    ai_json: &Path,
+    endpoint: &str,
+    model: &str,
+    api_key: Option<&str>,
+    timeout: Duration,
+    max_review_items: usize,
+) -> Result<ExternalLlmReviewReport, PdfDiffError> {
+    let bytes =
+        std::fs::read(ai_json).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    let ai_review: AiReviewReport = serde_json::from_slice(&bytes).map_err(|error| {
+        PdfDiffError::InvalidInput(format!(
+            "failed to parse AI review JSON {}: {error}",
+            ai_json.display()
+        ))
+    })?;
+    let request = build_openai_review_request(&ai_review, model, max_review_items)?;
+    let (status_code, response) =
+        post_openai_chat_completion(endpoint, &request, api_key, timeout)?;
+    let choice =
+        response.choices.into_iter().next().ok_or_else(|| {
+            PdfDiffError::InvalidInput("LLM response did not include choices".into())
+        })?;
+    let review_items_sent = ai_review.review_items.len().min(max_review_items);
+    Ok(ExternalLlmReviewReport {
+        schema_version: "0.1.0".into(),
+        provider: "openai-compatible".into(),
+        endpoint: endpoint.to_owned(),
+        model: model.to_owned(),
+        source: ExternalLlmReviewSource {
+            ai_review_schema_version: ai_review.schema_version,
+            source_schema_version: ai_review.source_schema_version,
+            old_fingerprint: ai_review.old_fingerprint,
+            new_fingerprint: ai_review.new_fingerprint,
+            total_changes: ai_review.summary.total_changes,
+            review_items_sent,
+            diagnostic_count: ai_review.summary.diagnostic_count,
+        },
+        request,
+        response: ExternalLlmReviewResponse {
+            status_code,
+            model: response.model,
+            finish_reason: choice.finish_reason,
+            content: choice.message.content,
+        },
+    })
+}
+
+fn build_openai_review_request(
+    ai_review: &AiReviewReport,
+    model: &str,
+    max_review_items: usize,
+) -> Result<OpenAiChatRequest, PdfDiffError> {
+    let review_items = ai_review
+        .review_items
+        .iter()
+        .take(max_review_items)
+        .cloned()
+        .collect::<Vec<_>>();
+    let prompt_input = LlmReviewPromptInput {
+        task: "Review this deterministic semantic PDF diff evidence. Return concise JSON with keys summary, risks, follow_up_questions, and cited_change_ids. Do not make legal or business conclusions. Cite only change_id values from the evidence.",
+        old_fingerprint: &ai_review.old_fingerprint,
+        new_fingerprint: &ai_review.new_fingerprint,
+        summary: &ai_review.summary,
+        question_hints: &ai_review.question_hints,
+        review_items: &review_items,
+        diagnostic_summary: &ai_review.diagnostic_summary,
+    };
+    let user_prompt = serde_json::to_string_pretty(&prompt_input)
+        .map_err(|error| PdfDiffError::InternalInvariant(error.to_string()))?;
+    Ok(OpenAiChatRequest {
+        model: model.to_owned(),
+        messages: vec![
+            OpenAiChatMessage {
+                role: "system".into(),
+                content: "You are a local PDF diff review assistant. Use only the provided evidence. Keep uncertainty explicit. Never provide legal advice or classify business criticality beyond the evidence.".into(),
+            },
+            OpenAiChatMessage {
+                role: "user".into(),
+                content: user_prompt,
+            },
+        ],
+        temperature: 0.0,
+        stream: false,
+    })
+}
+
+fn post_openai_chat_completion(
+    endpoint: &str,
+    request: &OpenAiChatRequest,
+    api_key: Option<&str>,
+    timeout: Duration,
+) -> Result<(u16, OpenAiChatResponse), PdfDiffError> {
+    let endpoint = parse_http_endpoint(endpoint)?;
+    let body = serde_json::to_vec(request)
+        .map_err(|error| PdfDiffError::InternalInvariant(error.to_string()))?;
+    let mut headers = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+        endpoint.path,
+        endpoint.authority,
+        body.len()
+    );
+    if let Some(api_key) = api_key {
+        headers.push_str(&format!("Authorization: Bearer {api_key}\r\n"));
+    }
+    headers.push_str("\r\n");
+
+    let mut stream =
+        TcpStream::connect((endpoint.host.as_str(), endpoint.port)).map_err(|error| {
+            PdfDiffError::InvalidInput(format!("failed to connect to LLM endpoint: {error}"))
+        })?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    stream
+        .write_all(headers.as_bytes())
+        .and_then(|()| stream.write_all(&body))
+        .map_err(|error| {
+            PdfDiffError::InvalidInput(format!("failed to write LLM request: {error}"))
+        })?;
+
+    let mut response_bytes = Vec::new();
+    stream.read_to_end(&mut response_bytes).map_err(|error| {
+        PdfDiffError::InvalidInput(format!("failed to read LLM response: {error}"))
+    })?;
+    let response_parts = parse_http_response(&response_bytes)?;
+    if !(200..300).contains(&response_parts.status_code) {
+        return Err(PdfDiffError::InvalidInput(format!(
+            "LLM endpoint returned HTTP {}: {}",
+            response_parts.status_code,
+            String::from_utf8_lossy(&response_parts.body)
+        )));
+    }
+    let body = if header_contains(&response_parts.headers, "transfer-encoding", "chunked") {
+        decode_chunked_body(&response_parts.body)?
+    } else {
+        response_parts.body
+    };
+    let response: OpenAiChatResponse = serde_json::from_slice(&body).map_err(|error| {
+        PdfDiffError::InvalidInput(format!("failed to parse LLM response JSON: {error}"))
+    })?;
+    Ok((response_parts.status_code, response))
+}
+
+fn parse_http_endpoint(endpoint: &str) -> Result<HttpEndpoint, PdfDiffError> {
+    let endpoint = endpoint.trim();
+    let Some(without_scheme) = endpoint.strip_prefix("http://") else {
+        return Err(PdfDiffError::InvalidInput(
+            "only http:// OpenAI-compatible endpoints are supported; run llama-server on localhost or use a local HTTP proxy".into(),
+        ));
+    };
+    let (authority, base_path) = without_scheme
+        .split_once('/')
+        .map_or((without_scheme, ""), |(authority, path)| (authority, path));
+    if authority.is_empty() {
+        return Err(PdfDiffError::InvalidInput(
+            "LLM endpoint must include a host".into(),
+        ));
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .map_or((authority, 80), |(host, port)| {
+            (host, port.parse::<u16>().unwrap_or(0))
+        });
+    if host.is_empty() || port == 0 {
+        return Err(PdfDiffError::InvalidInput(format!(
+            "invalid LLM endpoint authority: {authority}"
+        )));
+    }
+    let base_path = format!("/{}", base_path.trim_matches('/'));
+    let path = if base_path == "/" {
+        "/v1/chat/completions".into()
+    } else if base_path.ends_with("/chat/completions") {
+        base_path
+    } else {
+        format!("{}/chat/completions", base_path.trim_end_matches('/'))
+    };
+    Ok(HttpEndpoint {
+        host: host.to_owned(),
+        port,
+        authority: authority.to_owned(),
+        path,
+    })
+}
+
+fn parse_http_response(bytes: &[u8]) -> Result<HttpResponseParts, PdfDiffError> {
+    let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return Err(PdfDiffError::InvalidInput(
+            "LLM endpoint returned an invalid HTTP response".into(),
+        ));
+    };
+    let headers_text = String::from_utf8_lossy(&bytes[..header_end]);
+    let mut lines = headers_text.lines();
+    let status_line = lines
+        .next()
+        .ok_or_else(|| PdfDiffError::InvalidInput("missing HTTP status line".into()))?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| PdfDiffError::InvalidInput("missing HTTP status code".into()))?
+        .parse::<u16>()
+        .map_err(|error| {
+            PdfDiffError::InvalidInput(format!("invalid HTTP status code: {error}"))
+        })?;
+    let mut headers = BTreeMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+        }
+    }
+    Ok(HttpResponseParts {
+        status_code,
+        headers,
+        body: bytes[header_end + 4..].to_vec(),
+    })
+}
+
+fn header_contains(headers: &BTreeMap<String, String>, name: &str, value: &str) -> bool {
+    headers
+        .get(&name.to_ascii_lowercase())
+        .is_some_and(|header| header.to_ascii_lowercase().contains(value))
+}
+
+fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>, PdfDiffError> {
+    let mut decoded = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let Some(line_end) = body[offset..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .map(|position| offset + position)
+        else {
+            return Err(PdfDiffError::InvalidInput(
+                "invalid chunked LLM response".into(),
+            ));
+        };
+        let size_line = String::from_utf8_lossy(&body[offset..line_end]);
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16).map_err(|error| {
+            PdfDiffError::InvalidInput(format!("invalid chunk size in LLM response: {error}"))
+        })?;
+        offset = line_end + 2;
+        if size == 0 {
+            break;
+        }
+        let chunk_end = offset + size;
+        if chunk_end + 2 > body.len() {
+            return Err(PdfDiffError::InvalidInput(
+                "truncated chunked LLM response".into(),
+            ));
+        }
+        decoded.extend_from_slice(&body[offset..chunk_end]);
+        offset = chunk_end + 2;
+    }
+    Ok(decoded)
 }
 
 fn diff_pdf_bytes(
@@ -2737,6 +3120,156 @@ mod tests {
 
         let markdown = render_extract_report(&semantic, ReportFormat::Md);
         assert!(markdown.contains("1 border hints"));
+    }
+
+    #[test]
+    fn review_command_calls_openai_compatible_endpoint() {
+        let folder = PathBuf::from("target/spdfdiff_cli_tests/llm_review");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("fixture folder should be created");
+        let ai_json = folder.join("review.ai.json");
+        let output = folder.join("review.llm.json");
+        write_ai_review_fixture(&ai_json);
+        let endpoint = spawn_fake_openai_server("{\"summary\":\"local review ok\"}");
+
+        let exit_code = run(Cli {
+            command: Command::Review {
+                ai_json,
+                endpoint,
+                model: "local-test-model".into(),
+                output: Some(output.clone()),
+                api_key: None,
+                timeout_seconds: 5,
+                max_review_items: 5,
+            },
+        })
+        .expect("review command should succeed");
+
+        assert_eq!(exit_code, 0);
+        let value: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&output).expect("review output should be written"),
+        )
+        .expect("review output should parse");
+        assert_eq!(value["schema_version"], "0.1.0");
+        assert_eq!(value["provider"], "openai-compatible");
+        assert_eq!(value["model"], "local-test-model");
+        assert_eq!(value["source"]["total_changes"], 1);
+        assert_eq!(value["response"]["status_code"], 200);
+        assert_eq!(value["response"]["model"], "fake-local-model");
+        assert_eq!(
+            value["response"]["content"],
+            "{\"summary\":\"local review ok\"}"
+        );
+        assert_eq!(value["request"]["stream"], false);
+        assert_eq!(value["request"]["temperature"], 0.0);
+
+        std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
+    }
+
+    fn write_ai_review_fixture(path: &Path) {
+        let value = serde_json::json!({
+            "schema_version": "0.1.0",
+            "source_schema_version": "0.1.0",
+            "old_fingerprint": "old.pdf",
+            "new_fingerprint": "new.pdf",
+            "summary": {
+                "total_changes": 1,
+                "inserted": 0,
+                "deleted": 0,
+                "modified": 1,
+                "moved": 0,
+                "layout_changed": 0,
+                "diagnostic_count": 0,
+                "low_confidence_change_count": 0,
+                "unsupported_surface_count": 0
+            },
+            "question_hints": [],
+            "review_items": [{
+                "change_id": "c0001",
+                "kind": "Modified",
+                "severity": "Major",
+                "confidence": 0.9,
+                "confidence_bucket": "High",
+                "tags": ["TextChanged"],
+                "explanation": "Text changed.",
+                "evidence": {
+                    "old_node_id": "n0001",
+                    "new_node_id": "n0001",
+                    "section_hint": null,
+                    "old_page": 0,
+                    "new_page": 0,
+                    "old_bbox": null,
+                    "new_bbox": null,
+                    "old_text": "Payment is due in 30 days.",
+                    "new_text": "Payment is due in 15 days.",
+                    "text_hunks": [],
+                    "provenance": []
+                }
+            }],
+            "diagnostic_summary": []
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&value).unwrap())
+            .expect("AI review fixture should be written");
+    }
+
+    fn spawn_fake_openai_server(content: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("fake server should bind");
+        let address = listener.local_addr().expect("fake server addr");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("fake server should accept");
+            let request = read_fake_http_request(&mut stream);
+            assert!(request.contains("POST /v1/chat/completions HTTP/1.1"));
+            assert!(request.contains("\"model\":\"local-test-model\""));
+            assert!(request.contains("c0001"));
+            let response_body = serde_json::json!({
+                "model": "fake-local-model",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": content
+                    },
+                    "finish_reason": "stop"
+                }]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("fake response should be written");
+        });
+        format!("http://{address}/v1")
+    }
+
+    fn read_fake_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let read = stream.read(&mut chunk).expect("fake request should read");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&buffer[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if buffer.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8(buffer).expect("fake request should be UTF-8")
     }
 
     fn text_run(id: &str, text: &str, x: f32, y: f32) -> pdf_text::TextRun {
