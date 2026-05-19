@@ -1045,19 +1045,25 @@ fn generated_reports_reflect_documented_scenario_expectations() {
         "semantic_images_v2.pdf",
         &["ObjectChanged", "image payload"],
     );
-    assert_diff_has_diagnostic(
+    assert_diff_contains_all(
         &fixture,
         "interactive-links",
         "interactive_links_v1.pdf",
         "interactive_links_v2.pdf",
-        "UNSUPPORTED_ANNOTATION_DIFF",
+        &[
+            "AnnotationChanged",
+            "uri=https://monitor.example.com/db2_cluster",
+        ],
     );
-    assert_diff_has_diagnostic(
+    assert_diff_contains_all(
         &fixture,
         "attachment-link-bundle-diagnostic",
         "attachment_link_bundle_v1.pdf",
         "attachment_link_bundle_v2.pdf",
-        "UNSUPPORTED_ANNOTATION_DIFF",
+        &[
+            "AnnotationChanged",
+            "uri=https://example.test/evidence/v2-final",
+        ],
     );
     assert_diff_has_diagnostic(
         &fixture,
@@ -1139,7 +1145,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 40);
     assert_eq!(report["parsed"], 40);
-    assert_eq!(report["partial"], 15);
+    assert_eq!(report["partial"], 14);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
@@ -1147,10 +1153,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert!(report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"].is_null());
     assert_eq!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"], 7);
     assert_eq!(report["diagnostic_counts"]["MISSING_TEXT_LAYER"], 2);
-    assert_eq!(
-        report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"],
-        4
-    );
+    assert!(report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE_CID_FONT"].is_null());
     assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 6);

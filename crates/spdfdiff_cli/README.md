@@ -68,9 +68,13 @@ review works without adding TLS or hosted provider dependencies.
 - Image XObject payload changes by deterministic stream hash.
 - Native vector path operations and graphic-style operations by deterministic
   parsed content-operation signature.
-- Selected report-facing document surfaces such as link/annotation
-  dictionaries, embedded-file/FileSpec objects, outline-like objects, and
-  metadata/XMP objects by deterministic object hash.
+- Text font resource and font-size changes for unchanged text as
+  deterministic `StyleChanged` entries.
+- Link/annotation semantic fields, including subtype, rectangle, URI or
+  destination, contents, color, border, and quad-point evidence.
+- Selected report-facing document surfaces such as embedded-file/FileSpec
+  objects, outline-like objects, and metadata/XMP objects by deterministic
+  object hash.
 - Simple tagged-PDF structure markers and MCID-backed text mapping.
 
 ## OCR Path
@@ -89,7 +93,9 @@ OCR is an adapter path, not a replacement for parser/content diagnostics.
 ## Current Compatibility Boundary
 
 Native vector/style comparison is a parsed-operation signature comparison, not a
-pixel renderer. Full annotation/link semantics, renderer-grade visual diffing,
-and renderer-grade table reconstruction from arbitrary drawing geometry remain
+pixel renderer. Text style classification currently covers content-stream font
+resource and font-size changes for unchanged text. Link/annotation comparison is
+field-level semantic comparison, not JavaScript/action execution. Renderer-grade visual diffing and
+renderer-grade table reconstruction from arbitrary drawing geometry remain
 incremental compatibility work. Unsupported surfaces are reported through stable
 diagnostics instead of being silently treated as supported semantic diffs.

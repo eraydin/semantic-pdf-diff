@@ -25,21 +25,24 @@ by invoking an external OCR engine. Set `SPDFDIFF_OCR_COMMAND` to a command that
 accepts a generated PPM image path and writes text to stdout, or install
 `tesseract` so the CLI can call `tesseract <image> stdout --psm 6`. Native vector
 path and graphic-style content operations are compared by deterministic parsed
-operation signatures. Full annotation/link semantics, renderer-grade visual
-diffing, and renderer-grade table reconstruction from arbitrary drawing geometry
-remain incremental compatibility work rather than public-alpha claims. Simple aligned
+operation signatures, and annotation/link surfaces are compared by deterministic
+semantic fields such as subtype, rectangle, URI or destination, contents, color,
+and quad points. Text style changes for unchanged text are classified from
+content-stream font resource and font-size operators. Renderer-grade visual
+diffing and renderer-grade table
+reconstruction from arbitrary drawing geometry remain incremental compatibility
+work rather than public-alpha claims. Simple aligned
 text-grid table candidates preserve best-effort row/cell, sparse blank-cell,
 row-span, column-span, merged-cell, and rectangle border-hint evidence in extract
-reports, while unsupported annotation and missing text-layer surfaces are emitted
-as stable diagnostics instead of being silently treated as fully supported
-semantic diffs.
+reports, while missing text-layer surfaces are emitted as stable diagnostics
+instead of being silently treated as fully supported semantic diffs.
 The diff engine also emits structured word-level text hunks for modified
 paragraphs, structured layout evidence for moved or layout-shifted blocks, and
 compares selected report-facing document surfaces, including image payloads,
-link/annotation dictionaries, embedded-file/FileSpec objects, outline-like
-objects, and metadata/XMP objects by deterministic object hashes.
+link/annotation semantics, embedded-file/FileSpec objects, outline-like objects,
+and metadata/XMP objects by deterministic signatures or object hashes.
 These object-level comparisons preserve evidence but are not yet full semantic
-annotation, attachment, outline, or metadata interpreters.
+attachment, outline, or metadata interpreters.
 Common non-text drawing, color, clipping, marked-content, and XObject operators
 are recognized so visual PDF content does not create `CONTENT_OPERATOR_UNKNOWN`
 noise during text extraction, and recognized drawing/color operands are retained

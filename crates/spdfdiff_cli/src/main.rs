@@ -1192,13 +1192,6 @@ fn append_unsupported_feature_diagnostics(
         ));
     }
 
-    if document_has_any_token(document, &["/Annots", "/Subtype /Link", "/Annot"]) {
-        diagnostics.push(Diagnostic::warning(
-            "UNSUPPORTED_ANNOTATION_DIFF",
-            "annotation and link target comparison is not implemented",
-        ));
-    }
-
     if document_has_any_token(document, &["/AcroForm", "/Widget"]) {
         diagnostics.push(Diagnostic::warning(
             "UNSUPPORTED_FORM_FIELD_DIFF",
@@ -1743,13 +1736,14 @@ fn append_image_payload_changes(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct DocumentSurface {
     category: SurfaceCategory,
     index: usize,
     object_id: ObjectId,
     summary: String,
     hash: String,
+    bbox: Option<Rect>,
     byte_range: Option<ByteRange>,
 }
 
@@ -1854,17 +1848,14 @@ fn document_surfaces(
         .filter(|object| surface_matches_category(&object.body, category))
         .enumerate()
         .map(|(index, object)| {
-            let bytes = object
-                .stream
-                .as_ref()
-                .map_or_else(|| object.body.as_bytes(), |stream| stream.bytes.as_slice());
-            let summary = summarize_surface(&object.body, category);
+            let (summary, hash, bbox) = summarize_and_hash_surface(object, category);
             DocumentSurface {
                 category,
                 index,
                 object_id: object.id,
                 summary,
-                hash: stable_hash(bytes),
+                hash,
+                bbox,
                 byte_range: object.stream.as_ref().map(|stream| stream.byte_range),
             }
         })
@@ -1902,6 +1893,9 @@ fn surface_matches_category(body: &str, category: SurfaceCategory) -> bool {
 }
 
 fn summarize_surface(body: &str, category: SurfaceCategory) -> String {
+    if category == SurfaceCategory::Annotation {
+        return annotation_signature(body);
+    }
     let mut parts = vec![category.report_label().to_owned()];
     for key in ["Subtype", "URI", "Title", "F", "Desc", "Contents", "T", "V"] {
         if let Some(value) = value_after_pdf_name(body, key) {
@@ -1911,9 +1905,71 @@ fn summarize_surface(body: &str, category: SurfaceCategory) -> String {
     parts.join(" ")
 }
 
+fn summarize_and_hash_surface(
+    object: &pdf_core::PdfObject,
+    category: SurfaceCategory,
+) -> (String, String, Option<Rect>) {
+    let summary = summarize_surface(&object.body, category);
+    let hash = if category == SurfaceCategory::Annotation {
+        stable_hash(summary.as_bytes())
+    } else {
+        let bytes = object
+            .stream
+            .as_ref()
+            .map_or_else(|| object.body.as_bytes(), |stream| stream.bytes.as_slice());
+        stable_hash(bytes)
+    };
+    let bbox = if category == SurfaceCategory::Annotation {
+        rect_after_pdf_name(&object.body, "Rect")
+    } else {
+        None
+    };
+    (summary, hash, bbox)
+}
+
+fn annotation_signature(body: &str) -> String {
+    let mut parts = vec!["annotation/link semantic surface".to_owned()];
+    push_pdf_name_value(&mut parts, body, "Subtype", "subtype");
+    push_pdf_name_value(&mut parts, body, "S", "action");
+    push_pdf_name_value(&mut parts, body, "URI", "uri");
+    push_pdf_name_value(&mut parts, body, "Dest", "dest");
+    push_pdf_name_value(&mut parts, body, "Contents", "contents");
+    push_pdf_name_value(&mut parts, body, "T", "title");
+    push_pdf_name_value(&mut parts, body, "NM", "name");
+    push_pdf_name_value(&mut parts, body, "M", "modified");
+    if let Some(rect) = rect_after_pdf_name(body, "Rect") {
+        parts.push(format!("rect={}", canonical_rect(rect)));
+    }
+    push_pdf_array_value(&mut parts, body, "C", "color");
+    push_pdf_array_value(&mut parts, body, "QuadPoints", "quad_points");
+    push_pdf_array_value(&mut parts, body, "Border", "border");
+    parts.join(" ")
+}
+
+fn push_pdf_name_value(parts: &mut Vec<String>, body: &str, key: &str, label: &str) {
+    if let Some(value) = pdf_value_after_name(body, key) {
+        parts.push(format!("{label}={value}"));
+    }
+}
+
+fn push_pdf_array_value(parts: &mut Vec<String>, body: &str, key: &str, label: &str) {
+    if let Some(value) = array_after_pdf_name(body, key) {
+        parts.push(format!("{label}=[{}]", canonical_pdf_array(value)));
+    }
+}
+
 fn value_after_pdf_name(body: &str, key: &str) -> Option<String> {
-    let start = body.find(&format!("/{key}"))? + key.len() + 1;
+    pdf_value_after_name(body, key)
+}
+
+fn pdf_value_after_name(body: &str, key: &str) -> Option<String> {
+    let start = pdf_name_value_starts(body, key).last().copied()?;
     let remaining = body[start..].trim_start();
+    if let Some(array) = remaining.strip_prefix('[') {
+        return array
+            .split_once(']')
+            .map(|(value, _)| format!("[{}]", canonical_pdf_array(value)));
+    }
     if let Some(value) = remaining.strip_prefix('(') {
         return value
             .split_once(')')
@@ -1929,6 +1985,82 @@ fn value_after_pdf_name(body: &str, key: &str) -> Option<String> {
         .split_whitespace()
         .next()
         .map(|value| value.chars().take(120).collect())
+}
+
+fn pdf_name_value_start(body: &str, key: &str) -> Option<usize> {
+    pdf_name_value_starts(body, key).into_iter().next()
+}
+
+fn pdf_name_value_starts(body: &str, key: &str) -> Vec<usize> {
+    let needle = format!("/{key}");
+    let mut search_start = 0usize;
+    let mut starts = Vec::new();
+    while let Some(relative) = body[search_start..].find(&needle) {
+        let name_start = search_start + relative;
+        let value_start = name_start + needle.len();
+        let is_delimited = body[value_start..]
+            .chars()
+            .next()
+            .is_none_or(is_pdf_delimiter);
+        if is_delimited {
+            starts.push(value_start);
+        }
+        search_start = value_start;
+    }
+    starts
+}
+
+fn is_pdf_delimiter(value: char) -> bool {
+    value.is_ascii_whitespace() || matches!(value, '[' | ']' | '(' | ')' | '<' | '>' | '/')
+}
+
+fn array_after_pdf_name<'a>(body: &'a str, key: &str) -> Option<&'a str> {
+    let start = pdf_name_value_starts(body, key).last().copied()?;
+    let remaining = body[start..].trim_start();
+    let array = remaining.strip_prefix('[')?;
+    array.split_once(']').map(|(value, _)| value)
+}
+
+fn canonical_pdf_array(value: &str) -> String {
+    value
+        .split_whitespace()
+        .take(32)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn rect_after_pdf_name(body: &str, key: &str) -> Option<Rect> {
+    let numbers = number_array_after_pdf_name(body, key);
+    if numbers.len() < 4 {
+        return None;
+    }
+    Some(Rect {
+        x0: numbers[0].min(numbers[2]),
+        y0: numbers[1].min(numbers[3]),
+        x1: numbers[0].max(numbers[2]),
+        y1: numbers[1].max(numbers[3]),
+    })
+}
+
+fn number_array_after_pdf_name(body: &str, key: &str) -> Vec<f32> {
+    array_after_pdf_name(body, key)
+        .map(|value| {
+            value
+                .split_whitespace()
+                .filter_map(|token| token.parse::<f32>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn canonical_rect(rect: Rect) -> String {
+    format!(
+        "[{} {} {} {}]",
+        canonical_report_number(rect.x0),
+        canonical_report_number(rect.y0),
+        canonical_report_number(rect.x1),
+        canonical_report_number(rect.y1)
+    )
 }
 
 fn push_surface_change(
@@ -1959,7 +2091,7 @@ fn surface_evidence(file_role: FileRole, surface: &DocumentSurface) -> SemanticN
     SemanticNodeEvidence {
         node_id: format!("{}-{:04}", surface.category.node_prefix(), surface.index),
         page: 0,
-        bbox: None,
+        bbox: surface.bbox,
         text: Some(format!(
             "{} object {} 0 R hash={} {}",
             surface.category.report_label(),
@@ -2042,6 +2174,7 @@ fn image_payload_evidence(file_role: FileRole, image: &ImagePayload) -> Semantic
 enum GraphicSurfaceCategory {
     VectorPath,
     Style,
+    TextStyle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2054,6 +2187,7 @@ struct GraphicSurface {
     bbox: Option<Rect>,
     signature: String,
     hash: String,
+    match_key: Option<String>,
     source: Provenance,
 }
 
@@ -2070,6 +2204,14 @@ fn append_graphic_surface_changes(
             (Some(old_surface), Some(new_surface))
                 if old_surface.hash == new_surface.hash
                     && old_surface.category == new_surface.category => {}
+            (Some(old_surface), Some(new_surface))
+                if old_surface.category == GraphicSurfaceCategory::TextStyle
+                    && new_surface.category == GraphicSurfaceCategory::TextStyle
+                    && old_surface.match_key != new_surface.match_key => {}
+            (Some(old_surface), None)
+                if old_surface.category == GraphicSurfaceCategory::TextStyle => {}
+            (None, Some(new_surface))
+                if new_surface.category == GraphicSurfaceCategory::TextStyle => {}
             (Some(old_surface), Some(new_surface)) => push_graphic_surface_change(
                 document,
                 Some(old_surface),
@@ -2113,8 +2255,26 @@ fn graphic_surfaces(document: &pdf_core::PdfDocument, config: ParseConfig) -> Ve
             Some(content.stream_object_id),
             config.limits,
         );
+        let mut current_font: Option<String> = None;
+        let mut current_font_size = 12.0f32;
         for operation in &program.operations {
+            if let ContentOp::SetFont { name, size, .. } = operation {
+                current_font = Some(name.clone());
+                current_font_size = *size;
+            }
             if let Some(mut surface) = graphic_surface_from_operation(surfaces.len(), operation) {
+                surface.page_index = content.page_index;
+                if surface.stream_object_id.is_none() {
+                    surface.stream_object_id = Some(content.stream_object_id);
+                }
+                surfaces.push(surface);
+            }
+            if let Some(mut surface) = text_style_surface_from_operation(
+                surfaces.len(),
+                operation,
+                current_font.as_deref(),
+                current_font_size,
+            ) {
                 surface.page_index = content.page_index;
                 if surface.stream_object_id.is_none() {
                     surface.stream_object_id = Some(content.stream_object_id);
@@ -2214,6 +2374,55 @@ fn graphic_surface_from_operation(index: usize, operation: &ContentOp) -> Option
     }
 }
 
+fn text_style_surface_from_operation(
+    index: usize,
+    operation: &ContentOp,
+    current_font: Option<&str>,
+    current_font_size: f32,
+) -> Option<GraphicSurface> {
+    let (text, source) = match operation {
+        ContentOp::ShowText { text, source, .. }
+        | ContentOp::ShowAdjustedText { text, source, .. } => (text, source),
+        ContentOp::BeginText { .. }
+        | ContentOp::EndText { .. }
+        | ContentOp::SetFont { .. }
+        | ContentOp::MoveTextPosition { .. }
+        | ContentOp::MoveToNextLine { .. }
+        | ContentOp::SetTextLeading { .. }
+        | ContentOp::SetCharacterSpacing { .. }
+        | ContentOp::SetWordSpacing { .. }
+        | ContentOp::SetHorizontalScaling { .. }
+        | ContentOp::SetTextMatrix { .. }
+        | ContentOp::SaveGraphicsState { .. }
+        | ContentOp::RestoreGraphicsState { .. }
+        | ContentOp::ConcatMatrix { .. }
+        | ContentOp::AppendRectangle { .. }
+        | ContentOp::BeginMarkedContent { .. }
+        | ContentOp::EndMarkedContent { .. }
+        | ContentOp::RecognizedNonText { .. }
+        | ContentOp::Unknown { .. } => return None,
+    };
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    let signature = format!(
+        "text-style text_hash={} font={} size={}",
+        stable_hash(normalized.as_bytes()),
+        current_font.unwrap_or("unknown"),
+        canonical_report_number(current_font_size)
+    );
+    let mut surface = graphic_surface(
+        GraphicSurfaceCategory::TextStyle,
+        index,
+        None,
+        signature,
+        source,
+    );
+    surface.match_key = Some(stable_hash(normalized.as_bytes()));
+    Some(surface)
+}
+
 fn graphic_surface(
     category: GraphicSurfaceCategory,
     index: usize,
@@ -2230,6 +2439,7 @@ fn graphic_surface(
         bbox,
         hash: stable_hash(signature.as_bytes()),
         signature,
+        match_key: None,
         source: source.clone(),
     }
 }
@@ -2238,7 +2448,9 @@ impl GraphicSurfaceCategory {
     fn change_kind(self) -> ChangeKind {
         match self {
             GraphicSurfaceCategory::VectorPath => ChangeKind::ObjectChanged,
-            GraphicSurfaceCategory::Style => ChangeKind::StyleChanged,
+            GraphicSurfaceCategory::Style | GraphicSurfaceCategory::TextStyle => {
+                ChangeKind::StyleChanged
+            }
         }
     }
 
@@ -2246,6 +2458,7 @@ impl GraphicSurfaceCategory {
         match self {
             GraphicSurfaceCategory::VectorPath => "native vector graphic surface",
             GraphicSurfaceCategory::Style => "graphic style surface",
+            GraphicSurfaceCategory::TextStyle => "text style surface",
         }
     }
 
@@ -2253,6 +2466,7 @@ impl GraphicSurfaceCategory {
         match self {
             GraphicSurfaceCategory::VectorPath => "vector",
             GraphicSurfaceCategory::Style => "style",
+            GraphicSurfaceCategory::TextStyle => "text-style",
         }
     }
 }
@@ -2518,7 +2732,7 @@ fn font_tounicode_maps(
 }
 
 fn reference_after_key(body: &str, key: &str) -> Option<ObjectId> {
-    let start = body.find(&format!("/{key}"))? + key.len() + 1;
+    let start = pdf_name_value_start(body, key)?;
     parse_reference_at(&body[start..])
 }
 
@@ -3140,6 +3354,84 @@ mod tests {
     }
 
     #[test]
+    fn reports_text_style_changes_for_unchanged_text() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &styled_text_pdf("F1", 12.0, "Heading"),
+            "new",
+            &styled_text_pdf("F1", 18.0, "Heading"),
+            DiffConfig::default(),
+        )
+        .expect("text style diff should complete");
+
+        assert_eq!(diff.summary.modified, 0);
+        assert!(
+            diff.changes
+                .iter()
+                .any(|change| change.kind == ChangeKind::StyleChanged
+                    && change.reason.contains("text style surface"))
+        );
+    }
+
+    #[test]
+    fn reports_link_annotation_semantic_changes() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &annotation_pdf(
+                "/Type /Annot /Subtype /Link /Rect [72 700 180 720] /A << /S /URI /URI (https://example.test/v1) >>",
+            ),
+            "new",
+            &annotation_pdf(
+                "/Type /Annot /Subtype /Link /Rect [72 700 180 720] /A << /S /URI /URI (https://example.test/v2) >>",
+            ),
+            DiffConfig::default(),
+        )
+        .expect("link annotation diff should complete");
+
+        let change = diff
+            .changes
+            .iter()
+            .find(|change| change.kind == ChangeKind::AnnotationChanged)
+            .expect("URI change should produce an annotation semantic change");
+        assert!(change.reason.contains("annotation/link"));
+        assert!(
+            change
+                .new_node
+                .as_ref()
+                .and_then(|node| node.text.as_deref())
+                .is_some_and(|text| text.contains("uri=https://example.test/v2")
+                    && text.contains("rect=[72 700 180 720]"))
+        );
+        assert!(
+            diff.diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "UNSUPPORTED_ANNOTATION_DIFF")
+        );
+    }
+
+    #[test]
+    fn ignores_annotation_dictionary_order_when_semantics_match() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &annotation_pdf(
+                "/Type /Annot /Subtype /Text /Rect [10 20 30 40] /Contents (Review note) /C [1 1 0]",
+            ),
+            "new",
+            &annotation_pdf(
+                "/C [1 1 0] /Contents (Review note) /Rect [10 20 30 40] /Subtype /Text /Type /Annot",
+            ),
+            DiffConfig::default(),
+        )
+        .expect("annotation diff should complete");
+
+        assert!(
+            diff.changes
+                .iter()
+                .all(|change| change.kind != ChangeKind::AnnotationChanged)
+        );
+    }
+
+    #[test]
     fn reports_cid_font_without_tounicode() {
         let semantic = semantic_document_from_pdf(
             "cid-font",
@@ -3701,6 +3993,34 @@ mod tests {
         format!("%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length {} >>\nstream\nBT /F1 12 Tf 72 720 Td ({text}) Tj ET\nendstream\nendobj\n", text.len() + 32).into_bytes()
     }
 
+    fn styled_text_pdf(font: &str, size: f32, text: &str) -> Vec<u8> {
+        let content = format!(
+            "BT /{font} {} Tf 72 720 Td ({text}) Tj ET",
+            canonical_report_number(size)
+        );
+        format!(
+            "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length {} >>
+stream
+{content}
+endstream
+endobj
+",
+            content.len()
+        )
+        .into_bytes()
+    }
+
     fn incremental_update_pdf() -> Vec<u8> {
         let mut pdf = minimal_pdf("Hello");
         pdf.extend_from_slice(
@@ -3800,6 +4120,34 @@ endstream
 endobj
 "
         .replace("stream\nx\nendstream", &format!("stream\n{payload_text}\nendstream"))
+        .into_bytes()
+    }
+
+    fn annotation_pdf(annotation_body: &str) -> Vec<u8> {
+        let content = "BT /F1 12 Tf 72 720 Td (Link) Tj ET";
+        format!(
+            "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Annots [5 0 R] >>
+endobj
+4 0 obj
+<< /Length {} >>
+stream
+{content}
+endstream
+endobj
+5 0 obj
+<< {annotation_body} >>
+endobj
+",
+            content.len()
+        )
         .into_bytes()
     }
 
