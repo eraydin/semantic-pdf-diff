@@ -1,0 +1,52 @@
+{
+  "schema_version": "0.1.0",
+  "summary": {
+    "inserted": 0,
+    "deleted": 0,
+    "modified": 0,
+    "moved": 1,
+    "layout_changed": 1
+  },
+  "changes": [
+    {
+      "kind": "LayoutChanged",
+      "severity": "Minor",
+      "old_page": 1,
+      "new_page": 0,
+      "old_text": "Second paragraph",
+      "new_text": "Second paragraph",
+      "text_hunks": [],
+      "layout_diff": {
+        "delta_x": 0.0,
+        "delta_y": 0.0,
+        "page_changed": true,
+        "reading_order_changed": true
+      }
+    },
+    {
+      "kind": "Moved",
+      "severity": "Minor",
+      "old_page": 0,
+      "new_page": 1,
+      "old_text": "First paragraph",
+      "new_text": "First paragraph",
+      "text_hunks": [],
+      "layout_diff": {
+        "delta_x": 0.0,
+        "delta_y": 0.0,
+        "page_changed": true,
+        "reading_order_changed": true
+      }
+    }
+  ],
+  "diagnostic_codes": [
+    "STREAM_LENGTH_MISMATCH",
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE",
+    "MISSING_TOUNICODE",
+    "STREAM_LENGTH_MISMATCH",
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE",
+    "MISSING_TOUNICODE"
+  ]
+}

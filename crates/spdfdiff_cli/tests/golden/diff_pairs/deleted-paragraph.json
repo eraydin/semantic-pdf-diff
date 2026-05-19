@@ -1,0 +1,30 @@
+{
+  "schema_version": "0.1.0",
+  "summary": {
+    "inserted": 0,
+    "deleted": 1,
+    "modified": 0,
+    "moved": 0,
+    "layout_changed": 0
+  },
+  "changes": [
+    {
+      "kind": "Deleted",
+      "severity": "Major",
+      "old_page": 1,
+      "new_page": null,
+      "old_text": "Deleted paragraph",
+      "new_text": null,
+      "text_hunks": [],
+      "layout_diff": null
+    }
+  ],
+  "diagnostic_codes": [
+    "STREAM_LENGTH_MISMATCH",
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE",
+    "MISSING_TOUNICODE",
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE"
+  ]
+}

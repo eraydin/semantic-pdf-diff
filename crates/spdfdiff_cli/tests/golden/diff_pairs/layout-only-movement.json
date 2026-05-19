@@ -1,0 +1,33 @@
+{
+  "schema_version": "0.1.0",
+  "summary": {
+    "inserted": 0,
+    "deleted": 0,
+    "modified": 0,
+    "moved": 0,
+    "layout_changed": 1
+  },
+  "changes": [
+    {
+      "kind": "LayoutChanged",
+      "severity": "Minor",
+      "old_page": 0,
+      "new_page": 0,
+      "old_text": "Stable paragraph",
+      "new_text": "Stable paragraph",
+      "text_hunks": [],
+      "layout_diff": {
+        "delta_x": 24.0,
+        "delta_y": 0.0,
+        "page_changed": false,
+        "reading_order_changed": false
+      }
+    }
+  ],
+  "diagnostic_codes": [
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE",
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE"
+  ]
+}

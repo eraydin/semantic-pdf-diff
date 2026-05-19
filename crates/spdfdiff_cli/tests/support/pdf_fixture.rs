@@ -22,6 +22,14 @@ impl MinimalPdf {
     }
 
     #[must_use]
+    pub fn two_pages(first_text: impl Into<String>, second_text: impl Into<String>) -> Self {
+        Self::new(vec![
+            MinimalPdfPage::new(first_text, 72.0, 720.0),
+            MinimalPdfPage::new(second_text, 72.0, 720.0),
+        ])
+    }
+
+    #[must_use]
     pub fn new(pages: Vec<MinimalPdfPage>) -> Self {
         assert!(
             !pages.is_empty(),

@@ -7,7 +7,7 @@ use std::{
     process::{Command, Output},
     sync::atomic::{AtomicUsize, Ordering},
 };
-use support::pdf_fixture::{MinimalPdf, MinimalPdfPage};
+use support::pdf_fixture::MinimalPdf;
 
 static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
 
@@ -438,6 +438,69 @@ fn minimal_pdf_fixture_writer_is_deterministic_and_parseable() {
         pdf_core::PdfDocument::parse(&first).expect("fixture writer output should parse");
     assert_eq!(document.objects.len(), 7);
     assert_eq!(document.page_contents().len(), 2);
+}
+
+#[test]
+fn generated_diff_pair_matrix_matches_golden_snapshots() {
+    let fixture = TestFixture::new("generated_diff_pair_matrix");
+    let cases = [
+        (
+            "identical",
+            MinimalPdf::single_page("Stable paragraph").to_bytes(),
+            MinimalPdf::single_page("Stable paragraph").to_bytes(),
+        ),
+        (
+            "inserted-paragraph",
+            MinimalPdf::single_page("Stable paragraph").to_bytes(),
+            MinimalPdf::two_pages("Stable paragraph", "Inserted paragraph").to_bytes(),
+        ),
+        (
+            "deleted-paragraph",
+            MinimalPdf::two_pages("Stable paragraph", "Deleted paragraph").to_bytes(),
+            MinimalPdf::single_page("Stable paragraph").to_bytes(),
+        ),
+        (
+            "modified-paragraph",
+            MinimalPdf::single_page("Payment is due within 30 days.").to_bytes(),
+            MinimalPdf::single_page("Payment is due within 15 days.").to_bytes(),
+        ),
+        (
+            "moved-paragraph",
+            MinimalPdf::two_pages("First paragraph", "Second paragraph").to_bytes(),
+            MinimalPdf::two_pages("Second paragraph", "First paragraph").to_bytes(),
+        ),
+        (
+            "layout-only-movement",
+            MinimalPdf::single_page_at("Stable paragraph", 72.0, 720.0).to_bytes(),
+            MinimalPdf::single_page_at("Stable paragraph", 96.0, 720.0).to_bytes(),
+        ),
+        (
+            "changed-page-count",
+            MinimalPdf::single_page("Only page").to_bytes(),
+            MinimalPdf::two_pages("Only page", "Additional page").to_bytes(),
+        ),
+    ];
+
+    for (name, old_bytes, new_bytes) in cases {
+        let old_pdf = fixture.write_bytes(&format!("{name}-old.pdf"), &old_bytes);
+        let new_pdf = fixture.write_bytes(&format!("{name}-new.pdf"), &new_bytes);
+        let output_path = fixture.path(&format!("{name}.json"));
+        assert_success(&run_spdfdiff([
+            "diff",
+            path_arg(&old_pdf).as_str(),
+            path_arg(&new_pdf).as_str(),
+            "--format",
+            "json",
+            "--output",
+            path_arg(&output_path).as_str(),
+        ]));
+        let report = read_json(&output_path);
+        assert_eq!(
+            stable_diff_pair_snapshot(&report),
+            read_json(&golden_diff_pair_snapshot(name)),
+            "generated diff-pair snapshot changed for {name}"
+        );
+    }
 }
 
 #[test]
@@ -1194,6 +1257,14 @@ fn real_sample_pdf(name: &str) -> PathBuf {
     path
 }
 
+fn golden_diff_pair_snapshot(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join("diff_pairs")
+        .join(format!("{name}.json"))
+}
+
 fn real_sample_pdf_names() -> &'static [&'static str] {
     REAL_SAMPLE_PDFS
 }
@@ -1205,6 +1276,57 @@ fn real_sample_pdf_pairs() -> &'static [RealSamplePair] {
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("JSON report should be written"))
         .expect("report should be valid JSON")
+}
+
+fn stable_diff_pair_snapshot(report: &Value) -> Value {
+    let changes = report["changes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|change| {
+            serde_json::json!({
+                "kind": change["kind"],
+                "severity": change["severity"],
+                "old_page": change["old_node"]["page"],
+                "new_page": change["new_node"]["page"],
+                "old_text": change["old_node"]["text"],
+                "new_text": change["new_node"]["text"],
+                "text_hunks": change["text_hunks"].as_array().map(|hunks| {
+                    hunks
+                        .iter()
+                        .map(|hunk| {
+                            serde_json::json!({
+                                "kind": hunk["kind"],
+                                "granularity": hunk["granularity"],
+                                "old_text": hunk["old_text"],
+                                "new_text": hunk["new_text"],
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                }).unwrap_or_default(),
+                "layout_diff": change["layout_diff"].as_object().map(|layout| {
+                    serde_json::json!({
+                        "delta_x": layout.get("delta_x").unwrap_or(&Value::Null),
+                        "delta_y": layout.get("delta_y").unwrap_or(&Value::Null),
+                        "page_changed": layout.get("page_changed").unwrap_or(&Value::Null),
+                        "reading_order_changed": layout.get("reading_order_changed").unwrap_or(&Value::Null),
+                    })
+                }),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schema_version": report["schema_version"],
+        "summary": report["summary"],
+        "changes": changes,
+        "diagnostic_codes": report["diagnostics"].as_array().map(|diagnostics| {
+            diagnostics
+                .iter()
+                .filter_map(|diagnostic| diagnostic["code"].as_str())
+                .collect::<Vec<_>>()
+        }).unwrap_or_default(),
+    })
 }
 
 fn ai_json_has_tag(report: &Value, expected_tag: &str) -> bool {
@@ -1345,6 +1467,12 @@ impl TestFixture {
         path
     }
 
+    fn write_bytes(&self, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = self.path(name);
+        fs::write(&path, bytes).expect("fixture bytes should be written");
+        path
+    }
+
     fn write_mock_ocr_command(&self) -> PathBuf {
         #[cfg(windows)]
         {
@@ -1387,9 +1515,5 @@ fn minimal_pdf(text: &str) -> Vec<u8> {
 }
 
 fn multi_page_minimal_pdf(first_text: &str, second_text: &str) -> Vec<u8> {
-    MinimalPdf::new(vec![
-        MinimalPdfPage::new(first_text, 72.0, 720.0),
-        MinimalPdfPage::new(second_text, 72.0, 720.0),
-    ])
-    .to_bytes()
+    MinimalPdf::two_pages(first_text, second_text).to_bytes()
 }

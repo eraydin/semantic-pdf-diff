@@ -1,0 +1,47 @@
+{
+  "schema_version": "0.1.0",
+  "summary": {
+    "inserted": 0,
+    "deleted": 0,
+    "modified": 1,
+    "moved": 0,
+    "layout_changed": 0
+  },
+  "changes": [
+    {
+      "kind": "Modified",
+      "severity": "Major",
+      "old_page": 0,
+      "new_page": 0,
+      "old_text": "Payment is due within 30 days.",
+      "new_text": "Payment is due within 15 days.",
+      "text_hunks": [
+        {
+          "kind": "Equal",
+          "granularity": "Token",
+          "old_text": "Payment is due within",
+          "new_text": "Payment is due within"
+        },
+        {
+          "kind": "Replaced",
+          "granularity": "Token",
+          "old_text": "30",
+          "new_text": "15"
+        },
+        {
+          "kind": "Equal",
+          "granularity": "Token",
+          "old_text": "days.",
+          "new_text": "days."
+        }
+      ],
+      "layout_diff": null
+    }
+  ],
+  "diagnostic_codes": [
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE",
+    "STREAM_LENGTH_MISMATCH",
+    "MISSING_TOUNICODE"
+  ]
+}
