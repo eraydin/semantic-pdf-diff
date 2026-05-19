@@ -78,6 +78,9 @@ pub struct TableCell {
     pub text: String,
     pub bbox: Rect,
     pub source: Vec<Provenance>,
+    pub row_span: usize,
+    pub column_span: usize,
+    pub is_placeholder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,6 +479,9 @@ fn table_cell_from_run(run: &TextRun) -> TableCell {
         text: run.normalized_text.clone(),
         bbox: run.bbox,
         source: vec![run.source.clone()],
+        row_span: 1,
+        column_span: 1,
+        is_placeholder: false,
     }
 }
 
@@ -539,16 +545,16 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
         return None;
     }
 
-    let expected_columns = column_x_positions.len();
-    if row_drafts
-        .iter()
-        .any(|row| row.cells.len() + 1 < expected_columns)
-    {
-        return None;
-    }
-
     for row in &mut row_drafts {
         row.cells = align_row_cells(row, &column_x_positions)?;
+        let sparse_gap_count = row
+            .cells
+            .iter()
+            .filter(|cell| cell.is_placeholder && cell.column_span == 1)
+            .count();
+        if sparse_gap_count > 1 {
+            return None;
+        }
     }
 
     Some(TableStructure {
@@ -590,10 +596,26 @@ fn align_row_cells(row: &TableRow, column_x_positions: &[f32]) -> Option<Vec<Tab
     let mut aligned: Vec<Option<TableCell>> = vec![None; column_x_positions.len()];
     for cell in &row.cells {
         let column_index = nearest_column_index(cell.bbox.x0, column_x_positions)?;
-        if aligned[column_index].is_some() {
+        let column_span = infer_column_span(cell, column_index, column_x_positions);
+        let end_column = column_index + column_span;
+        if end_column > aligned.len()
+            || aligned[column_index..end_column]
+                .iter()
+                .any(Option::is_some)
+        {
             return None;
         }
-        aligned[column_index] = Some(cell.clone());
+        let mut spanned_cell = cell.clone();
+        spanned_cell.column_span = column_span;
+        aligned[column_index] = Some(spanned_cell);
+        for (covered_column, slot) in aligned
+            .iter_mut()
+            .enumerate()
+            .take(end_column)
+            .skip(column_index + 1)
+        {
+            *slot = Some(covered_table_cell(row, column_x_positions, covered_column));
+        }
     }
 
     Some(
@@ -605,6 +627,18 @@ fn align_row_cells(row: &TableRow, column_x_positions: &[f32]) -> Option<Vec<Tab
             })
             .collect(),
     )
+}
+
+fn infer_column_span(cell: &TableCell, column_index: usize, column_x_positions: &[f32]) -> usize {
+    let mut column_span = 1;
+    for next_column_x in column_x_positions.iter().skip(column_index + 1) {
+        if cell.bbox.x1 >= *next_column_x - TABLE_COLUMN_TOLERANCE {
+            column_span += 1;
+        } else {
+            break;
+        }
+    }
+    column_span
 }
 
 fn nearest_column_index(x: f32, column_x_positions: &[f32]) -> Option<usize> {
@@ -636,7 +670,20 @@ fn blank_table_cell(row: &TableRow, column_x_positions: &[f32], column_index: us
             y1: row.bbox.y1,
         },
         source: Vec::new(),
+        row_span: 1,
+        column_span: 1,
+        is_placeholder: true,
     }
+}
+
+fn covered_table_cell(
+    row: &TableRow,
+    column_x_positions: &[f32],
+    column_index: usize,
+) -> TableCell {
+    let mut cell = blank_table_cell(row, column_x_positions, column_index);
+    cell.column_span = 0;
+    cell
 }
 
 fn attach_table_border_hints(nodes: &mut [SemanticNode], hints: &[TableBorderHint]) {
@@ -1109,6 +1156,46 @@ mod tests {
         assert_eq!(table.rows[1].cells[0].text, "");
         assert_eq!(table.rows[1].cells[1].text, "B2");
         assert!(table.rows[1].cells[0].source.is_empty());
+    }
+
+    #[test]
+    fn reconstructs_column_spanning_text_table_cell() {
+        let runs = vec![
+            text_run("header", "Total", 0, rect(10.0, 116.0, 82.0, 128.0)),
+            text_run("a1", "A1", 0, rect(10.0, 100.0, 20.0, 112.0)),
+            text_run("a2", "A2", 0, rect(70.0, 100.0, 80.0, 112.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 1);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
+        let table = document.nodes[0]
+            .table
+            .as_ref()
+            .expect("spanning aligned runs should preserve table evidence");
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.column_x_positions, vec![10.0, 70.0]);
+        assert_eq!(table.rows[0].cells[0].text, "Total");
+        assert_eq!(table.rows[0].cells[0].column_span, 2);
+        assert_eq!(table.rows[0].cells[1].text, "");
+        assert!(table.rows[0].cells[1].is_placeholder);
+        assert_eq!(table.rows[0].cells[1].column_span, 0);
+        assert_eq!(table.rows[1].cells[0].column_span, 1);
+        assert_eq!(table.rows[1].cells[1].column_span, 1);
+    }
+
+    #[test]
+    fn keeps_too_sparse_text_grid_as_paragraph_not_table() {
+        let runs = vec![
+            text_run("a1", "A1", 0, rect(10.0, 116.0, 20.0, 128.0)),
+            text_run("a2", "A2", 0, rect(70.0, 116.0, 80.0, 128.0)),
+            text_run("a3", "A3", 0, rect(130.0, 116.0, 140.0, 128.0)),
+            text_run("b1", "B1", 0, rect(10.0, 100.0, 20.0, 112.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::Paragraph);
+        assert!(document.nodes[0].table.is_none());
     }
 
     #[test]

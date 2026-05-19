@@ -305,9 +305,17 @@ struct ExtractTableReport {
     rows: usize,
     columns: usize,
     cells: Vec<Vec<String>>,
+    cell_spans: Vec<Vec<ExtractTableCellSpanReport>>,
     border_hints: usize,
     border_boxes: Vec<Rect>,
     confidence: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct ExtractTableCellSpanReport {
+    row_span: usize,
+    column_span: usize,
+    placeholder: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2323,6 +2331,20 @@ fn extract_table_reports(document: &pdf_semantic::SemanticDocument) -> Vec<Extra
                     .iter()
                     .map(|row| row.cells.iter().map(|cell| cell.text.clone()).collect())
                     .collect(),
+                cell_spans: table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        row.cells
+                            .iter()
+                            .map(|cell| ExtractTableCellSpanReport {
+                                row_span: cell.row_span,
+                                column_span: cell.column_span,
+                                placeholder: cell.is_placeholder,
+                            })
+                            .collect()
+                    })
+                    .collect(),
                 border_hints: table.border_hints.len(),
                 border_boxes: table.border_hints.iter().map(|hint| hint.bbox).collect(),
                 confidence: table.confidence,
@@ -2626,6 +2648,30 @@ mod tests {
     }
 
     #[test]
+    fn extract_report_serializes_table_column_spans() {
+        let semantic = pdf_semantic::build_semantic_document(
+            "spanning-table",
+            &[
+                text_run_with_width("header", "Total", 10.0, 116.0, 72.0),
+                text_run("a1", "A1", 10.0, 100.0),
+                text_run("a2", "A2", 70.0, 100.0),
+            ],
+            Vec::new(),
+        );
+        let json = render_extract_report(&semantic, ReportFormat::Json);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("extract JSON should parse");
+
+        assert_eq!(value["table_candidates"], 1);
+        assert_eq!(value["tables"][0]["cells"][0][0], "Total");
+        assert_eq!(value["tables"][0]["cell_spans"][0][0]["column_span"], 2);
+        assert_eq!(value["tables"][0]["cell_spans"][0][1]["placeholder"], true);
+        assert_eq!(value["tables"][0]["cell_spans"][0][1]["column_span"], 0);
+        assert_eq!(value["tables"][0]["cell_spans"][1][0]["column_span"], 1);
+        assert_eq!(value["tables"][0]["cell_spans"][1][1]["column_span"], 1);
+    }
+
+    #[test]
     fn extract_report_serializes_table_border_hint_evidence() {
         let semantic = pdf_semantic::build_semantic_document_with_table_hints(
             "table",
@@ -2664,6 +2710,10 @@ mod tests {
     }
 
     fn text_run(id: &str, text: &str, x: f32, y: f32) -> pdf_text::TextRun {
+        text_run_with_width(id, text, x, y, 10.0)
+    }
+
+    fn text_run_with_width(id: &str, text: &str, x: f32, y: f32, width: f32) -> pdf_text::TextRun {
         pdf_text::TextRun {
             id: id.to_owned(),
             text: text.to_owned(),
@@ -2672,7 +2722,7 @@ mod tests {
             bbox: Rect {
                 x0: x,
                 y0: y,
-                x1: x + 10.0,
+                x1: x + width,
                 y1: y + 12.0,
             },
             source: Provenance {
