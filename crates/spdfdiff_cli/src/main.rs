@@ -1022,6 +1022,7 @@ fn diff_pdf_bytes(
     let new = semantic_document_from_document(new_fingerprint, &new_document, config);
     let mut diff = diff_semantic_documents(&old, &new, diff_config);
     append_image_payload_changes(&mut diff, &old_document, &new_document);
+    append_graphic_surface_changes(&mut diff, &old_document, &new_document, config);
     append_document_surface_changes(&mut diff, &old_document, &new_document);
     Ok(diff)
 }
@@ -1113,13 +1114,7 @@ fn extract_text_runs_from_document(
             "MISSING_PAGE_CONTENT",
             "no page content stream was available for extraction",
         ));
-        append_unsupported_feature_diagnostics(
-            document,
-            &font_resources,
-            true,
-            false,
-            &mut diagnostics,
-        );
+        append_unsupported_feature_diagnostics(document, &font_resources, true, &mut diagnostics);
         return ExtractedTextRuns {
             runs: Vec::new(),
             diagnostics,
@@ -1151,10 +1146,8 @@ fn extract_text_runs_from_document(
     let mut runs = Vec::new();
     let mut diagnostics = document.diagnostics.clone();
     diagnostics.extend(font_resources.diagnostics.clone());
-    let mut has_vector_graphics = false;
     let mut table_border_hints = Vec::new();
     for (page_index, mut program) in programs {
-        has_vector_graphics |= program_has_vector_graphics(&program);
         table_border_hints.extend(table_border_hints_from_program(&program));
         let tounicode_result = apply_tounicode_maps(&mut program, document, &font_resources);
         let applied_tounicode = tounicode_result.applied;
@@ -1177,7 +1170,6 @@ fn extract_text_runs_from_document(
         document,
         &font_resources,
         runs.is_empty(),
-        has_vector_graphics,
         &mut diagnostics,
     );
     ExtractedTextRuns {
@@ -1191,16 +1183,8 @@ fn append_unsupported_feature_diagnostics(
     document: &pdf_core::PdfDocument,
     font_resources: &pdf_text::FontResourceSet,
     has_no_text_runs: bool,
-    has_vector_graphics: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if has_vector_graphics {
-        diagnostics.push(Diagnostic::warning(
-            "UNSUPPORTED_VECTOR_GRAPHIC_DIFF",
-            "native vector path comparison is not implemented",
-        ));
-    }
-
     if document_has_token(document, "/Subtype /Image") && has_no_text_runs {
         diagnostics.push(Diagnostic::warning(
             "MISSING_TEXT_LAYER",
@@ -2054,6 +2038,268 @@ fn image_payload_evidence(file_role: FileRole, image: &ImagePayload) -> Semantic
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GraphicSurfaceCategory {
+    VectorPath,
+    Style,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GraphicSurface {
+    category: GraphicSurfaceCategory,
+    index: usize,
+    page_index: usize,
+    stream_object_id: Option<ObjectId>,
+    content_op_index: Option<usize>,
+    bbox: Option<Rect>,
+    signature: String,
+    hash: String,
+    source: Provenance,
+}
+
+fn append_graphic_surface_changes(
+    document: &mut DiffDocument,
+    old_document: &pdf_core::PdfDocument,
+    new_document: &pdf_core::PdfDocument,
+    config: ParseConfig,
+) {
+    let old_surfaces = graphic_surfaces(old_document, config);
+    let new_surfaces = graphic_surfaces(new_document, config);
+    for index in 0..old_surfaces.len().max(new_surfaces.len()) {
+        match (old_surfaces.get(index), new_surfaces.get(index)) {
+            (Some(old_surface), Some(new_surface))
+                if old_surface.hash == new_surface.hash
+                    && old_surface.category == new_surface.category => {}
+            (Some(old_surface), Some(new_surface)) => push_graphic_surface_change(
+                document,
+                Some(old_surface),
+                Some(new_surface),
+                format!(
+                    "{} differs at operation index {index} (old hash {} -> new hash {})",
+                    old_surface.category.report_label(),
+                    old_surface.hash,
+                    new_surface.hash
+                ),
+            ),
+            (Some(old_surface), None) => push_graphic_surface_change(
+                document,
+                Some(old_surface),
+                None,
+                format!(
+                    "{} exists only in old document at operation index {index}",
+                    old_surface.category.report_label()
+                ),
+            ),
+            (None, Some(new_surface)) => push_graphic_surface_change(
+                document,
+                None,
+                Some(new_surface),
+                format!(
+                    "{} exists only in new document at operation index {index}",
+                    new_surface.category.report_label()
+                ),
+            ),
+            (None, None) => {}
+        }
+    }
+}
+
+fn graphic_surfaces(document: &pdf_core::PdfDocument, config: ParseConfig) -> Vec<GraphicSurface> {
+    let mut surfaces = Vec::new();
+    for content in document.page_contents() {
+        let program = pdf_content::parse_content_stream_with_limits(
+            content.bytes,
+            content.page_index,
+            Some(content.stream_object_id),
+            config.limits,
+        );
+        for operation in &program.operations {
+            if let Some(mut surface) = graphic_surface_from_operation(surfaces.len(), operation) {
+                surface.page_index = content.page_index;
+                if surface.stream_object_id.is_none() {
+                    surface.stream_object_id = Some(content.stream_object_id);
+                }
+                surfaces.push(surface);
+            }
+        }
+    }
+    surfaces.sort_by_key(|surface| {
+        (
+            surface.page_index,
+            surface.stream_object_id,
+            surface.content_op_index,
+            surface.category,
+            surface.hash.clone(),
+        )
+    });
+    for (index, surface) in surfaces.iter_mut().enumerate() {
+        surface.index = index;
+    }
+    surfaces
+}
+
+fn graphic_surface_from_operation(index: usize, operation: &ContentOp) -> Option<GraphicSurface> {
+    match operation {
+        ContentOp::AppendRectangle { rect, source } => {
+            let signature = format!(
+                "vector re {} {} {} {}",
+                canonical_report_number(rect.x0),
+                canonical_report_number(rect.y0),
+                canonical_report_number(rect.x1),
+                canonical_report_number(rect.y1)
+            );
+            Some(graphic_surface(
+                GraphicSurfaceCategory::VectorPath,
+                index,
+                Some(*rect),
+                signature,
+                source,
+            ))
+        }
+        ContentOp::RecognizedNonText {
+            operator,
+            operands,
+            source,
+        } if is_vector_graphics_operator(operator) => {
+            let signature = if operands.is_empty() {
+                format!("vector {operator}")
+            } else {
+                format!("vector {operator} {}", operands.join(" "))
+            };
+            Some(graphic_surface(
+                GraphicSurfaceCategory::VectorPath,
+                index,
+                None,
+                signature,
+                source,
+            ))
+        }
+        ContentOp::RecognizedNonText {
+            operator,
+            operands,
+            source,
+        } if is_graphic_style_operator(operator) => {
+            let signature = if operands.is_empty() {
+                format!("style {operator}")
+            } else {
+                format!("style {operator} {}", operands.join(" "))
+            };
+            Some(graphic_surface(
+                GraphicSurfaceCategory::Style,
+                index,
+                None,
+                signature,
+                source,
+            ))
+        }
+        ContentOp::BeginText { .. }
+        | ContentOp::EndText { .. }
+        | ContentOp::SetFont { .. }
+        | ContentOp::MoveTextPosition { .. }
+        | ContentOp::MoveToNextLine { .. }
+        | ContentOp::SetTextLeading { .. }
+        | ContentOp::SetCharacterSpacing { .. }
+        | ContentOp::SetWordSpacing { .. }
+        | ContentOp::SetHorizontalScaling { .. }
+        | ContentOp::SetTextMatrix { .. }
+        | ContentOp::ShowText { .. }
+        | ContentOp::ShowAdjustedText { .. }
+        | ContentOp::SaveGraphicsState { .. }
+        | ContentOp::RestoreGraphicsState { .. }
+        | ContentOp::ConcatMatrix { .. }
+        | ContentOp::BeginMarkedContent { .. }
+        | ContentOp::EndMarkedContent { .. }
+        | ContentOp::RecognizedNonText { .. }
+        | ContentOp::Unknown { .. } => None,
+    }
+}
+
+fn graphic_surface(
+    category: GraphicSurfaceCategory,
+    index: usize,
+    bbox: Option<Rect>,
+    signature: String,
+    source: &Provenance,
+) -> GraphicSurface {
+    GraphicSurface {
+        category,
+        index,
+        page_index: source.page_index.unwrap_or(0),
+        stream_object_id: source.stream_object_id,
+        content_op_index: source.content_op_index,
+        bbox,
+        hash: stable_hash(signature.as_bytes()),
+        signature,
+        source: source.clone(),
+    }
+}
+
+impl GraphicSurfaceCategory {
+    fn change_kind(self) -> ChangeKind {
+        match self {
+            GraphicSurfaceCategory::VectorPath => ChangeKind::ObjectChanged,
+            GraphicSurfaceCategory::Style => ChangeKind::StyleChanged,
+        }
+    }
+
+    fn report_label(self) -> &'static str {
+        match self {
+            GraphicSurfaceCategory::VectorPath => "native vector graphic surface",
+            GraphicSurfaceCategory::Style => "graphic style surface",
+        }
+    }
+
+    fn node_prefix(self) -> &'static str {
+        match self {
+            GraphicSurfaceCategory::VectorPath => "vector",
+            GraphicSurfaceCategory::Style => "style",
+        }
+    }
+}
+
+fn push_graphic_surface_change(
+    document: &mut DiffDocument,
+    old_surface: Option<&GraphicSurface>,
+    new_surface: Option<&GraphicSurface>,
+    reason: String,
+) {
+    let category = old_surface
+        .map(|surface| surface.category)
+        .or_else(|| new_surface.map(|surface| surface.category))
+        .unwrap_or(GraphicSurfaceCategory::VectorPath);
+    let change = SemanticChange {
+        id: format!("change-{:04}", document.changes.len()),
+        kind: category.change_kind(),
+        severity: ChangeSeverity::Info,
+        old_node: old_surface.map(|surface| graphic_surface_evidence(FileRole::Old, surface)),
+        new_node: new_surface.map(|surface| graphic_surface_evidence(FileRole::New, surface)),
+        text_hunks: Vec::new(),
+        layout_diff: None,
+        confidence: 0.75,
+        reason,
+    };
+    document.changes.push(change);
+}
+
+fn graphic_surface_evidence(file_role: FileRole, surface: &GraphicSurface) -> SemanticNodeEvidence {
+    let mut source = surface.source.clone();
+    source.file_role = Some(file_role);
+    SemanticNodeEvidence {
+        node_id: format!("{}-{:04}", surface.category.node_prefix(), surface.index),
+        page: surface.page_index,
+        bbox: surface.bbox,
+        text: Some(format!(
+            "{} page={} op={} hash={} {}",
+            surface.category.report_label(),
+            surface.page_index,
+            surface.content_op_index.unwrap_or_default(),
+            surface.hash,
+            surface.signature
+        )),
+        source: vec![source],
+    }
+}
+
 fn stable_hash(bytes: &[u8]) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -2061,6 +2307,20 @@ fn stable_hash(bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+fn canonical_report_number(value: f32) -> String {
+    if value == 0.0 {
+        return "0".to_owned();
+    }
+    let mut text = format!("{value:.4}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
 }
 
 fn document_has_any_token(document: &pdf_core::PdfDocument, tokens: &[&str]) -> bool {
@@ -2085,31 +2345,6 @@ fn byte_pattern_count(bytes: &[u8], pattern: &[u8]) -> usize {
         .windows(pattern.len())
         .filter(|window| *window == pattern)
         .count()
-}
-
-fn program_has_vector_graphics(program: &ContentProgram) -> bool {
-    program.operations.iter().any(|operation| match operation {
-        ContentOp::AppendRectangle { .. } => true,
-        ContentOp::RecognizedNonText { operator, .. } => is_vector_graphics_operator(operator),
-        ContentOp::BeginText { .. }
-        | ContentOp::EndText { .. }
-        | ContentOp::SetFont { .. }
-        | ContentOp::MoveTextPosition { .. }
-        | ContentOp::MoveToNextLine { .. }
-        | ContentOp::SetTextLeading { .. }
-        | ContentOp::SetCharacterSpacing { .. }
-        | ContentOp::SetWordSpacing { .. }
-        | ContentOp::SetHorizontalScaling { .. }
-        | ContentOp::SetTextMatrix { .. }
-        | ContentOp::ShowText { .. }
-        | ContentOp::ShowAdjustedText { .. }
-        | ContentOp::SaveGraphicsState { .. }
-        | ContentOp::RestoreGraphicsState { .. }
-        | ContentOp::ConcatMatrix { .. }
-        | ContentOp::BeginMarkedContent { .. }
-        | ContentOp::EndMarkedContent { .. }
-        | ContentOp::Unknown { .. } => false,
-    })
 }
 
 fn table_border_hints_from_program(program: &ContentProgram) -> Vec<pdf_semantic::TableBorderHint> {
@@ -2151,6 +2386,31 @@ fn is_vector_graphics_operator(operator: &str) -> bool {
             | "W"
             | "W*"
             | "sh"
+    )
+}
+
+fn is_graphic_style_operator(operator: &str) -> bool {
+    matches!(
+        operator,
+        "w" | "J"
+            | "j"
+            | "M"
+            | "d"
+            | "ri"
+            | "i"
+            | "gs"
+            | "CS"
+            | "cs"
+            | "SC"
+            | "SCN"
+            | "sc"
+            | "scn"
+            | "G"
+            | "g"
+            | "RG"
+            | "rg"
+            | "K"
+            | "k"
     )
 }
 
@@ -2837,16 +3097,45 @@ mod tests {
     }
 
     #[test]
-    fn reports_vector_graphics_as_unsupported_diff_surface() {
-        let semantic =
-            semantic_document_from_pdf("vector", &vector_graphics_pdf(), ParseConfig::default())
-                .expect("vector extraction should complete with diagnostics");
+    fn reports_native_vector_graphic_changes() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &vector_graphics_pdf("0 0 m 10 10 l S"),
+            "new",
+            &vector_graphics_pdf("0 0 m 15 10 l S"),
+            DiffConfig::default(),
+        )
+        .expect("vector graphic diff should complete");
 
         assert!(
-            semantic
-                .diagnostics
+            diff.changes
                 .iter()
-                .any(|diagnostic| diagnostic.code == "UNSUPPORTED_VECTOR_GRAPHIC_DIFF")
+                .any(|change| change.kind == ChangeKind::ObjectChanged
+                    && change.reason.contains("native vector graphic surface"))
+        );
+        assert!(
+            diff.diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "UNSUPPORTED_VECTOR_GRAPHIC_DIFF")
+        );
+    }
+
+    #[test]
+    fn reports_graphic_style_changes() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &vector_graphics_pdf("0.1 0.2 0.3 rg 0 0 m 10 10 l S"),
+            "new",
+            &vector_graphics_pdf("0.7 0.2 0.3 rg 0 0 m 10 10 l S"),
+            DiffConfig::default(),
+        )
+        .expect("graphic style diff should complete");
+
+        assert!(
+            diff.changes
+                .iter()
+                .any(|change| change.kind == ChangeKind::StyleChanged
+                    && change.reason.contains("graphic style surface"))
         );
     }
 
@@ -3514,8 +3803,9 @@ endobj
         .into_bytes()
     }
 
-    fn vector_graphics_pdf() -> Vec<u8> {
-        "%PDF-1.7
+    fn vector_graphics_pdf(path_ops: &str) -> Vec<u8> {
+        format!(
+            "%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
 endobj
@@ -3528,12 +3818,12 @@ endobj
 4 0 obj
 << /Length 44 >>
 stream
-BT /F1 12 Tf 72 720 Td (Chart) Tj ET 0 0 m 10 10 l S
+BT /F1 12 Tf 72 720 Td (Chart) Tj ET {path_ops}
 endstream
 endobj
 "
-        .as_bytes()
-        .to_vec()
+        )
+        .into_bytes()
     }
 
     fn cid_font_without_tounicode_pdf() -> Vec<u8> {

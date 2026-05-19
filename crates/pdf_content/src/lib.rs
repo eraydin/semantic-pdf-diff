@@ -93,6 +93,7 @@ pub enum ContentOp {
     },
     RecognizedNonText {
         operator: String,
+        operands: Vec<String>,
         source: Provenance,
     },
     Unknown {
@@ -325,6 +326,7 @@ fn build_operation(operator: &str, stack: &[Token], source: Provenance) -> Optio
         "EMC" => Some(ContentOp::EndMarkedContent { source }),
         _ if is_recognized_non_text_operator(operator) => Some(ContentOp::RecognizedNonText {
             operator: operator.to_owned(),
+            operands: stack.iter().map(Token::canonical_operand).collect(),
             source,
         }),
         _ => None,
@@ -407,6 +409,32 @@ enum Token {
 }
 
 impl Token {
+    fn canonical_operand(&self) -> String {
+        match self {
+            Self::Number(value) => canonical_number(*value),
+            Self::Name(value) => format!("/{value}"),
+            Self::LiteralString(value) => format!("({})", stable_hash(value)),
+            Self::HexString(value) => format!("<{}>", stable_hash(value)),
+            Self::Array(values) => format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(Self::canonical_operand)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Self::Dictionary(entries) => format!(
+                "<<{}>>",
+                entries
+                    .iter()
+                    .map(|(key, value)| format!("/{key} {}", value.canonical_operand()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Self::Operator(value) => value.clone(),
+        }
+    }
+
     fn as_number(&self) -> Option<f32> {
         match self {
             Self::Number(value) => Some(*value),
@@ -481,6 +509,29 @@ impl Token {
             | Self::Operator(_) => None,
         }
     }
+}
+
+fn canonical_number(value: f32) -> String {
+    if value == 0.0 {
+        return "0".to_owned();
+    }
+    let mut text = format!("{value:.4}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
+fn stable_hash(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn tokenize(bytes: &[u8]) -> Vec<Token> {
@@ -826,7 +877,8 @@ mod tests {
         assert_eq!(program.operations.len(), 4);
         assert!(matches!(
             program.operations[0],
-            ContentOp::RecognizedNonText { ref operator, .. } if operator == "rg"
+            ContentOp::RecognizedNonText { ref operator, ref operands, .. }
+                if operator == "rg" && operands == &vec!["0.1".to_owned(), "0.2".to_owned(), "0.3".to_owned()]
         ));
         assert!(matches!(
             program.operations[1],
@@ -842,11 +894,13 @@ mod tests {
         ));
         assert!(matches!(
             program.operations[2],
-            ContentOp::RecognizedNonText { ref operator, .. } if operator == "f"
+            ContentOp::RecognizedNonText { ref operator, ref operands, .. }
+                if operator == "f" && operands.is_empty()
         ));
         assert!(matches!(
             program.operations[3],
-            ContentOp::RecognizedNonText { ref operator, .. } if operator == "Do"
+            ContentOp::RecognizedNonText { ref operator, ref operands, .. }
+                if operator == "Do" && operands == &vec!["/Im1".to_owned()]
         ));
     }
 

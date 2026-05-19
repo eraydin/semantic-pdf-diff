@@ -18,6 +18,8 @@ preserve text/layout evidence without building a full PDF renderer.
 - Recognition of common non-text drawing, color, clipping, marked-content, and
   XObject operators so ordinary visual content does not become
   `CONTENT_OPERATOR_UNKNOWN` noise.
+- Canonical operand preservation for recognized non-text operators so downstream
+  reports can compare native vector and graphic-style surfaces deterministically.
 - Marked-content preservation for `BMC`, `BDC`, and `EMC`, including controlled
   tag and `/MCID` evidence for downstream tagged-PDF mapping.
 - Stable diagnostics for truly unknown or unsupported content operators.
@@ -36,10 +38,10 @@ page, stream, content-op index, and byte-range evidence.
 
 ## Current Compatibility Boundary
 
-This crate recognizes many drawing operators for diagnostic hygiene, but it is
-not a renderer and does not attempt native vector graphic comparison. Vector
-graphics, complex clipping, transparency, patterns, shadings, and image drawing
-are surfaced to later comparison stages as unsupported or object-level surfaces
-where appropriate.
+This crate recognizes many drawing operators for diagnostic hygiene and preserves
+their canonical operands for downstream comparison, but it is not a renderer.
+Complex clipping, transparency, patterns, shadings, and image drawing are
+surfaced to later comparison stages as unsupported, signature-level, or
+object-level surfaces where appropriate.
 
 Use `parse_content_stream_with_limits` when operator count limits matter.

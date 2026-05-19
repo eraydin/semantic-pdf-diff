@@ -872,7 +872,7 @@ fn ai_json_outputs_complete_against_real_sample_pdfs() {
         if pair.slug == "semantic-images" {
             assert_eq!(
                 ai_json_question_answer(&report, "Were unsupported PDF surfaces encountered?"),
-                Some("Yes")
+                Some("No")
             );
         }
     }
@@ -1066,12 +1066,12 @@ fn generated_reports_reflect_documented_scenario_expectations() {
         "scanned_document_v2.pdf",
         "MISSING_TEXT_LAYER",
     );
-    assert_diff_has_diagnostic(
+    assert_diff_contains_all(
         &fixture,
         "vector-paths",
         "vector_paths_graphic_v1.pdf",
         "vector_paths_graphic_v2.pdf",
-        "UNSUPPORTED_VECTOR_GRAPHIC_DIFF",
+        &["ObjectChanged", "native vector graphic surface"],
     );
     assert_diff_has_diagnostic(
         &fixture,
@@ -1139,7 +1139,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 40);
     assert_eq!(report["parsed"], 40);
-    assert_eq!(report["partial"], 35);
+    assert_eq!(report["partial"], 15);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
@@ -1151,10 +1151,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
         report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"],
         4
     );
-    assert_eq!(
-        report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"],
-        30
-    );
+    assert!(report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE_CID_FONT"].is_null());
     assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 6);
     assert_eq!(report["diagnostic_counts"]["TAGGED_MCID_DETECTED"], 2);

@@ -66,6 +66,8 @@ review works without adding TLS or hosted provider dependencies.
 - Simple aligned text-grid table candidates with row/cell, sparse blank-cell,
   row-span, column-span, merged-cell, and rectangle border-hint evidence.
 - Image XObject payload changes by deterministic stream hash.
+- Native vector path operations and graphic-style operations by deterministic
+  parsed content-operation signature.
 - Selected report-facing document surfaces such as link/annotation
   dictionaries, embedded-file/FileSpec objects, outline-like objects, and
   metadata/XMP objects by deterministic object hash.
@@ -86,8 +88,8 @@ OCR is an adapter path, not a replacement for parser/content diagnostics.
 
 ## Current Compatibility Boundary
 
-Native vector graphic comparison, full annotation/link semantics, renderer-grade
-visual diffing, renderer-grade table reconstruction from arbitrary drawing
-geometry, and style classification remain incremental compatibility work. Unsupported surfaces are
-reported through stable diagnostics instead of being silently treated as
-supported semantic diffs.
+Native vector/style comparison is a parsed-operation signature comparison, not a
+pixel renderer. Full annotation/link semantics, renderer-grade visual diffing,
+and renderer-grade table reconstruction from arbitrary drawing geometry remain
+incremental compatibility work. Unsupported surfaces are reported through stable
+diagnostics instead of being silently treated as supported semantic diffs.

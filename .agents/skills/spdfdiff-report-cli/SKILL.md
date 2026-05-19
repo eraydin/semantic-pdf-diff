@@ -28,11 +28,13 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 - Inline SVG evidence overlays must be deterministic and must state that
   bounding boxes are in PDF user space.
 - CLI extraction currently walks parsed page content across all pages. Diff
-  reports compare image XObject payloads by deterministic stream hash and should
-  emit stable unsupported-feature diagnostics for native vector graphic
-  comparison and annotation/link comparison. Image-only PDFs can use the
-  external OCR adapter when `SPDFDIFF_OCR_COMMAND` or `tesseract` is available;
-  OCR text must preserve image-object provenance and deterministic diagnostics.
+  reports compare image XObject payloads by deterministic stream hash and
+  compare native vector path and graphic-style operations by deterministic
+  parsed-operation signatures. Full annotation/link semantics still need stable
+  unsupported-feature diagnostics until semantic interpreters exist. Image-only
+  PDFs can use the external OCR adapter when `SPDFDIFF_OCR_COMMAND` or
+  `tesseract` is available; OCR text must preserve image-object provenance and
+  deterministic diagnostics.
 - Inspect and extract JSON reports include simple tagged-structure and
   parent-tree summaries when `pdf_core` parses `/StructTreeRoot`; mapped MCID
   text can now produce tagged semantic nodes, while broader tagged-PDF coverage

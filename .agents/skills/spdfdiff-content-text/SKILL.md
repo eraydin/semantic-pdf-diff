@@ -20,7 +20,7 @@ description: Implement or review semantic-pdf-diff content stream and text extra
   diagnostics; never let malformed content build unbounded token lists.
 - Maintain text state and graphics state explicitly.
 - Recognize MVP text operators: `BT`, `ET`, `Tf`, `Tj`, `TJ`, `Td`, `TD`, `Tm`, `T*`, `Tc`, `Tw`, `Tz`, `TL`, `q`, `Q`, `cm`.
-- Keep common non-text drawing, color, clipping, marked-content, and XObject operators out of `CONTENT_OPERATOR_UNKNOWN`; preserve them as recognized operations until layout/image semantics need them.
+- Keep common non-text drawing, color, clipping, marked-content, and XObject operators out of `CONTENT_OPERATOR_UNKNOWN`; preserve them as recognized operations with canonical operands so downstream vector/style surface comparison can use deterministic signatures.
 - Preserve controlled marked-content tag and `/MCID` evidence from
   `BMC`/`BDC`/`EMC` so `pdf_text` and `pdf_semantic` can map text runs to
   tagged-PDF structure elements.
