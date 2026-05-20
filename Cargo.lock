@@ -245,7 +245,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "diff_core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "pdf_semantic",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "diff_report"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde_json",
  "spdfdiff_types",
@@ -395,14 +395,14 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "pdf_content"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "spdfdiff_types",
 ]
 
 [[package]]
 name = "pdf_core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "flate2",
  "spdfdiff_types",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_semantic"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "pdf_text",
  "spdfdiff_types",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_text"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "pdf_content",
  "pdf_core",
@@ -598,7 +598,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "spdfdiff_cli"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "clap",
  "diff_core",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "spdfdiff_types"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde",
  "thiserror",
