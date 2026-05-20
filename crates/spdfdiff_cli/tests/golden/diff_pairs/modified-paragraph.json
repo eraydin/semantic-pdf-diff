@@ -39,9 +39,7 @@
     }
   ],
   "diagnostic_codes": [
-    "STREAM_LENGTH_MISMATCH",
     "MISSING_TOUNICODE",
-    "STREAM_LENGTH_MISMATCH",
     "MISSING_TOUNICODE"
   ]
 }

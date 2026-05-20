@@ -69,7 +69,8 @@ optional local OpenAI-compatible HTTP endpoint such as `llama-server` from
 llama.cpp. The core diff path does not embed an LLM and does not make legal or
 business conclusions.
 The `corpus` command can also evaluate a committed compatibility manifest with
-required sample files, diff pairs, diagnostic counts, and release-blocking
+required sample files, diff pairs, diagnostic counts, partial-file ceilings,
+diagnostic-code ceilings, diff diagnostic-code ceilings, and release-blocking
 thresholds. Use `--manifest samples\compatibility_corpus_manifest.json` and
 `--fail-on-gate` to make the command return exit code `1` when the compatibility
 gate fails.
@@ -78,7 +79,8 @@ The `pdf_core` library crate also exposes parser APIs for:
 
 - PDF headers, primitive objects, indirect objects, and stream objects;
 - no-filter, `FlateDecode`, `ASCIIHexDecode`, and `RunLengthDecode` stream
-  bytes;
+  bytes, including ordered chains of those supported filters with paired
+  `/DecodeParms` metadata preserved;
 - classic xref tables and trailers;
 - controlled `/Type /XRef` streams with `/W` and `/Index`;
 - controlled `/Type /ObjStm` object streams through `ObjectStore`;

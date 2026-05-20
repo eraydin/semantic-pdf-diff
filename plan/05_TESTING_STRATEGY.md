@@ -269,6 +269,8 @@ Report fields:
 ```
 
 Use the corpus runner to track progress over time.
+Manifest gates should pin compatibility regression baselines, including maximum
+partial files and selected diagnostic-code counts, not just parse failures.
 
 ## 10. Benchmarking
 

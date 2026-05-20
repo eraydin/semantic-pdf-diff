@@ -4,7 +4,22 @@
     "min_parsed_files": 40,
     "max_missing_required_files": 0,
     "max_failed_files": 0,
-    "max_failed_diff_pairs": 0
+    "max_failed_diff_pairs": 0,
+    "max_partial_files": 8,
+    "diagnostic_maxima": {
+      "MISSING_TEXT_LAYER": 2,
+      "MISSING_TOUNICODE": 6,
+      "STREAM_LENGTH_MISMATCH": 0,
+      "TAGGED_MCID_DETECTED": 2,
+      "TAGGED_PDF_STRUCTURE_DETECTED": 2
+    },
+    "diff_diagnostic_maxima": {
+      "MISSING_TEXT_LAYER": 2,
+      "MISSING_TOUNICODE": 6,
+      "STREAM_LENGTH_MISMATCH": 0,
+      "TAGGED_MCID_DETECTED": 2,
+      "TAGGED_PDF_STRUCTURE_DETECTED": 2
+    }
   },
   "required_files": [
     "annotations_base_v1.pdf",

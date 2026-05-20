@@ -83,7 +83,9 @@ minimal_old.pdf + minimal_new.pdf
   `RunLengthDecode` streams, controlled `/Type /XRef` streams, controlled
   `/Type /ObjStm` extraction through `ObjectStore`, embedded object provenance,
   catalog `/Pages` traversal with ordered `/Kids`, inherited page resources,
-  MediaBox/CropBox dimensions, and rotation,
+  MediaBox/CropBox dimensions, and rotation, ordered stream filter chains for
+  supported no-filter, `FlateDecode`, `ASCIIHexDecode`, and `RunLengthDecode`
+  filters with paired `/DecodeParms` metadata,
   simple `/StructTreeRoot` structure-tree parsing with structure types,
   parent-tree entries, and MCID references, encrypted-PDF rejection, and
   resource-limit enforcement for parser-owned limits, plus deterministic
@@ -109,6 +111,9 @@ minimal_old.pdf + minimal_new.pdf
   - `compatibility-gate`: modern PDF constructs such as xref/object streams.
   - `public-alpha`: corpus-backed behavior with documented limitations.
 - Public-alpha claims require tests, diagnostics, and corpus evidence.
+- Corpus gate manifests may pin maximum partial-file and diagnostic-code counts;
+  treat those thresholds as compatibility regression baselines, not broad
+  compatibility claims.
 
 ## Determinism
 

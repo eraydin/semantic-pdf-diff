@@ -23,6 +23,9 @@ Use this reference with `spdfdiff-parser`.
 - Support parser APIs that accept `ParseConfig` or limits from the start.
 - Enforce hard resource limits for file size, object count, recursion depth, stream size, decoded stream bytes, content operators, and pages.
 - Return partial output plus diagnostics when practical.
+- Preserve ordered stream filter chains and paired `/DecodeParms` metadata;
+  decode supported no-filter, `FlateDecode`, `ASCIIHexDecode`, and
+  `RunLengthDecode` chains within resource limits.
 - Keep xref streams and object streams as compatibility-gate work if not part of the current slice.
 
 ## Test Expectations
@@ -30,4 +33,4 @@ Use this reference with `spdfdiff-parser`.
 - Unit tests for primitives and malformed inputs.
 - Header and minimal fixture tests before page-tree work.
 - Limit tests for file size, recursion, stream length, and decoded output as features land.
-- Diagnostic tests for unsupported xref streams, object streams, encryption, unsupported filters, and malformed objects.
+- Diagnostic tests for unsupported xref streams, object streams, encryption, unsupported filters, filter-chain decoding, decode-parameter preservation, and malformed objects.

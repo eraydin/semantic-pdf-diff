@@ -24,8 +24,10 @@ description: Implement or review semantic-pdf-diff low-level parser work in crat
   `RunLengthDecode` streams, catalog `/Pages` traversal with ordered `/Kids`,
   inherited page resources, MediaBox/CropBox dimensions, rotation, and simple
   `/StructTreeRoot` structure-tree plus `/ParentTree` entry parsing are
-  implemented parser capabilities. Extend these paths rather than reintroducing
-  broad unsupported diagnostics for them.
+  implemented parser capabilities. Supported stream filters may appear as
+  ordered filter chains, and paired `/DecodeParms` metadata must be preserved.
+  Extend these paths rather than reintroducing broad unsupported diagnostics for
+  them.
 - Incremental-update markers and xref recovery should be diagnostic-backed:
   select the latest `startxref` marker, emit prior-revision diagnostics when
   `/Prev` is present, expose deterministic incremental-update offset metadata,

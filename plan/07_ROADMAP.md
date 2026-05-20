@@ -44,6 +44,7 @@ Handle enough modern PDFs to make the public alpha honest.
 - metadata and XMP diff;
 - redaction overlays, hidden text, and layer/visibility semantics;
 - corpus runner improvements.
+- corpus manifest thresholds for partial-file and diagnostic-code regressions.
 
 ### Expected result
 
@@ -246,7 +247,8 @@ Current implementation status:
 - HTML reports include side-by-side evidence and deterministic inline SVG
   overlays for available old/new bounding boxes in PDF user space;
 - the corpus command emits aggregate parse/partial/failure totals,
-  per-file node and diagnostic counts, and stable diagnostic-code metrics.
+  per-file node and diagnostic counts, stable diagnostic-code metrics, and
+  manifest gates for partial-file and diagnostic-count regressions.
 
 ## Recommended v0.4.0 release name
 

@@ -16,7 +16,8 @@ silently ignoring unsupported features.
 - Controlled `/Type /XRef` xref stream support.
 - Controlled `/Type /ObjStm` object stream extraction through `ObjectStore`.
 - Stream decoding for no-filter, `FlateDecode`, `ASCIIHexDecode`, and
-  `RunLengthDecode`.
+  `RunLengthDecode`, including ordered chains of those supported filters with
+  paired `/DecodeParms` metadata preserved.
 - Catalog `/Pages` traversal with ordered `/Kids`, inherited `/Resources`,
   `/MediaBox`, `/CropBox`, and `/Rotate`.
 - Page content stream resolution for single `/Contents` streams and ordered

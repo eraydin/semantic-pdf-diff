@@ -24,8 +24,10 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   writes stable aggregate totals, per-file status, extracted node counts, and
   diagnostic-code frequencies. With `--manifest <json>`, it also checks required
   files, runs declared diff pairs, emits diff diagnostic counts, and reports a
-  deterministic release gate. With `--fail-on-gate`, a failed gate exits with
-  code `1`.
+  deterministic release gate. Manifests can pin maximum partial-file counts,
+  file diagnostic counts, and diff diagnostic counts as compatibility
+  regression baselines. With `--fail-on-gate`, a failed gate exits with code
+  `1`.
 - `benchmark --pages <n>` runs the synthetic benchmark path and reports
   deterministic phase timing fields for parse, extract, semantic, diff, report,
   and total work.

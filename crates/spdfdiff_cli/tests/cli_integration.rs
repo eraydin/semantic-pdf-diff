@@ -1145,13 +1145,13 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 40);
     assert_eq!(report["parsed"], 40);
-    assert_eq!(report["partial"], 14);
+    assert_eq!(report["partial"], 8);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
     }
     assert!(report["diagnostic_counts"]["CONTENT_OPERATOR_UNKNOWN"].is_null());
-    assert_eq!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"], 7);
+    assert!(report["diagnostic_counts"]["STREAM_LENGTH_MISMATCH"].is_null());
     assert_eq!(report["diagnostic_counts"]["MISSING_TEXT_LAYER"], 2);
     assert!(report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"].is_null());

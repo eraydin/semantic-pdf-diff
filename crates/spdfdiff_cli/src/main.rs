@@ -257,7 +257,7 @@ struct CorpusManifestDiffPair {
     new_file: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct CorpusGateThresholds {
     #[serde(default)]
     min_parsed_files: Option<usize>,
@@ -267,6 +267,12 @@ struct CorpusGateThresholds {
     max_failed_files: usize,
     #[serde(default)]
     max_failed_diff_pairs: usize,
+    #[serde(default)]
+    max_partial_files: Option<usize>,
+    #[serde(default)]
+    diagnostic_maxima: BTreeMap<String, usize>,
+    #[serde(default)]
+    diff_diagnostic_maxima: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -583,7 +589,18 @@ fn build_corpus_report_model(
 
     let (diff_pairs, diff_diagnostic_counts) = build_corpus_diff_pair_reports(folder, manifest)?;
     let gate = manifest.map(|manifest| {
-        build_corpus_gate_report(manifest, &discovered_files, parsed, failed, &diff_pairs)
+        build_corpus_gate_report(
+            manifest,
+            CorpusGateInputs {
+                discovered_files: &discovered_files,
+                parsed,
+                partial,
+                failed,
+                diagnostic_counts: &diagnostic_counts,
+                diff_diagnostic_counts: &diff_diagnostic_counts,
+                diff_pairs: &diff_pairs,
+            },
+        )
     });
 
     Ok(CorpusReport {
@@ -673,30 +690,39 @@ fn build_corpus_diff_pair_reports(
     Ok((reports, diagnostic_counts))
 }
 
+struct CorpusGateInputs<'a> {
+    discovered_files: &'a [String],
+    parsed: usize,
+    partial: usize,
+    failed: usize,
+    diagnostic_counts: &'a BTreeMap<String, usize>,
+    diff_diagnostic_counts: &'a BTreeMap<String, usize>,
+    diff_pairs: &'a [CorpusDiffPairReport],
+}
+
 fn build_corpus_gate_report(
     manifest: &CorpusManifest,
-    discovered_files: &[String],
-    parsed: usize,
-    failed: usize,
-    diff_pairs: &[CorpusDiffPairReport],
+    inputs: CorpusGateInputs<'_>,
 ) -> CorpusGateReport {
     let mut missing_required_files = manifest
         .required_files
         .iter()
-        .filter(|file| !discovered_files.contains(file))
+        .filter(|file| !inputs.discovered_files.contains(file))
         .cloned()
         .collect::<Vec<_>>();
     missing_required_files.sort();
-    let failed_diff_pairs = diff_pairs
+    let failed_diff_pairs = inputs
+        .diff_pairs
         .iter()
         .filter(|pair| matches!(pair.status, CorpusDiffPairStatus::Failed))
         .count();
 
     let mut failures = Vec::new();
     if let Some(minimum) = manifest.thresholds.min_parsed_files {
-        if parsed < minimum {
+        if inputs.parsed < minimum {
             failures.push(format!(
-                "parsed file count {parsed} is below minimum {minimum}"
+                "parsed file count {} is below minimum {minimum}",
+                inputs.parsed
             ));
         }
     }
@@ -707,10 +733,10 @@ fn build_corpus_gate_report(
             manifest.thresholds.max_missing_required_files
         ));
     }
-    if failed > manifest.thresholds.max_failed_files {
+    if inputs.failed > manifest.thresholds.max_failed_files {
         failures.push(format!(
-            "failed file count {failed} exceeds maximum {}",
-            manifest.thresholds.max_failed_files
+            "failed file count {} exceeds maximum {}",
+            inputs.failed, manifest.thresholds.max_failed_files
         ));
     }
     if failed_diff_pairs > manifest.thresholds.max_failed_diff_pairs {
@@ -719,13 +745,49 @@ fn build_corpus_gate_report(
             manifest.thresholds.max_failed_diff_pairs
         ));
     }
+    if let Some(maximum) = manifest.thresholds.max_partial_files {
+        if inputs.partial > maximum {
+            failures.push(format!(
+                "partial file count {} exceeds maximum {maximum}",
+                inputs.partial
+            ));
+        }
+    }
+    append_diagnostic_gate_failures(
+        "file diagnostic",
+        inputs.diagnostic_counts,
+        &manifest.thresholds.diagnostic_maxima,
+        &mut failures,
+    );
+    append_diagnostic_gate_failures(
+        "diff diagnostic",
+        inputs.diff_diagnostic_counts,
+        &manifest.thresholds.diff_diagnostic_maxima,
+        &mut failures,
+    );
 
     CorpusGateReport {
         manifest_schema_version: manifest.schema_version.clone(),
         passed: failures.is_empty(),
-        thresholds: manifest.thresholds,
+        thresholds: manifest.thresholds.clone(),
         missing_required_files,
         failures,
+    }
+}
+
+fn append_diagnostic_gate_failures(
+    label: &str,
+    counts: &BTreeMap<String, usize>,
+    maxima: &BTreeMap<String, usize>,
+    failures: &mut Vec<String>,
+) {
+    for (code, maximum) in maxima {
+        let count = counts.get(code).copied().unwrap_or_default();
+        if count > *maximum {
+            failures.push(format!(
+                "{label} count for {code} is {count}, exceeding maximum {maximum}"
+            ));
+        }
     }
 }
 
@@ -4000,6 +4062,7 @@ mod tests {
                 max_missing_required_files: 0,
                 max_failed_files: 0,
                 max_failed_diff_pairs: 0,
+                ..CorpusGateThresholds::default()
             },
         };
 
@@ -4011,6 +4074,47 @@ mod tests {
         assert!(!gate.passed);
         assert_eq!(gate.missing_required_files, vec!["missing.pdf"]);
         assert_eq!(gate.failures.len(), 2);
+
+        std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
+    }
+
+    #[test]
+    fn corpus_gate_checks_partial_and_diagnostic_thresholds() {
+        let folder = PathBuf::from("target/spdfdiff_cli_tests/corpus_diagnostic_gate");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("fixture folder should be created");
+        std::fs::write(folder.join("old.pdf"), minimal_pdf("Hello"))
+            .expect("old fixture should be written");
+        let mut diagnostic_maxima = BTreeMap::new();
+        diagnostic_maxima.insert("MISSING_TOUNICODE".to_owned(), 0);
+        let manifest = CorpusManifest {
+            schema_version: "1".to_owned(),
+            required_files: vec!["old.pdf".to_owned()],
+            diff_pairs: Vec::new(),
+            thresholds: CorpusGateThresholds {
+                min_parsed_files: Some(1),
+                max_missing_required_files: 0,
+                max_failed_files: 0,
+                max_failed_diff_pairs: 0,
+                max_partial_files: Some(0),
+                diagnostic_maxima,
+                diff_diagnostic_maxima: BTreeMap::new(),
+            },
+        };
+
+        let report = build_corpus_report_model(&folder, ParseConfig::default(), Some(&manifest))
+            .expect("manifest corpus report should render");
+        let gate = report.gate.expect("manifest should produce gate report");
+        assert!(!gate.passed);
+        assert!(
+            gate.failures
+                .iter()
+                .any(|failure| failure.contains("partial file count 1 exceeds maximum 0"))
+        );
+        assert!(
+            gate.failures.iter().any(|failure| failure
+                .contains("file diagnostic count for MISSING_TOUNICODE is 1, exceeding maximum 0"))
+        );
 
         std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
     }

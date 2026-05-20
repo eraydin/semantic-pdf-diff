@@ -40,14 +40,21 @@ pub struct PdfStream {
     pub raw_bytes: Vec<u8>,
     pub byte_range: ByteRange,
     pub declared_length: Option<usize>,
-    pub filter: Option<String>,
+    pub filters: Vec<String>,
+    pub decode_params: Vec<Option<String>>,
     pub decoded: bool,
 }
 
 impl PdfStream {
-    fn with_metadata(mut self, declared_length: Option<usize>, filter: Option<String>) -> Self {
+    fn with_metadata(
+        mut self,
+        declared_length: Option<usize>,
+        filters: Vec<String>,
+        decode_params: Vec<Option<String>>,
+    ) -> Self {
         self.declared_length = declared_length;
-        self.filter = filter;
+        self.filters = filters;
+        self.decode_params = decode_params;
         self
     }
 }
@@ -864,7 +871,8 @@ pub fn parse_indirect_object(
             decode_stream(
                 raw_stream.with_metadata(
                     stream_length_from_primitive(&parsed.value),
-                    stream_filter_from_primitive(&parsed.value),
+                    stream_filters_from_primitive(&parsed.value),
+                    decode_params_from_primitive(&parsed.value),
                 ),
                 config,
             )
@@ -1492,81 +1500,47 @@ fn split_indirect_object_value_and_stream(
             raw_bytes: stream_bytes.to_vec(),
             byte_range: ByteRange::new(stream_data_start, stream_data_start + stream_bytes.len()),
             declared_length: None,
-            filter: None,
+            filters: Vec::new(),
+            decode_params: Vec::new(),
             decoded: true,
         }),
     })
 }
 
 fn decode_stream(mut stream: PdfStream, config: ParseConfig) -> Result<PdfStream, PdfDiffError> {
-    match stream.filter.as_deref() {
-        None => {
-            stream.decoded = true;
-            Ok(stream)
-        }
-        Some("FlateDecode") | Some("Fl") => {
-            match flate_decode_limited(&stream.raw_bytes, config.limits.max_decoded_stream_bytes) {
-                Ok(decoded) => {
-                    stream.bytes = decoded;
-                    stream.decoded = true;
-                    Ok(stream)
-                }
-                Err(PdfDiffError::ResourceLimitExceeded(message)) => {
-                    Err(PdfDiffError::ResourceLimitExceeded(message))
-                }
-                Err(_) => {
-                    stream.bytes.clone_from(&stream.raw_bytes);
-                    stream.decoded = false;
-                    Ok(stream)
-                }
+    let mut decoded = stream.raw_bytes.clone();
+    for filter in &stream.filters {
+        let result = match filter.as_str() {
+            "FlateDecode" | "Fl" => {
+                flate_decode_limited(&decoded, config.limits.max_decoded_stream_bytes)
             }
-        }
-        Some("ASCIIHexDecode") | Some("AHx") => {
-            match ascii_hex_decode_limited(
-                &stream.raw_bytes,
-                config.limits.max_decoded_stream_bytes,
-            ) {
-                Ok(decoded) => {
-                    stream.bytes = decoded;
-                    stream.decoded = true;
-                    Ok(stream)
-                }
-                Err(PdfDiffError::ResourceLimitExceeded(message)) => {
-                    Err(PdfDiffError::ResourceLimitExceeded(message))
-                }
-                Err(_) => {
-                    stream.bytes.clone_from(&stream.raw_bytes);
-                    stream.decoded = false;
-                    Ok(stream)
-                }
+            "ASCIIHexDecode" | "AHx" => {
+                ascii_hex_decode_limited(&decoded, config.limits.max_decoded_stream_bytes)
             }
-        }
-        Some("RunLengthDecode") | Some("RL") => {
-            match run_length_decode_limited(
-                &stream.raw_bytes,
-                config.limits.max_decoded_stream_bytes,
-            ) {
-                Ok(decoded) => {
-                    stream.bytes = decoded;
-                    stream.decoded = true;
-                    Ok(stream)
-                }
-                Err(PdfDiffError::ResourceLimitExceeded(message)) => {
-                    Err(PdfDiffError::ResourceLimitExceeded(message))
-                }
-                Err(_) => {
-                    stream.bytes.clone_from(&stream.raw_bytes);
-                    stream.decoded = false;
-                    Ok(stream)
-                }
+            "RunLengthDecode" | "RL" => {
+                run_length_decode_limited(&decoded, config.limits.max_decoded_stream_bytes)
             }
-        }
-        Some(_) => {
-            stream.bytes.clone_from(&stream.raw_bytes);
-            stream.decoded = false;
-            Ok(stream)
+            _ => {
+                stream.bytes.clone_from(&stream.raw_bytes);
+                stream.decoded = false;
+                return Ok(stream);
+            }
+        };
+        match result {
+            Ok(next) => decoded = next,
+            Err(PdfDiffError::ResourceLimitExceeded(message)) => {
+                return Err(PdfDiffError::ResourceLimitExceeded(message));
+            }
+            Err(_) => {
+                stream.bytes.clone_from(&stream.raw_bytes);
+                stream.decoded = false;
+                return Ok(stream);
+            }
         }
     }
+    stream.bytes = decoded;
+    stream.decoded = true;
+    Ok(stream)
 }
 
 fn ascii_hex_decode_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, PdfDiffError> {
@@ -1688,15 +1662,94 @@ fn flate_decode_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, PdfDiffEr
     Ok(decoded)
 }
 
-fn stream_filter_from_primitive(value: &PdfPrimitive) -> Option<String> {
-    match dictionary_value(value, "Filter")? {
-        PdfPrimitive::Name(name) => Some(name.clone()),
-        PdfPrimitive::Array(items) => items.iter().find_map(|item| match item {
-            PdfPrimitive::Name(name) => Some(name.clone()),
-            _ => None,
-        }),
-        _ => None,
+fn stream_filters_from_primitive(value: &PdfPrimitive) -> Vec<String> {
+    match dictionary_value(value, "Filter") {
+        None => Vec::new(),
+        Some(PdfPrimitive::Name(name)) => vec![name.clone()],
+        Some(PdfPrimitive::Array(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                PdfPrimitive::Name(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        Some(_) => Vec::new(),
     }
+}
+
+fn decode_params_from_primitive(value: &PdfPrimitive) -> Vec<Option<String>> {
+    match dictionary_value(value, "DecodeParms").or_else(|| dictionary_value(value, "DP")) {
+        Some(PdfPrimitive::Array(items)) => items.iter().map(decode_param_signature).collect(),
+        Some(value) => vec![decode_param_signature(value)],
+        None => Vec::new(),
+    }
+}
+
+fn decode_param_signature(value: &PdfPrimitive) -> Option<String> {
+    match value {
+        PdfPrimitive::Null => None,
+        PdfPrimitive::Dictionary(entries) => Some(format!(
+            "<<{}>>",
+            entries
+                .iter()
+                .map(|(key, value)| format!("/{key} {}", primitive_signature(value)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )),
+        other => Some(primitive_signature(other)),
+    }
+}
+
+fn primitive_signature(value: &PdfPrimitive) -> String {
+    match value {
+        PdfPrimitive::Null => "null".to_owned(),
+        PdfPrimitive::Boolean(value) => value.to_string(),
+        PdfPrimitive::Integer(value) => value.to_string(),
+        PdfPrimitive::Real(value) => canonical_number(*value as f32),
+        PdfPrimitive::Name(value) => format!("/{value}"),
+        PdfPrimitive::LiteralString(bytes) => format!("({})", stable_hash(bytes)),
+        PdfPrimitive::HexString(bytes) => format!("<{}>", stable_hash(bytes)),
+        PdfPrimitive::Reference(id) => format!("{} {} R", id.number, id.generation),
+        PdfPrimitive::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(primitive_signature)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        PdfPrimitive::Dictionary(entries) => format!(
+            "<<{}>>",
+            entries
+                .iter()
+                .map(|(key, value)| format!("/{key} {}", primitive_signature(value)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    }
+}
+
+fn stable_hash(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn canonical_number(value: f32) -> String {
+    if value == 0.0 {
+        return "0".to_owned();
+    }
+    let mut text = format!("{value:.4}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
 }
 
 fn stream_length_from_primitive(value: &PdfPrimitive) -> Option<usize> {
@@ -2440,7 +2493,17 @@ fn parse_stream(
         ));
     }
 
-    let mut stream_data_end = endstream_marker;
+    let stream_header = String::from_utf8_lossy(&bytes[body_start..stream_marker]);
+    let declared_length = stream_length_from_body(&stream_header);
+    let mut stream_data_end = declared_length
+        .and_then(|length| stream_data_start.checked_add(length))
+        .filter(|declared_end| {
+            *declared_end <= endstream_marker
+                && bytes[*declared_end..endstream_marker]
+                    .iter()
+                    .all(u8::is_ascii_whitespace)
+        })
+        .unwrap_or(endstream_marker);
     while stream_data_end > stream_data_start
         && matches!(bytes.get(stream_data_end - 1), Some(b'\n' | b'\r'))
     {
@@ -2461,12 +2524,9 @@ fn parse_stream(
             bytes: bytes[stream_data_start..stream_data_end].to_vec(),
             raw_bytes: bytes[stream_data_start..stream_data_end].to_vec(),
             byte_range: ByteRange::new(stream_data_start, stream_data_end),
-            declared_length: stream_length_from_body(&String::from_utf8_lossy(
-                &bytes[body_start..stream_marker],
-            )),
-            filter: stream_filter_from_body(&String::from_utf8_lossy(
-                &bytes[body_start..stream_marker],
-            )),
+            declared_length,
+            filters: stream_filters_from_body(&stream_header),
+            decode_params: decode_params_from_body(&stream_header),
             decoded: true,
         },
         *config,
@@ -2474,26 +2534,16 @@ fn parse_stream(
     .map(Some)
 }
 
-fn stream_filter_from_body(body: &str) -> Option<String> {
-    let bytes = body.as_bytes();
-    let mut index = body.find("/Filter")? + "/Filter".len();
-    skip_ascii_whitespace_bytes(bytes, &mut index);
-    if bytes.get(index) == Some(&b'/') {
-        return parse_name_token(bytes, index + 1);
-    }
-    if bytes.get(index) == Some(&b'[') {
-        index += 1;
-        while let Some(byte) = bytes.get(index) {
-            if *byte == b'/' {
-                return parse_name_token(bytes, index + 1);
-            }
-            if *byte == b']' {
-                break;
-            }
-            index += 1;
-        }
-    }
-    None
+fn stream_filters_from_body(body: &str) -> Vec<String> {
+    parse_primitive(body.as_bytes(), ParseConfig::default())
+        .map(|parsed| stream_filters_from_primitive(&parsed.value))
+        .unwrap_or_default()
+}
+
+fn decode_params_from_body(body: &str) -> Vec<Option<String>> {
+    parse_primitive(body.as_bytes(), ParseConfig::default())
+        .map(|parsed| decode_params_from_primitive(&parsed.value))
+        .unwrap_or_default()
 }
 
 fn stream_length_from_body(body: &str) -> Option<usize> {
@@ -2514,17 +2564,6 @@ fn skip_ascii_whitespace_bytes(bytes: &[u8], index: &mut usize) {
     while matches!(bytes.get(*index), Some(byte) if byte.is_ascii_whitespace()) {
         *index += 1;
     }
-}
-
-fn parse_name_token(bytes: &[u8], start: usize) -> Option<String> {
-    let mut end = start;
-    while matches!(bytes.get(end), Some(byte) if !is_delimiter_or_whitespace(*byte)) {
-        end += 1;
-    }
-    if start == end {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&bytes[start..end]).into_owned())
 }
 
 fn resolve_pages(
@@ -2823,56 +2862,81 @@ fn scan_unsupported_features(objects: &[PdfObject]) -> Vec<Diagnostic> {
     for object in objects {
         if let Some(stream) = &object.stream {
             if let Some(declared_length) = stream.declared_length {
-                if declared_length != stream.raw_bytes.len() {
+                let actual_length = stream.raw_bytes.len();
+                let missing_bytes = declared_length.saturating_sub(actual_length);
+                if actual_length > declared_length || missing_bytes > 2 {
                     diagnostics.push(
                         Diagnostic::warning(
                             "STREAM_LENGTH_MISMATCH",
                             format!(
                                 "stream declared {declared_length} bytes but contains {} bytes",
-                                stream.raw_bytes.len()
+                                actual_length
                             ),
                         )
                         .with_object(object.id),
                     );
                 }
             }
-            match stream.filter.as_deref() {
-                Some("FlateDecode" | "Fl") if !stream.decoded => diagnostics.push(
-                    Diagnostic::warning(
-                        "STREAM_DECODE_FAILED",
-                        "FlateDecode stream could not be decoded; raw bytes were preserved",
-                    )
-                    .with_object(object.id),
-                ),
-                Some("ASCIIHexDecode" | "AHx") if !stream.decoded => diagnostics.push(
-                    Diagnostic::warning(
-                        "STREAM_DECODE_FAILED",
-                        "ASCIIHexDecode stream could not be decoded; raw bytes were preserved",
-                    )
-                    .with_object(object.id),
-                ),
-                Some("RunLengthDecode" | "RL") if !stream.decoded => diagnostics.push(
-                    Diagnostic::warning(
-                        "STREAM_DECODE_FAILED",
-                        "RunLengthDecode stream could not be decoded; raw bytes were preserved",
-                    )
-                    .with_object(object.id),
-                ),
-                Some(
-                    "FlateDecode" | "Fl" | "ASCIIHexDecode" | "AHx" | "RunLengthDecode" | "RL",
-                )
-                | None => {}
-                Some(filter) => diagnostics.push(
+            let unsupported_filters = stream
+                .filters
+                .iter()
+                .filter(|filter| !is_supported_stream_filter(filter))
+                .collect::<Vec<_>>();
+            if !unsupported_filters.is_empty() {
+                diagnostics.push(
                     Diagnostic::warning(
                         "UNSUPPORTED_STREAM_FILTER",
-                        format!("unsupported stream filter {filter}; raw bytes were preserved"),
+                        format!(
+                            "unsupported stream filter chain {}; raw bytes were preserved",
+                            unsupported_filters
+                                .iter()
+                                .map(|filter| format!("/{filter}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
                     )
                     .with_object(object.id),
-                ),
+                );
+            } else if !stream.decoded && !stream.filters.is_empty() {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "STREAM_DECODE_FAILED",
+                        format!(
+                            "stream filter chain {} could not be decoded; raw bytes were preserved",
+                            stream
+                                .filters
+                                .iter()
+                                .map(|filter| format!("/{filter}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
+                    )
+                    .with_object(object.id),
+                );
+            }
+            if stream.decode_params.len() > stream.filters.len() {
+                diagnostics.push(
+                    Diagnostic::warning(
+                        "STREAM_DECODE_PARAMS_MISMATCH",
+                        format!(
+                            "stream has {} DecodeParms entries for {} filters",
+                            stream.decode_params.len(),
+                            stream.filters.len()
+                        ),
+                    )
+                    .with_object(object.id),
+                );
             }
         }
     }
     diagnostics
+}
+
+fn is_supported_stream_filter(filter: &str) -> bool {
+    matches!(
+        filter,
+        "FlateDecode" | "Fl" | "ASCIIHexDecode" | "AHx" | "RunLengthDecode" | "RL"
+    )
 }
 
 trait DiagnosticExt {
@@ -3114,7 +3178,7 @@ mod tests {
         assert_eq!(stream.bytes, b"Hello");
         assert_eq!(stream.raw_bytes, b"Hello");
         assert_eq!(stream.declared_length, Some(5));
-        assert_eq!(stream.filter, None);
+        assert!(stream.filters.is_empty());
         assert!(stream.decoded);
         assert_eq!(stream.byte_range, ByteRange::new(31, 36));
     }
@@ -3129,7 +3193,7 @@ mod tests {
 
         assert_eq!(stream.bytes, b"BT (Hello) Tj ET");
         assert_eq!(stream.raw_bytes, compressed);
-        assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
+        assert_eq!(stream.filters, vec!["FlateDecode"]);
         assert!(stream.decoded);
     }
 
@@ -3142,7 +3206,7 @@ mod tests {
 
         assert_eq!(stream.bytes, b"not deflated");
         assert_eq!(stream.raw_bytes, b"not deflated");
-        assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
+        assert_eq!(stream.filters, vec!["FlateDecode"]);
         assert!(!stream.decoded);
     }
 
@@ -3155,7 +3219,7 @@ mod tests {
         let stream = parsed.stream.expect("stream should be present");
 
         assert_eq!(stream.bytes, b"BT (Hello) Tj ET");
-        assert_eq!(stream.filter.as_deref(), Some("ASCIIHexDecode"));
+        assert_eq!(stream.filters, vec!["ASCIIHexDecode"]);
         assert!(stream.decoded);
     }
 
@@ -3167,7 +3231,31 @@ mod tests {
         let stream = parsed.stream.expect("stream should be present");
 
         assert_eq!(stream.bytes, b"ABC!!!!");
-        assert_eq!(stream.filter.as_deref(), Some("RunLengthDecode"));
+        assert_eq!(stream.filters, vec!["RunLengthDecode"]);
+        assert!(stream.decoded);
+    }
+
+    #[test]
+    fn decodes_filter_chain_and_preserves_decode_params() {
+        let compressed = flate_bytes(b"BT (Hello chain) Tj ET");
+        let ascii_hex = ascii_hex_bytes(&compressed);
+        let object = stream_object_with_filter(
+            &ascii_hex,
+            "[/ASCIIHexDecode /FlateDecode] /DecodeParms [null << /Predictor 1 >>]",
+        );
+        let parsed = parse_indirect_object(&object, ParseConfig::default())
+            .expect("filter-chain stream object should parse");
+        let stream = parsed.stream.expect("stream should be present");
+
+        assert_eq!(stream.bytes, b"BT (Hello chain) Tj ET");
+        assert_eq!(stream.filters, vec!["ASCIIHexDecode", "FlateDecode"]);
+        assert_eq!(stream.decode_params.len(), 2);
+        assert_eq!(stream.decode_params[0], None);
+        assert!(
+            stream.decode_params[1]
+                .as_deref()
+                .is_some_and(|value| value.contains("/Predictor 1"))
+        );
         assert!(stream.decoded);
     }
 
@@ -3200,7 +3288,7 @@ mod tests {
             .as_ref()
             .expect("stream should be present");
 
-        assert_eq!(stream.filter.as_deref(), Some("FlateDecode"));
+        assert_eq!(stream.filters, vec!["FlateDecode"]);
         assert_eq!(stream.declared_length, Some(compressed.len()));
         assert_eq!(stream.bytes, b"BT (compact) Tj ET");
         assert!(stream.decoded);
@@ -4101,6 +4189,15 @@ endobj
         let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(bytes).expect("fixture should compress");
         encoder.finish().expect("fixture should finish")
+    }
+
+    fn ascii_hex_bytes(bytes: &[u8]) -> Vec<u8> {
+        let mut out = String::new();
+        for byte in bytes {
+            out.push_str(&format!("{byte:02X}"));
+        }
+        out.push('>');
+        out.into_bytes()
     }
 
     fn stream_object_with_filter(stream_bytes: &[u8], filter: &str) -> Vec<u8> {
