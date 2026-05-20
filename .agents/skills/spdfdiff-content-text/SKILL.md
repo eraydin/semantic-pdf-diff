@@ -32,11 +32,10 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 - CID/Type0 fonts without `/ToUnicode` must produce stable diagnostics; width
   estimates should remain deterministic and use simple character-shape
   heuristics instead of a single fixed glyph width.
-- Current CLI extraction uses the public `pdf_text` font resource model, then
-  applies simple page-resource `/ToUnicode` CMaps, including `bfchar` and
-  controlled `bfrange` mappings, before text-run extraction. Keep expanding
-  resource-aware font decoding in `pdf_text` instead of duplicating ad hoc
-  mapping logic elsewhere.
+- `pdf_text` exposes the public font resource model plus `/ToUnicode` CMap
+  parsing and application helpers for `bfchar` and controlled `bfrange`
+  mappings. Keep expanding resource-aware font decoding in `pdf_text` instead
+  of duplicating ad hoc mapping logic elsewhere.
 - Implement selected fallback encodings only when safe and diagnostic-backed.
 - Keep glyph positions approximate but deterministic.
 - Preserve original text and normalized text separately.

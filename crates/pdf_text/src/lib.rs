@@ -65,6 +65,24 @@ impl FontResource {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToUnicodeApplyResult {
+    pub applied: bool,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToUnicodeMaps {
+    pub maps: BTreeMap<String, ToUnicodeCMap>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToUnicodeCMap {
+    pub map: BTreeMap<Vec<u8>, String>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 #[must_use]
 pub fn font_resources_from_document(document: &pdf_core::PdfDocument) -> FontResourceSet {
     let objects_by_id = document
@@ -125,6 +143,168 @@ pub fn font_resources_from_document(document: &pdf_core::PdfDocument) -> FontRes
     }
 
     FontResourceSet { fonts, diagnostics }
+}
+
+#[must_use]
+pub fn tounicode_maps_from_document(
+    document: &pdf_core::PdfDocument,
+    font_resources: &FontResourceSet,
+) -> ToUnicodeMaps {
+    let objects_by_id = document
+        .objects
+        .iter()
+        .map(|object| (object.id, object))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut maps = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+    for (font_name, font_resource) in &font_resources.fonts {
+        if let Some(cmap_object_id) = font_resource.to_unicode {
+            let Some(cmap_stream) = objects_by_id
+                .get(&cmap_object_id)
+                .and_then(|object| object.stream.as_ref())
+            else {
+                continue;
+            };
+            let cmap = parse_tounicode_cmap(&cmap_stream.bytes);
+            diagnostics.extend(cmap.diagnostics.clone());
+            if !cmap.map.is_empty() {
+                maps.insert(font_name.clone(), cmap);
+            }
+        }
+    }
+    ToUnicodeMaps { maps, diagnostics }
+}
+
+pub fn apply_document_tounicode_maps(
+    program: &mut ContentProgram,
+    document: &pdf_core::PdfDocument,
+    font_resources: &FontResourceSet,
+) -> ToUnicodeApplyResult {
+    let maps = tounicode_maps_from_document(document, font_resources);
+    apply_tounicode_maps(program, &maps)
+}
+
+pub fn apply_tounicode_maps(
+    program: &mut ContentProgram,
+    maps: &ToUnicodeMaps,
+) -> ToUnicodeApplyResult {
+    if maps.maps.is_empty() {
+        return ToUnicodeApplyResult {
+            applied: false,
+            diagnostics: maps.diagnostics.clone(),
+        };
+    }
+
+    let mut current_font: Option<String> = None;
+    let mut applied = false;
+    for operation in &mut program.operations {
+        match operation {
+            ContentOp::SetFont { name, .. } => {
+                current_font = Some(name.clone());
+            }
+            ContentOp::ShowText {
+                text, raw_bytes, ..
+            }
+            | ContentOp::ShowAdjustedText {
+                text, raw_bytes, ..
+            } => {
+                let Some(font_name) = current_font.as_deref() else {
+                    continue;
+                };
+                let Some(map) = maps.maps.get(font_name) else {
+                    continue;
+                };
+                if let Some(decoded) = decode_with_tounicode(raw_bytes, &map.map) {
+                    *text = decoded;
+                    applied = true;
+                }
+            }
+            ContentOp::BeginText { .. }
+            | ContentOp::EndText { .. }
+            | ContentOp::MoveTextPosition { .. }
+            | ContentOp::MoveToNextLine { .. }
+            | ContentOp::SetTextLeading { .. }
+            | ContentOp::SetCharacterSpacing { .. }
+            | ContentOp::SetWordSpacing { .. }
+            | ContentOp::SetHorizontalScaling { .. }
+            | ContentOp::SetTextMatrix { .. }
+            | ContentOp::SaveGraphicsState { .. }
+            | ContentOp::RestoreGraphicsState { .. }
+            | ContentOp::ConcatMatrix { .. }
+            | ContentOp::AppendRectangle { .. }
+            | ContentOp::BeginMarkedContent { .. }
+            | ContentOp::EndMarkedContent { .. }
+            | ContentOp::RecognizedNonText { .. }
+            | ContentOp::Unknown { .. } => {}
+        }
+    }
+
+    ToUnicodeApplyResult {
+        applied,
+        diagnostics: maps.diagnostics.clone(),
+    }
+}
+
+#[must_use]
+pub fn parse_tounicode_cmap(bytes: &[u8]) -> ToUnicodeCMap {
+    let text = String::from_utf8_lossy(bytes);
+    let mut map = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+    let mut in_bfrange = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.ends_with("beginbfrange") {
+            in_bfrange = true;
+            continue;
+        }
+        if trimmed == "endbfrange" {
+            in_bfrange = false;
+            continue;
+        }
+        if trimmed.ends_with("beginbfchar") || trimmed == "endbfchar" {
+            continue;
+        }
+        let hex_tokens = hex_tokens_in_line(line);
+        if in_bfrange && hex_tokens.len() >= 3 {
+            if let Err(message) = insert_bfrange(&mut map, &hex_tokens, trimmed.contains('[')) {
+                diagnostics.push(Diagnostic::warning("CMAP_UNSUPPORTED_RANGE", message));
+            }
+        } else if hex_tokens.len() == 2 {
+            if let Some(decoded) = unicode_hex_to_string(&hex_tokens[1]) {
+                map.insert(hex_tokens[0].clone(), decoded);
+            }
+        } else if trimmed.contains("begin")
+            || trimmed.contains("end")
+            || trimmed.is_empty()
+            || trimmed.starts_with('%')
+        {
+            continue;
+        }
+    }
+    ToUnicodeCMap { map, diagnostics }
+}
+
+#[must_use]
+pub fn decode_with_tounicode(raw_bytes: &[u8], map: &BTreeMap<Vec<u8>, String>) -> Option<String> {
+    let mut decoded = String::new();
+    let mut index = 0;
+    while index < raw_bytes.len() {
+        let mut matched = None;
+        for width in (1..=4).rev() {
+            let end = index + width;
+            if end <= raw_bytes.len() {
+                if let Some(value) = map.get(&raw_bytes[index..end]) {
+                    matched = Some((width, value));
+                    break;
+                }
+            }
+        }
+        let (width, value) = matched?;
+        decoded.push_str(value);
+        index += width;
+    }
+    Some(decoded)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -475,6 +655,108 @@ impl DiagnosticExt for Diagnostic {
     }
 }
 
+fn insert_bfrange(
+    map: &mut BTreeMap<Vec<u8>, String>,
+    hex_tokens: &[Vec<u8>],
+    array_mode: bool,
+) -> Result<(), String> {
+    if hex_tokens.len() < 3 {
+        return Err("bfrange entry has fewer than three hex operands".into());
+    }
+    let start = bytes_to_u32(&hex_tokens[0]).ok_or("bfrange start is too wide")?;
+    let end = bytes_to_u32(&hex_tokens[1]).ok_or("bfrange end is too wide")?;
+    if end < start {
+        return Err("bfrange end is before start".into());
+    }
+    let count = usize::try_from(end - start + 1).map_err(|_| "bfrange is too large")?;
+    if !array_mode {
+        let destination_start =
+            bytes_to_u32(&hex_tokens[2]).ok_or("bfrange destination is too wide")?;
+        for offset in 0..count {
+            let source = int_to_be_bytes(start + offset as u32, hex_tokens[0].len());
+            let destination =
+                int_to_be_bytes(destination_start + offset as u32, hex_tokens[2].len());
+            let Some(decoded) = unicode_hex_to_string(&destination) else {
+                return Err("bfrange destination is not valid UTF-16BE".into());
+            };
+            map.insert(source, decoded);
+        }
+    } else {
+        if hex_tokens.len() - 2 < count {
+            return Err("bfrange destination array is shorter than source range".into());
+        }
+        for (offset, destination) in hex_tokens[2..2 + count].iter().enumerate() {
+            let source = int_to_be_bytes(start + offset as u32, hex_tokens[0].len());
+            let Some(decoded) = unicode_hex_to_string(destination) else {
+                return Err("bfrange array destination is not valid UTF-16BE".into());
+            };
+            map.insert(source, decoded);
+        }
+    }
+    Ok(())
+}
+
+fn bytes_to_u32(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() > 4 {
+        return None;
+    }
+    let mut value = 0u32;
+    for byte in bytes {
+        value = (value << 8) | u32::from(*byte);
+    }
+    Some(value)
+}
+
+fn int_to_be_bytes(value: u32, width: usize) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    bytes[bytes.len().saturating_sub(width)..].to_vec()
+}
+
+fn hex_token_bytes(token: &str) -> Option<Vec<u8>> {
+    let token = token.strip_prefix('<')?.strip_suffix('>')?;
+    if token.is_empty() || token.len() % 2 != 0 {
+        return None;
+    }
+    (0..token.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&token[index..index + 2], 16).ok())
+        .collect()
+}
+
+fn hex_tokens_in_line(line: &str) -> Vec<Vec<u8>> {
+    let bytes = line.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'<' || bytes.get(index + 1) == Some(&b'<') {
+            index += 1;
+            continue;
+        }
+        let Some(relative_end) = bytes[index + 1..].iter().position(|byte| *byte == b'>') else {
+            break;
+        };
+        let end = index + 1 + relative_end;
+        if let Some(token) = line.get(index..=end).and_then(hex_token_bytes) {
+            tokens.push(token);
+        }
+        index = end + 1;
+    }
+    tokens
+}
+
+fn unicode_hex_to_string(bytes: &[u8]) -> Option<String> {
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = String::new();
+    for chunk in bytes.chunks_exact(2) {
+        let code_unit = u16::from_be_bytes([chunk[0], chunk[1]]);
+        let character = char::from_u32(u32::from(code_unit))?;
+        out.push(character);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,6 +899,59 @@ mod tests {
                 generation: 0
             })
         );
+    }
+
+    #[test]
+    fn parses_and_decodes_tounicode_cmap() {
+        let cmap =
+            parse_tounicode_cmap(b"2 beginbfchar\n<0026> <0043>\n<004f> <006c>\nendbfchar\n");
+
+        assert_eq!(
+            decode_with_tounicode(&[0x00, 0x26, 0x00, 0x4f], &cmap.map).as_deref(),
+            Some("Cl")
+        );
+        assert!(cmap.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_tounicode_bfrange_and_reports_unsupported_syntax() {
+        let cmap = parse_tounicode_cmap(
+            b"1 beginbfrange\n<0001> <0003> <0041>\n<0004> <0005> [<0058> <0059>]\n<0006> <0008> [<005a>]\nendbfrange\n",
+        );
+
+        assert_eq!(
+            decode_with_tounicode(&[0, 1, 0, 2, 0, 3], &cmap.map).as_deref(),
+            Some("ABC")
+        );
+        assert_eq!(
+            decode_with_tounicode(&[0, 4, 0, 5], &cmap.map).as_deref(),
+            Some("XY")
+        );
+        assert!(
+            cmap.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "CMAP_UNSUPPORTED_RANGE")
+        );
+    }
+
+    #[test]
+    fn applies_tounicode_maps_to_content_program_text() {
+        let cmap = parse_tounicode_cmap(b"1 beginbfchar\n<0026> <0043>\nendbfchar\n");
+        let mut maps = BTreeMap::new();
+        maps.insert("F1".to_owned(), cmap);
+        let mut program = parse_content_stream(b"BT /F1 12 Tf 72 720 Td <0026> Tj ET");
+
+        let result = apply_tounicode_maps(
+            &mut program,
+            &ToUnicodeMaps {
+                maps,
+                diagnostics: Vec::new(),
+            },
+        );
+        let extraction = extract_text_runs(&program, 0);
+
+        assert!(result.applied);
+        assert_eq!(extraction.runs[0].text, "C");
     }
 
     #[test]
