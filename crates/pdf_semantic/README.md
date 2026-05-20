@@ -10,7 +10,10 @@ raw PDF text extraction and semantic diff matching.
 ## What This Crate Provides
 
 - Line and paragraph clustering using page index, baseline proximity, x order,
-  and vertical gap thresholds.
+  vertical gap thresholds, and deterministic column-band reading order for
+  controlled multi-column layouts.
+- Repeated page-layout candidate detection for headers, footers, and repeated
+  page-template content using stable text plus page-position evidence.
 - Candidate detection for controlled headings, bullet/numbered lists, and simple
   aligned text-grid tables.
 - Best-effort table row/cell evidence for aligned text grids, including sparse
@@ -41,9 +44,10 @@ confidence so reports can explain why a PDF comparison changed.
 ## Current Compatibility Boundary
 
 The layout heuristics are deterministic and conservative, but they are not a
-general document-understanding engine. Complex multi-column flow, renderer-grade
-table reconstruction from arbitrary drawing geometry, style semantics, OCR
-cleanup, and full tagged-PDF parent tree behavior remain incremental
-compatibility work.
+general document-understanding engine. Multi-column flow and repeated
+header/footer/template detection are candidate heuristics, not renderer-grade
+page analysis. Renderer-grade table reconstruction from arbitrary drawing
+geometry, style semantics, OCR cleanup, and full tagged-PDF parent tree behavior
+remain incremental compatibility work.
 Uncertain content should stay as paragraph or candidate evidence rather than
 being promoted to a false high-confidence semantic structure.

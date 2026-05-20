@@ -2,7 +2,12 @@ use pdf_text::TextRun;
 use spdfdiff_types::{Diagnostic, ObjectId, Provenance, Rect};
 
 const LINE_BASELINE_TOLERANCE: f32 = 3.0;
+const SAME_LINE_MAX_GAP: f32 = 260.0;
 const PARAGRAPH_GAP_MULTIPLIER: f32 = 1.8;
+const COLUMN_X_GAP: f32 = 260.0;
+const COLUMN_MIN_VERTICAL_OVERLAP: f32 = 12.0;
+const REPEATED_POSITION_TOLERANCE: f32 = 12.0;
+const PAGE_EDGE_BAND: f32 = 80.0;
 const TABLE_COLUMN_TOLERANCE: f32 = 8.0;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +96,9 @@ pub enum SemanticNodeKind {
     ListCandidate,
     TableCandidate,
     FigureCandidate,
+    HeaderCandidate,
+    FooterCandidate,
+    PageTemplateCandidate,
     UnknownBlock,
 }
 
@@ -107,6 +115,28 @@ struct TextLine {
 struct TableRowDraft {
     anchor_y: f32,
     row: TableRow,
+}
+
+#[derive(Debug, Clone)]
+struct ColumnBand {
+    anchor_x: f32,
+    line_count: usize,
+    min_y: f32,
+    max_y: f32,
+}
+
+#[derive(Debug, Clone)]
+struct PageVerticalProfile {
+    min_y: f32,
+    max_y: f32,
+}
+
+#[derive(Debug, Clone)]
+struct RepeatedLayoutSignature {
+    normalized_text: String,
+    page_index: usize,
+    x: f32,
+    y: f32,
 }
 
 impl TextLine {
@@ -205,8 +235,10 @@ pub fn build_semantic_document_with_tagged_structure_and_table_hints(
 
 fn build_layout_nodes(runs: &[TextRun]) -> Vec<SemanticNode> {
     let lines = cluster_lines(runs);
-    let mut nodes = cluster_paragraphs(&lines);
+    let ordered_lines = order_lines_for_flow(&lines);
+    let mut nodes = cluster_paragraphs(&ordered_lines);
     classify_heading_candidates(&mut nodes);
+    classify_repeated_page_template_candidates(&mut nodes);
     classify_table_candidates(&mut nodes);
     classify_list_candidates(&mut nodes);
     nodes
@@ -294,6 +326,8 @@ fn tagged_structure_kind(structure_type: &str) -> SemanticNodeKind {
             SemanticNodeKind::TableCandidate
         }
         "Figure" | "Formula" | "Form" => SemanticNodeKind::FigureCandidate,
+        "Header" => SemanticNodeKind::HeaderCandidate,
+        "Footer" => SemanticNodeKind::FooterCandidate,
         "P" | "Span" => SemanticNodeKind::Paragraph,
         _ => SemanticNodeKind::UnknownBlock,
     }
@@ -355,6 +389,7 @@ fn cluster_lines(runs: &[TextRun]) -> Vec<TextLine> {
         if let Some(line) = lines.iter_mut().find(|line| {
             line.page_index == page_index
                 && (line.bbox.y0 - run.bbox.y0).abs() <= LINE_BASELINE_TOLERANCE
+                && can_merge_run_into_line(line, run.bbox)
         }) {
             append_text(&mut line.text, &run.normalized_text);
             line.bbox = union_rect(line.bbox, run.bbox);
@@ -371,6 +406,147 @@ fn cluster_lines(runs: &[TextRun]) -> Vec<TextLine> {
         }
     }
     lines
+}
+
+fn can_merge_run_into_line(line: &TextLine, run_bbox: Rect) -> bool {
+    let horizontal_gap = if run_bbox.x0 >= line.bbox.x1 {
+        run_bbox.x0 - line.bbox.x1
+    } else if line.bbox.x0 >= run_bbox.x1 {
+        line.bbox.x0 - run_bbox.x1
+    } else {
+        0.0
+    };
+    horizontal_gap <= SAME_LINE_MAX_GAP
+}
+
+fn order_lines_for_flow(lines: &[TextLine]) -> Vec<TextLine> {
+    let mut page_indices = lines.iter().map(|line| line.page_index).collect::<Vec<_>>();
+    page_indices.sort_unstable();
+    page_indices.dedup();
+
+    let mut ordered = Vec::new();
+    for page_index in page_indices {
+        let page_lines = lines
+            .iter()
+            .filter(|line| line.page_index == page_index)
+            .cloned()
+            .collect::<Vec<_>>();
+        let columns = infer_column_bands(&page_lines);
+        let mut indexed_lines = page_lines
+            .into_iter()
+            .map(|line| {
+                let column_index = column_index_for_line(&line, &columns);
+                (column_index, line)
+            })
+            .collect::<Vec<_>>();
+        indexed_lines.sort_by(|(left_column, left), (right_column, right)| {
+            left_column
+                .cmp(right_column)
+                .then_with(|| {
+                    right
+                        .bbox
+                        .y0
+                        .partial_cmp(&left.bbox.y0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    left.bbox
+                        .x0
+                        .partial_cmp(&right.bbox.x0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        });
+        ordered.extend(indexed_lines.into_iter().map(|(_, line)| line));
+    }
+    ordered
+}
+
+fn infer_column_bands(lines: &[TextLine]) -> Vec<ColumnBand> {
+    if lines.len() < 4 {
+        return vec![ColumnBand {
+            anchor_x: 0.0,
+            line_count: lines.len(),
+            min_y: 0.0,
+            max_y: 0.0,
+        }];
+    }
+    let mut x_positions = lines.iter().map(|line| line.bbox.x0).collect::<Vec<_>>();
+    x_positions.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut bands = Vec::new();
+    let mut current_sum = 0.0;
+    let mut current_count = 0usize;
+    let mut current_min_y = f32::MAX;
+    let mut current_max_y = f32::MIN;
+    let mut last_x = x_positions[0];
+    for x in x_positions {
+        if current_count > 0 && (x - last_x).abs() > COLUMN_X_GAP {
+            bands.push(ColumnBand {
+                anchor_x: current_sum / current_count as f32,
+                line_count: current_count,
+                min_y: current_min_y,
+                max_y: current_max_y,
+            });
+            current_sum = 0.0;
+            current_count = 0;
+            current_min_y = f32::MAX;
+            current_max_y = f32::MIN;
+        }
+        for line in lines
+            .iter()
+            .filter(|line| (line.bbox.x0 - x).abs() < f32::EPSILON)
+        {
+            current_min_y = current_min_y.min(line.bbox.y0);
+            current_max_y = current_max_y.max(line.bbox.y1);
+        }
+        current_sum += x;
+        current_count += 1;
+        last_x = x;
+    }
+    if current_count > 0 {
+        bands.push(ColumnBand {
+            anchor_x: current_sum / current_count as f32,
+            line_count: current_count,
+            min_y: current_min_y,
+            max_y: current_max_y,
+        });
+    }
+
+    if bands.len() == 2
+        && bands.iter().all(|band| band.line_count >= 2)
+        && column_bands_vertically_overlap(&bands)
+    {
+        bands
+    } else {
+        vec![ColumnBand {
+            anchor_x: 0.0,
+            line_count: lines.len(),
+            min_y: 0.0,
+            max_y: 0.0,
+        }]
+    }
+}
+
+fn column_bands_vertically_overlap(bands: &[ColumnBand]) -> bool {
+    let [left, right] = bands else {
+        return false;
+    };
+    let overlap = left.max_y.min(right.max_y) - left.min_y.max(right.min_y);
+    overlap >= COLUMN_MIN_VERTICAL_OVERLAP
+}
+
+fn column_index_for_line(line: &TextLine, columns: &[ColumnBand]) -> usize {
+    columns
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            (line.bbox.x0 - left.anchor_x)
+                .abs()
+                .partial_cmp(&(line.bbox.x0 - right.anchor_x).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0)
 }
 
 fn cluster_paragraphs(lines: &[TextLine]) -> Vec<SemanticNode> {
@@ -471,6 +647,112 @@ fn classify_heading_candidates(nodes: &mut [SemanticNode]) {
             node.confidence = 0.65;
         }
     }
+}
+
+fn classify_repeated_page_template_candidates(nodes: &mut [SemanticNode]) {
+    let page_count = nodes
+        .iter()
+        .map(|node| node.page_index)
+        .max()
+        .map_or(0, |max_page| max_page + 1);
+    if page_count < 2 {
+        return;
+    }
+    let profiles = page_vertical_profiles(nodes);
+    let signatures = repeated_layout_signatures(nodes);
+
+    for node in nodes {
+        if !matches!(
+            node.kind,
+            SemanticNodeKind::Paragraph | SemanticNodeKind::HeadingCandidate
+        ) {
+            continue;
+        }
+        let Some(text) = node.normalized_text.as_deref() else {
+            continue;
+        };
+        let Some(bbox) = node.bbox else {
+            continue;
+        };
+        let normalized_text = normalize_anchor_text(text);
+        if normalized_text.is_empty() {
+            continue;
+        }
+        let repeat_count = signatures
+            .iter()
+            .filter(|signature| {
+                signature.normalized_text == normalized_text
+                    && signature.page_index != node.page_index
+                    && (signature.x - bbox.x0).abs() <= REPEATED_POSITION_TOLERANCE
+                    && (signature.y - bbox.y0).abs() <= REPEATED_POSITION_TOLERANCE
+            })
+            .count()
+            + 1;
+        if repeat_count < 2 {
+            continue;
+        }
+        let Some(profile) = profiles.get(node.page_index) else {
+            continue;
+        };
+        let center_y = (bbox.y0 + bbox.y1) / 2.0;
+        let has_page_edge_span = profile.max_y - profile.min_y >= PAGE_EDGE_BAND * 4.0;
+        if has_page_edge_span && center_y >= profile.max_y - PAGE_EDGE_BAND {
+            node.kind = SemanticNodeKind::HeaderCandidate;
+            node.confidence = 0.72;
+        } else if has_page_edge_span && center_y <= profile.min_y + PAGE_EDGE_BAND {
+            node.kind = SemanticNodeKind::FooterCandidate;
+            node.confidence = 0.72;
+        } else if page_count >= 3 && repeat_count >= page_count.saturating_sub(1).max(2) {
+            node.kind = SemanticNodeKind::PageTemplateCandidate;
+            node.confidence = 0.58;
+        }
+    }
+}
+
+fn page_vertical_profiles(nodes: &[SemanticNode]) -> Vec<PageVerticalProfile> {
+    let page_count = nodes
+        .iter()
+        .map(|node| node.page_index)
+        .max()
+        .map_or(0, |max_page| max_page + 1);
+    let mut profiles = vec![
+        PageVerticalProfile {
+            min_y: f32::MAX,
+            max_y: f32::MIN,
+        };
+        page_count
+    ];
+    for node in nodes {
+        let Some(bbox) = node.bbox else {
+            continue;
+        };
+        let profile = &mut profiles[node.page_index];
+        profile.min_y = profile.min_y.min(bbox.y0);
+        profile.max_y = profile.max_y.max(bbox.y1);
+    }
+    for profile in &mut profiles {
+        if profile.min_y == f32::MAX {
+            profile.min_y = 0.0;
+            profile.max_y = 0.0;
+        }
+    }
+    profiles
+}
+
+fn repeated_layout_signatures(nodes: &[SemanticNode]) -> Vec<RepeatedLayoutSignature> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let text = normalize_anchor_text(node.normalized_text.as_deref()?);
+            let bbox = node.bbox?;
+            (!text.is_empty()).then_some(RepeatedLayoutSignature {
+                normalized_text: text,
+                page_index: node.page_index,
+                x: bbox.x0,
+                y: bbox.y0,
+            })
+        })
+        .collect()
 }
 
 fn is_heading_candidate(text: &str, height: f32, median_height: f32) -> bool {
@@ -1076,6 +1358,109 @@ mod tests {
         assert_eq!(
             document.nodes[0].bbox.unwrap(),
             rect(10.0, 84.0, 90.0, 112.0)
+        );
+    }
+
+    #[test]
+    fn orders_multicolumn_flow_by_column_before_vertical_position() {
+        let runs = vec![
+            text_run(
+                "right-top",
+                "Right column top",
+                0,
+                rect(500.0, 120.0, 590.0, 132.0),
+            ),
+            text_run(
+                "left-bottom",
+                "left continues",
+                0,
+                rect(10.0, 100.0, 110.0, 112.0),
+            ),
+            text_run(
+                "right-bottom",
+                "right continues",
+                0,
+                rect(500.0, 100.0, 600.0, 112.0),
+            ),
+            text_run(
+                "left-top",
+                "Left column top",
+                0,
+                rect(10.0, 120.0, 100.0, 132.0),
+            ),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 2);
+        assert_eq!(
+            document.nodes[0].normalized_text.as_deref(),
+            Some("Left column top left continues")
+        );
+        assert_eq!(
+            document.nodes[1].normalized_text.as_deref(),
+            Some("Right column top right continues")
+        );
+    }
+
+    #[test]
+    fn classifies_repeated_headers_and_footers() {
+        let runs = vec![
+            text_run(
+                "h1",
+                "Confidential Report",
+                0,
+                rect(10.0, 760.0, 160.0, 772.0),
+            ),
+            text_run("b1", "First page body", 0, rect(10.0, 600.0, 140.0, 612.0)),
+            text_run("f1", "Company Footer", 0, rect(10.0, 20.0, 130.0, 32.0)),
+            text_run(
+                "h2",
+                "Confidential Report",
+                1,
+                rect(10.0, 760.0, 160.0, 772.0),
+            ),
+            text_run("b2", "Second page body", 1, rect(10.0, 600.0, 150.0, 612.0)),
+            text_run("f2", "Company Footer", 1, rect(10.0, 20.0, 130.0, 32.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert!(
+            document
+                .nodes
+                .iter()
+                .filter(|node| node.kind == SemanticNodeKind::HeaderCandidate)
+                .count()
+                >= 2
+        );
+        assert!(
+            document
+                .nodes
+                .iter()
+                .filter(|node| node.kind == SemanticNodeKind::FooterCandidate)
+                .count()
+                >= 2
+        );
+    }
+
+    #[test]
+    fn classifies_repeated_page_template_content_away_from_edges() {
+        let runs = vec![
+            text_run("w1", "DRAFT", 0, rect(240.0, 360.0, 300.0, 372.0)),
+            text_run("b1", "First page body", 0, rect(10.0, 620.0, 140.0, 632.0)),
+            text_run("w2", "DRAFT", 1, rect(240.0, 360.0, 300.0, 372.0)),
+            text_run("b2", "Second page body", 1, rect(10.0, 620.0, 150.0, 632.0)),
+            text_run("w3", "DRAFT", 2, rect(240.0, 360.0, 300.0, 372.0)),
+            text_run("b3", "Third page body", 2, rect(10.0, 620.0, 140.0, 632.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(
+            document
+                .nodes
+                .iter()
+                .filter(|node| node.kind == SemanticNodeKind::PageTemplateCandidate)
+                .count(),
+            3
         );
     }
 

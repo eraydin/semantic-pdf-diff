@@ -34,8 +34,11 @@ reconstruction from arbitrary drawing geometry remain incremental compatibility
 work rather than public-alpha claims. Simple aligned
 text-grid table candidates preserve best-effort row/cell, sparse blank-cell,
 row-span, column-span, merged-cell, and rectangle border-hint evidence in extract
-reports, while missing text-layer surfaces are emitted as stable diagnostics
-instead of being silently treated as fully supported semantic diffs.
+reports. Semantic extraction uses deterministic column-band reading order for
+controlled multi-column layouts and classifies repeated header, footer, and
+page-template content as candidate surfaces, while missing text-layer surfaces
+are emitted as stable diagnostics instead of being silently treated as fully
+supported semantic diffs.
 The diff engine also emits structured word-level text hunks for modified
 paragraphs, structured layout evidence for moved or layout-shifted blocks, and
 compares selected report-facing document surfaces, including image payloads,

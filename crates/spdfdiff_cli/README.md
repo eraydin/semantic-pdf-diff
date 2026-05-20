@@ -61,6 +61,8 @@ review works without adding TLS or hosted provider dependencies.
 ## What It Compares Today
 
 - Extracted paragraph text and deterministic text hunks.
+- Controlled multi-column reading order plus repeated header, footer, and
+  page-template candidate counts in extract JSON.
 - Moved blocks and layout-only changes when text anchors and bounding boxes
   support them.
 - Simple aligned text-grid table candidates with row/cell, sparse blank-cell,

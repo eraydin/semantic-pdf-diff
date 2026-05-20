@@ -327,6 +327,9 @@ struct InspectReport<'a> {
 struct ExtractReport<'a> {
     file: &'a str,
     paragraphs: usize,
+    header_candidates: usize,
+    footer_candidates: usize,
+    page_template_candidates: usize,
     table_candidates: usize,
     table_cells: usize,
     tables: Vec<ExtractTableReport>,
@@ -3126,6 +3129,18 @@ fn render_extract_report(
             let report = ExtractReport {
                 file: &document.fingerprint,
                 paragraphs: document.nodes.len(),
+                header_candidates: semantic_kind_count(
+                    document,
+                    pdf_semantic::SemanticNodeKind::HeaderCandidate,
+                ),
+                footer_candidates: semantic_kind_count(
+                    document,
+                    pdf_semantic::SemanticNodeKind::FooterCandidate,
+                ),
+                page_template_candidates: semantic_kind_count(
+                    document,
+                    pdf_semantic::SemanticNodeKind::PageTemplateCandidate,
+                ),
                 table_candidates: tables.len(),
                 table_cells,
                 tables,
@@ -3169,6 +3184,17 @@ fn render_extract_report(
             )
         }
     }
+}
+
+fn semantic_kind_count(
+    document: &pdf_semantic::SemanticDocument,
+    kind: pdf_semantic::SemanticNodeKind,
+) -> usize {
+    document
+        .nodes
+        .iter()
+        .filter(|node| node.kind == kind)
+        .count()
 }
 
 fn extract_table_reports(document: &pdf_semantic::SemanticDocument) -> Vec<ExtractTableReport> {
