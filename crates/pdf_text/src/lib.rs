@@ -36,13 +36,13 @@ pub struct TextExtraction {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FontResourceSet {
     pub fonts: BTreeMap<String, FontResource>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FontResource {
     pub resource_name: String,
     pub object_id: ObjectId,
@@ -50,6 +50,8 @@ pub struct FontResource {
     pub base_font: Option<String>,
     pub encoding: Option<String>,
     pub to_unicode: Option<ObjectId>,
+    pub first_char: Option<u16>,
+    pub widths: Vec<f32>,
     pub descendant_font_object_ids: Vec<ObjectId>,
     pub descendant_subtypes: Vec<String>,
 }
@@ -62,6 +64,16 @@ impl FontResource {
                 .descendant_subtypes
                 .iter()
                 .any(|subtype| subtype.starts_with("CIDFont"))
+    }
+
+    #[must_use]
+    pub fn glyph_width_em_for_code(&self, code: u8) -> Option<f32> {
+        if self.is_cid_or_type0() {
+            return None;
+        }
+        let first_char = usize::from(self.first_char?);
+        let index = usize::from(code).checked_sub(first_char)?;
+        self.widths.get(index).map(|width| width / 1000.0)
     }
 }
 
@@ -307,10 +319,11 @@ pub fn decode_with_tounicode(raw_bytes: &[u8], map: &BTreeMap<Vec<u8>, String>) 
     Some(decoded)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct TextState {
     x: f32,
     y: f32,
+    font_name: Option<String>,
     font_size: f32,
     leading: f32,
     character_spacing: f32,
@@ -323,6 +336,7 @@ impl Default for TextState {
         Self {
             x: 0.0,
             y: 0.0,
+            font_name: None,
             font_size: 12.0,
             leading: 0.0,
             character_spacing: 0.0,
@@ -334,6 +348,23 @@ impl Default for TextState {
 
 #[must_use]
 pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExtraction {
+    extract_text_runs_with_optional_fonts(program, page_index, None)
+}
+
+#[must_use]
+pub fn extract_text_runs_with_fonts(
+    program: &ContentProgram,
+    page_index: usize,
+    font_resources: &FontResourceSet,
+) -> TextExtraction {
+    extract_text_runs_with_optional_fonts(program, page_index, Some(font_resources))
+}
+
+fn extract_text_runs_with_optional_fonts(
+    program: &ContentProgram,
+    page_index: usize,
+    font_resources: Option<&FontResourceSet>,
+) -> TextExtraction {
     let mut state = TextState::default();
     let mut graphics_stack = Vec::new();
     let mut runs = Vec::new();
@@ -343,7 +374,8 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
 
     for operation in &program.operations {
         match operation {
-            ContentOp::SetFont { size, .. } => {
+            ContentOp::SetFont { name, size, .. } => {
+                state.font_name = Some(name.clone());
                 state.font_size = *size;
             }
             ContentOp::MoveTextPosition {
@@ -401,16 +433,19 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
                 }
                 emit_run(
                     &mut runs,
-                    run_page_index,
-                    text,
-                    raw_bytes,
-                    source.clone(),
-                    marked_content_stack.last().cloned(),
+                    RunEmission {
+                        page_index: run_page_index,
+                        text,
+                        raw_bytes,
+                        source: source.clone(),
+                        marked_content: marked_content_stack.last().cloned(),
+                        font_resources,
+                    },
                     &mut state,
                 );
             }
             ContentOp::SaveGraphicsState { .. } => {
-                graphics_stack.push(state);
+                graphics_stack.push(state.clone());
             }
             ContentOp::RestoreGraphicsState { .. } => {
                 if let Some(saved) = graphics_stack.pop() {
@@ -438,16 +473,22 @@ pub fn extract_text_runs(program: &ContentProgram, page_index: usize) -> TextExt
     TextExtraction { runs, diagnostics }
 }
 
-fn emit_run(
-    runs: &mut Vec<TextRun>,
+struct RunEmission<'a> {
     page_index: usize,
-    text: &str,
-    raw_bytes: &[u8],
+    text: &'a str,
+    raw_bytes: &'a [u8],
     source: Provenance,
     marked_content: Option<MarkedContentRef>,
-    state: &mut TextState,
-) {
-    let width = estimate_text_width(text, *state);
+    font_resources: Option<&'a FontResourceSet>,
+}
+
+fn emit_run(runs: &mut Vec<TextRun>, emission: RunEmission<'_>, state: &mut TextState) {
+    let width = estimate_text_width(
+        emission.text,
+        emission.raw_bytes,
+        state,
+        emission.font_resources,
+    );
     let bbox = Rect {
         x0: state.x,
         y0: state.y,
@@ -455,10 +496,10 @@ fn emit_run(
         y1: state.y + state.font_size,
     };
     let glyph = GlyphToken {
-        id: format!("p{page_index}.g{:04}", runs.len()),
-        unicode: Some(text.to_owned()),
-        raw_bytes: raw_bytes.to_vec(),
-        page_index,
+        id: format!("p{}.g{:04}", emission.page_index, runs.len()),
+        unicode: Some(emission.text.to_owned()),
+        raw_bytes: emission.raw_bytes.to_vec(),
+        page_index: emission.page_index,
         bbox,
         baseline: LineSegment {
             start: Point {
@@ -470,16 +511,16 @@ fn emit_run(
                 y: state.y,
             },
         },
-        source: source.clone(),
+        source: emission.source.clone(),
     };
     runs.push(TextRun {
-        id: format!("p{page_index}.r{:04}", runs.len()),
-        text: text.to_owned(),
-        normalized_text: normalize_text(text),
+        id: format!("p{}.r{:04}", emission.page_index, runs.len()),
+        text: emission.text.to_owned(),
+        normalized_text: normalize_text(emission.text),
         glyphs: vec![glyph],
         bbox,
-        source,
-        marked_content,
+        source: emission.source,
+        marked_content: emission.marked_content,
     });
     state.x += width;
 }
@@ -489,11 +530,17 @@ pub fn normalize_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn estimate_text_width(text: &str, state: TextState) -> f32 {
-    let base_width = text
-        .chars()
-        .map(|character| approximate_glyph_width(character) * state.font_size)
-        .sum::<f32>();
+fn estimate_text_width(
+    text: &str,
+    raw_bytes: &[u8],
+    state: &TextState,
+    font_resources: Option<&FontResourceSet>,
+) -> f32 {
+    let base_width = font_width_sum(raw_bytes, state, font_resources).unwrap_or_else(|| {
+        text.chars()
+            .map(|character| approximate_glyph_width(character) * state.font_size)
+            .sum::<f32>()
+    });
     let spacing = text.chars().fold(0.0, |total, character| {
         let word_spacing = if character == ' ' {
             state.word_spacing
@@ -503,6 +550,20 @@ fn estimate_text_width(text: &str, state: TextState) -> f32 {
         total + state.character_spacing + word_spacing
     });
     (base_width + spacing) * (state.horizontal_scale / 100.0)
+}
+
+fn font_width_sum(
+    raw_bytes: &[u8],
+    state: &TextState,
+    font_resources: Option<&FontResourceSet>,
+) -> Option<f32> {
+    let font_name = state.font_name.as_deref()?;
+    let font = font_resources?.fonts.get(font_name)?;
+    let mut width = 0.0;
+    for byte in raw_bytes {
+        width += font.glyph_width_em_for_code(*byte)? * state.font_size;
+    }
+    Some(width)
 }
 
 fn approximate_glyph_width(character: char) -> f32 {
@@ -540,6 +601,8 @@ fn font_resource_from_object(
         base_font: name_after_key(body, "BaseFont"),
         encoding: value_after_pdf_name(body, "Encoding"),
         to_unicode: reference_after_key(body, "ToUnicode"),
+        first_char: number_after_key(body, "FirstChar"),
+        widths: number_array_after_key(body, "Widths"),
         descendant_font_object_ids,
         descendant_subtypes,
     }
@@ -632,6 +695,32 @@ fn value_after_pdf_name(body: &str, key: &str) -> Option<String> {
             .take(120)
             .collect::<String>(),
     )
+}
+
+fn number_after_key<T>(body: &str, key: &str) -> Option<T>
+where
+    T: std::str::FromStr,
+{
+    let start = body.find(&format!("/{key}"))? + key.len() + 1;
+    body[start..].split_whitespace().next()?.parse().ok()
+}
+
+fn number_array_after_key(body: &str, key: &str) -> Vec<f32> {
+    let Some(start) = body.find(&format!("/{key}")) else {
+        return Vec::new();
+    };
+    let after_key = &body[start + key.len() + 1..];
+    let Some(array_start) = after_key.find('[') else {
+        return Vec::new();
+    };
+    let after_array_start = &after_key[array_start + 1..];
+    let Some(array_end) = after_array_start.find(']') else {
+        return Vec::new();
+    };
+    after_array_start[..array_end]
+        .split_whitespace()
+        .filter_map(|token| token.parse::<f32>().ok())
+        .collect()
 }
 
 fn body_tokens(body: &str) -> Vec<String> {
@@ -825,8 +914,14 @@ mod tests {
             ..TextState::default()
         };
 
-        assert!(estimate_text_width("WWW", state) > estimate_text_width("iii", state));
-        assert!(estimate_text_width("A A", state) < estimate_text_width("AAA", state));
+        assert!(
+            estimate_text_width("WWW", b"WWW", &state, None)
+                > estimate_text_width("iii", b"iii", &state, None)
+        );
+        assert!(
+            estimate_text_width("A A", b"A A", &state, None)
+                < estimate_text_width("AAA", b"AAA", &state, None)
+        );
     }
 
     #[test]
@@ -863,6 +958,8 @@ mod tests {
         assert_eq!(font.subtype.as_deref(), Some("Type0"));
         assert_eq!(font.base_font.as_deref(), Some("CIDFont"));
         assert_eq!(font.encoding.as_deref(), Some("/Identity-H"));
+        assert_eq!(font.first_char, None);
+        assert!(font.widths.is_empty());
         assert_eq!(
             font.to_unicode,
             Some(ObjectId {
@@ -879,6 +976,33 @@ mod tests {
         );
         assert_eq!(font.descendant_subtypes, vec!["CIDFontType2".to_owned()]);
         assert!(font.is_cid_or_type0());
+    }
+
+    #[test]
+    fn font_resource_model_captures_simple_font_widths() {
+        let document = pdf_core::PdfDocument::parse(simple_font_widths_pdf().as_slice())
+            .expect("simple-font-width fixture should parse");
+        let resources = font_resources_from_document(&document);
+        let font = resources.fonts.get("F1").expect("F1 should resolve");
+
+        assert_eq!(font.first_char, Some(65));
+        assert_eq!(font.widths, vec![1000.0, 250.0]);
+        assert_eq!(font.glyph_width_em_for_code(b'A'), Some(1.0));
+        assert_eq!(font.glyph_width_em_for_code(b'B'), Some(0.25));
+        assert_eq!(font.glyph_width_em_for_code(b'C'), None);
+    }
+
+    #[test]
+    fn extraction_uses_simple_font_widths_when_available() {
+        let document = pdf_core::PdfDocument::parse(simple_font_widths_pdf().as_slice())
+            .expect("simple-font-width fixture should parse");
+        let resources = font_resources_from_document(&document);
+        let program = parse_content_stream(b"BT /F1 10 Tf 0 0 Td (AB) Tj ET");
+        let extraction = extract_text_runs_with_fonts(&program, 0, &resources);
+
+        assert_eq!(extraction.runs.len(), 1);
+        assert_eq!(extraction.runs[0].text, "AB");
+        assert_eq!(extraction.runs[0].bbox.width(), 12.5);
     }
 
     #[test]
@@ -1034,6 +1158,31 @@ endstream
 endobj
 8 0 obj
 << /Font << /FIndirect 5 0 R >> >>
+endobj
+"
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn simple_font_widths_pdf() -> Vec<u8> {
+        "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 35 >>
+stream
+BT /F1 10 Tf 0 0 Td (AB) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 65 /LastChar 66 /Widths [1000 250] >>
 endobj
 "
         .as_bytes()

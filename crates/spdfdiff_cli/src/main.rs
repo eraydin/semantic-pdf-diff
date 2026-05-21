@@ -1218,7 +1218,8 @@ fn extract_text_runs_from_document(
             pdf_text::apply_document_tounicode_maps(&mut program, document, &font_resources);
         let applied_tounicode = tounicode_result.applied;
         diagnostics.extend(tounicode_result.diagnostics);
-        let extraction = pdf_text::extract_text_runs(&program, page_index);
+        let extraction =
+            pdf_text::extract_text_runs_with_fonts(&program, page_index, &font_resources);
         diagnostics.extend(
             extraction
                 .diagnostics

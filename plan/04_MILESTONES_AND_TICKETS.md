@@ -19,7 +19,7 @@ Legend:
 | Milestone 1.5 — Safety and modern-PDF compatibility gate | Implemented | Resource limits, xref streams, object streams, and manifest-driven corpus release thresholds are implemented. |
 | Milestone 2 — Fixture generator and corpus runner | Implemented | Corpus runner, reusable deterministic PDF fixture writer, and generated diff-pair golden snapshot matrix exist. |
 | Milestone 3 — Page tree and content stream parsing | Implemented | Page tree traversal, inherited page attributes, content stream resolution, tokenization, and text operator interpretation are covered. |
-| Milestone 4 — Text extraction | Implemented | Text extraction, ToUnicode, glyph positioning, text-run grouping, and the public font resource model are covered. |
+| Milestone 4 — Text extraction | Implemented | Text extraction, ToUnicode, glyph positioning, text-run grouping, and the public font resource model with simple-font width metrics are covered. |
 | Milestone 5 — Layout and semantic extraction | Implemented | Blocks, headings, lists, anchors, aligned text-grid table row/cell candidates, sparse blank-cell reconstruction, conservative row/column spans, merged-cell placeholders, and rectangle table-border hints exist. |
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
 | Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, CLI commands, outputs, and exit behavior are covered. |
@@ -63,7 +63,7 @@ Legend:
 | M7-T3 — Basic HTML report | Implemented | Self-contained HTML side-by-side report includes page/bbox evidence and inline SVG overlays. |
 | M7-T4 — CLI integration | Implemented | `diff`, `extract`, `inspect`, `corpus`, `benchmark`, formats, outputs, OCR path, and exit-code behavior are integration-tested. |
 | M8-T1 — Incremental updates and recovery parsing | Implemented | Latest `startxref`, `/Prev` diagnostics, xref recovery, and deterministic incremental-update offset metadata are exposed. |
-| M8-T2 — Better font handling | Implemented | CID/Type0 missing-`ToUnicode` diagnostics and deterministic glyph-width heuristics are implemented. |
+| M8-T2 — Better font handling | Implemented | CID/Type0 missing-`ToUnicode` diagnostics, simple-font `/Widths` metrics, and deterministic glyph-width fallbacks are implemented. |
 | M8-T3 — Tagged PDF structure | Implemented | Simple structure trees, parent-tree summaries, MCID preservation, and tagged semantic node ordering are implemented for controlled cases. |
 | M8-T4 — Fuzzing and malformed PDFs | Implemented | Feature-gated malformed-input tests plus standalone parser/object/content fuzz targets and seed corpora exist. |
 | M8-T5 — Benchmark target | Implemented | CLI benchmark reports parse/extract/semantic/diff/report timings, threshold result, diagnostics, summary, and memory sample when available. |
@@ -694,7 +694,8 @@ Acceptance:
 Implemented compatibility-gate behavior:
 
 - CID/Type0 fonts without `/ToUnicode` emit `MISSING_TOUNICODE_CID_FONT`;
-- glyph width estimation uses deterministic character-shape heuristics.
+- simple-font `/FirstChar` and `/Widths` metrics are used when available;
+- glyph width estimation falls back to deterministic character-shape heuristics.
 
 #### M8-T3 — Tagged PDF structure
 

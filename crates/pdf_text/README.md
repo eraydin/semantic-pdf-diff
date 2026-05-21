@@ -16,7 +16,8 @@ marked-content references. It is the text-extraction stage used by
   bounding boxes.
 - Marked-content tag and `/MCID` preservation for tagged-PDF mapping.
 - A public font resource model with resource name, object ID, subtype,
-  base-font, encoding, descendant-font, and `/ToUnicode` references.
+  base-font, encoding, simple-font `/FirstChar` plus `/Widths` metrics,
+  descendant-font, and `/ToUnicode` references.
 - Public `/ToUnicode` CMap parsing and application helpers for `bfchar`,
   controlled `bfrange`, and multi-byte text bytes.
 - Whitespace normalization for deterministic downstream matching.
@@ -33,7 +34,8 @@ pdf_content ContentProgram -> pdf_text TextRun values -> pdf_semantic nodes
 
 The current CLI uses this crate's font resource model and `/ToUnicode` helpers
 before text-run extraction when page resources expose a decoded CMap stream.
-Broader font decoding and shaping remain planned work.
+Broader font decoding, CID `/W` metrics, vertical writing, and shaping remain
+planned work.
 
 ## Current Compatibility Boundary
 

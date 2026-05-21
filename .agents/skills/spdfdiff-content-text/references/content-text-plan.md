@@ -29,5 +29,6 @@ Use this reference with `spdfdiff-content-text`.
 - Parse `BT /F1 12 Tf 72 720 Td (Hello) Tj ET`.
 - Handle `TJ` arrays with strings and numeric spacing adjustments.
 - Track simple text matrix changes.
+- Use simple-font `/FirstChar` and `/Widths` metrics when present.
 - Extract `Hello World` from synthetic PDFs with `/ToUnicode`.
 - Emit diagnostics for missing font resources, missing `/ToUnicode`, unsupported CMap syntax, and unknown operators.

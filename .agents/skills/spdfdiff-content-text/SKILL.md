@@ -32,6 +32,9 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 - CID/Type0 fonts without `/ToUnicode` must produce stable diagnostics; width
   estimates should remain deterministic and use simple character-shape
   heuristics instead of a single fixed glyph width.
+- For simple fonts, prefer parsed `/FirstChar` and `/Widths` metrics when
+  present; fall back to deterministic character-shape heuristics when metrics
+  are missing or cannot safely apply.
 - `pdf_text` exposes the public font resource model plus `/ToUnicode` CMap
   parsing and application helpers for `bfchar` and controlled `bfrange`
   mappings. Keep expanding resource-aware font decoding in `pdf_text` instead

@@ -17,8 +17,8 @@ resources and boxes, and page content streams across all parsed pages before
 applying the `pdf_text` font resource model and `/ToUnicode` CMap streams and
 building semantic text blocks. This covers the current sample PDFs that use
 Type0 fonts and hex `Tj`/`TJ` text. Font resources preserve resource names,
-object IDs, subtype, base font, encoding, descendant font, and `/ToUnicode`
-references. Image payloads are compared by
+object IDs, subtype, base font, encoding, simple-font width metrics,
+descendant font, and `/ToUnicode` references. Image payloads are compared by
 deterministic stream hash for object-level image changes. When a PDF has no
 extractable text layer, the CLI can OCR supported high-contrast image XObjects
 by invoking an external OCR engine. Set `SPDFDIFF_OCR_COMMAND` to a command that
