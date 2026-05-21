@@ -50,6 +50,87 @@ jobs:
           mkdir -p target/ci
           cargo run -p spdfdiff_cli -- corpus samples --manifest samples/compatibility_corpus_manifest.json --output target/ci/corpus.json --fail-on-gate
 
+  sample-pdf-cli:
+    name: Non-release sample PDF CLI smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Build CLI
+        run: cargo build -p spdfdiff_cli
+      - name: Run CLI against sample PDFs
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          root = Path.cwd()
+          samples = root / "samples"
+          output = root / "target" / "ci" / "sample-cli"
+          output.mkdir(parents=True, exist_ok=True)
+          binary = root / "target" / "debug" / "spdfdiff"
+
+          manifest = json.loads((samples / "compatibility_corpus_manifest.json").read_text())
+          scenario = (samples / "semantic_diff_test_cases.md").read_text()
+          pdfs = sorted(samples.glob("*.pdf"))
+          required = set(manifest["required_files"])
+          actual = {pdf.name for pdf in pdfs}
+          missing = sorted(required - actual)
+          extra = sorted(actual - required)
+          if missing or extra:
+              raise SystemExit(f"sample manifest mismatch; missing={missing}; extra={extra}")
+          for pair in manifest["diff_pairs"]:
+              if pair["old_file"] not in scenario or pair["new_file"] not in scenario:
+                  raise SystemExit(f"scenario markdown is missing pair files: {pair}")
+
+          def run(*args):
+              subprocess.run([str(binary), *map(str, args)], check=True)
+
+          def load_json(path, required_keys):
+              data = json.loads(Path(path).read_text())
+              missing_keys = [key for key in required_keys if key not in data]
+              if missing_keys:
+                  raise SystemExit(f"{path} missing JSON keys {missing_keys}")
+              return data
+
+          for pdf in pdfs:
+              stem = pdf.stem
+              inspect_json = output / f"inspect-{stem}.json"
+              extract_json = output / f"extract-{stem}.json"
+              run("inspect", pdf, "--format", "json", "--output", inspect_json)
+              run("extract", pdf, "--format", "json", "--output", extract_json)
+              load_json(inspect_json, ["file", "object_count", "diagnostic_count"])
+              load_json(extract_json, ["file", "paragraphs", "diagnostic_count"])
+
+          for pair in manifest["diff_pairs"]:
+              old_pdf = samples / pair["old_file"]
+              new_pdf = samples / pair["new_file"]
+              diff_json = output / f"diff-{pair['name']}.json"
+              run("diff", old_pdf, new_pdf, "--format", "json", "--output", diff_json)
+              data = load_json(diff_json, ["schema_version", "old_fingerprint", "new_fingerprint", "changes", "diagnostics"])
+              if not data["changes"]:
+                  raise SystemExit(f"expected at least one semantic change for {pair['name']}")
+
+          representative = manifest["diff_pairs"][0]
+          old_pdf = samples / representative["old_file"]
+          new_pdf = samples / representative["new_file"]
+          for fmt, suffix in [("md", "md"), ("html", "html"), ("ai-json", "ai.json")]:
+              path = output / f"representative.{suffix}"
+              run("diff", old_pdf, new_pdf, "--format", fmt, "--output", path)
+              text = path.read_text()
+              if fmt == "html" and (not text.startswith("<!doctype html>") or 'src="http' in text or 'href="http' in text):
+                  raise SystemExit("HTML sample diff must be self-contained")
+              if fmt == "ai-json":
+                  load_json(path, ["schema_version", "source_schema_version", "review_items", "diagnostic_summary"])
+              if fmt == "md" and not text.strip():
+                  raise SystemExit("Markdown sample diff must not be empty")
+
+          print(f"validated {len(pdfs)} sample PDFs and {len(manifest['diff_pairs'])} sample diff pairs")
+          PY
+
   benchmark-smoke:
     name: Non-release benchmark smoke gate
     runs-on: ubuntu-latest
