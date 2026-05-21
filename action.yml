@@ -38,8 +38,10 @@ runs:
     - name: Check spdfdiff availability
       id: binary
       shell: bash
+      env:
+        SPDFDIFF_BINARY: ${{ inputs.binary }}
       run: |
-        if command -v "${{ inputs.binary }}" >/dev/null 2>&1; then
+        if command -v "${SPDFDIFF_BINARY}" >/dev/null 2>&1; then
           echo "available=true" >> "${GITHUB_OUTPUT}"
         else
           echo "available=false" >> "${GITHUB_OUTPUT}"
@@ -58,9 +60,12 @@ runs:
     - name: Run semantic PDF diff check
       id: check
       shell: bash
+      env:
+        SPDFDIFF_BINARY: ${{ inputs.binary }}
+        SPDFDIFF_CONFIG: ${{ inputs.config }}
       run: |
         set +e
-        "${{ inputs.binary }}" check --config "${{ inputs.config }}" > spdfdiff-check-summary.json
+        "${SPDFDIFF_BINARY}" check --config "${SPDFDIFF_CONFIG}" > spdfdiff-check-summary.json
         status=$?
         cat spdfdiff-check-summary.json
         echo "exit-code=${status}" >> "${GITHUB_OUTPUT}"

@@ -16,8 +16,8 @@ BT /F1 16 Tf 72 742 Td (Secure Intake Review) Tj ET
 BT /F1 11 Tf 72 714 Td (Case ID: RX-44 revised redaction package) Tj ET
 BT /F1 11 Tf 72 692 Td (Patient risk: elevated monitoring) Tj ET
 0 0 0 rg 168 664 128 16 re f
-BT /F1 11 Tf 72 670 Td (Customer SSN: REDACTED) Tj ET
-1 1 1 rg BT /F1 1 Tf 170 668 Td (123-45-6789 hidden legacy text) Tj ET 0 0 0 rg
+BT /F1 11 Tf 72 670 Td (Synthetic ID: REDACTED) Tj ET
+1 1 1 rg BT /F1 1 Tf 170 668 Td (DEMO-ID-000 hidden legacy text) Tj ET 0 0 0 rg
 BT /F1 11 Tf 72 648 Td (Reviewer note: validate insurance letter and audit log before release) Tj ET
 0.65 0.65 0.65 RG 70 628 420 1 re S
 BT /F1 11 Tf 72 610 Td (Approval lane: Nurse review -> Privacy review -> Compliance review -> Archive) Tj ET

@@ -15,7 +15,7 @@ stream
 BT /F1 16 Tf 72 742 Td (Secure Intake Review) Tj ET
 BT /F1 11 Tf 72 714 Td (Case ID: RX-44 baseline package) Tj ET
 BT /F1 11 Tf 72 692 Td (Patient risk: standard monitoring) Tj ET
-BT /F1 11 Tf 72 670 Td (Customer SSN: 123-45-6789) Tj ET
+BT /F1 11 Tf 72 670 Td (Synthetic ID: DEMO-ID-000) Tj ET
 BT /F1 11 Tf 72 648 Td (Reviewer note: validate insurance letter before release) Tj ET
 0.85 0.85 0.85 RG 70 628 420 1 re S
 BT /F1 11 Tf 72 610 Td (Approval lane: Nurse review -> Compliance review -> Archive) Tj ET

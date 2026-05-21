@@ -18,3 +18,11 @@ rustc-ice-*.txt
 
 # Jetbrains IDE config/cache folder
 .idea/
+
+# Local environment and secret files
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx

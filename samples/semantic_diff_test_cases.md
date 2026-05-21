@@ -329,9 +329,9 @@ tiny hidden text that remains extractable in the content stream.
 
 **Expected scenario triggers:**
 
-- Version 1 exposes `Customer SSN: 123-45-6789`; version 2 visibly replaces it
-  with `Customer SSN: REDACTED`.
-- Version 2 also leaves `123-45-6789 hidden legacy text` as very small white text
+- Version 1 exposes `Synthetic ID: DEMO-ID-000`; version 2 visibly replaces it
+  with `Synthetic ID: REDACTED`.
+- Version 2 also leaves `DEMO-ID-000 hidden legacy text` as very small white text
   behind the redaction area. Current text extraction should preserve this
   evidence instead of silently dropping it.
 - The case package changes from baseline to revised redaction package.
