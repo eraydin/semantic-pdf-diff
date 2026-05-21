@@ -10,9 +10,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-pdf_content = { path = "../crates/pdf_content" }
-pdf_core = { path = "../crates/pdf_core" }
-spdfdiff_types = { path = "../crates/spdfdiff_types" }
+pdf_content = { version = "0.1.9", path = "../crates/pdf_content" }
+pdf_core = { version = "0.1.9", path = "../crates/pdf_core" }
+spdfdiff_types = { version = "0.1.9", path = "../crates/spdfdiff_types" }
 
 [[bin]]
 name = "parse_pdf"

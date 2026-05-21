@@ -323,10 +323,14 @@ Extended CI:
 ```bash
 cargo test --workspace --features fuzzing
 cargo check --manifest-path fuzz/Cargo.toml --bins
-cargo bench --workspace
-spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
+cargo run -p spdfdiff_cli -- corpus samples --manifest samples/compatibility_corpus_manifest.json --output target/ci/corpus.json --fail-on-gate
+cargo run -p spdfdiff_cli -- benchmark --pages 50 --output target/ci/benchmark.json
 spdfdiff check --config .spdfdiff.toml
 ```
+
+The repository CI runs the extended commands as separate non-release quality-gate
+jobs so fuzz-feature coverage, manifest corpus thresholds, and benchmark smoke
+results are visible independently from the minimum Rust fmt/clippy/test job.
 
 ## 12. Bug report template
 

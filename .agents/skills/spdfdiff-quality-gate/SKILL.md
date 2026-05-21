@@ -36,6 +36,9 @@ spdfdiff check --config .spdfdiff.toml
 ```
 
 Only run extended commands when the needed features/tools exist.
+In repo CI, fuzz-feature tests, manifest corpus checks, benchmark smoke, and
+sample check run as separate non-release quality-gate jobs so their status is
+visible independently from the minimum Rust gate.
 
 ## Quality Rules
 

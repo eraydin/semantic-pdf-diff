@@ -32,13 +32,13 @@ insta = "1"
 proptest = "1"
 criterion = "0.7"
 
-spdfdiff_types = { version = "0.1.8", path = "crates/spdfdiff_types" }
-pdf_core = { version = "0.1.8", path = "crates/pdf_core" }
-pdf_content = { version = "0.1.8", path = "crates/pdf_content" }
-pdf_text = { version = "0.1.8", path = "crates/pdf_text" }
-pdf_semantic = { version = "0.1.8", path = "crates/pdf_semantic" }
-diff_core = { version = "0.1.8", path = "crates/diff_core" }
-diff_report = { version = "0.1.8", path = "crates/diff_report" }
+spdfdiff_types = { version = "0.1.9", path = "crates/spdfdiff_types" }
+pdf_core = { version = "0.1.9", path = "crates/pdf_core" }
+pdf_content = { version = "0.1.9", path = "crates/pdf_content" }
+pdf_text = { version = "0.1.9", path = "crates/pdf_text" }
+pdf_semantic = { version = "0.1.9", path = "crates/pdf_semantic" }
+diff_core = { version = "0.1.9", path = "crates/diff_core" }
+diff_report = { version = "0.1.9", path = "crates/diff_report" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

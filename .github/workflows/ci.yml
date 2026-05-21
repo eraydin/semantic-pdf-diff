@@ -8,6 +8,7 @@ on:
 
 jobs:
   rust:
+    name: Rust fmt, clippy, and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,15 +23,51 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+  fuzz-feature:
+    name: Non-release fuzz feature gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
       - name: Fuzz feature tests
         run: cargo test --workspace --features fuzzing
       - name: Fuzz target check
         run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
+  manifest-corpus:
+    name: Non-release manifest corpus gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
       - name: Corpus gate smoke
         run: |
           mkdir -p target/ci
           cargo run -p spdfdiff_cli -- corpus samples --manifest samples/compatibility_corpus_manifest.json --output target/ci/corpus.json --fail-on-gate
+
+  benchmark-smoke:
+    name: Non-release benchmark smoke gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
       - name: Benchmark smoke
         run: cargo run -p spdfdiff_cli -- benchmark --pages 50 --output target/ci/benchmark.json
+
+  sample-check:
+    name: Non-release sample check gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
       - name: Check sample PDF pair
         run: cargo run -p spdfdiff_cli -- check --config .spdfdiff.toml
