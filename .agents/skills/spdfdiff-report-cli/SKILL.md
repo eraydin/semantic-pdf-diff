@@ -34,7 +34,10 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   unchanged text should be emitted as deterministic `StyleChanged` entries.
   Annotation/link reports compare deterministic semantic fields such as subtype,
   rectangle, URI or destination, contents, color, border, and quad points without
-  executing actions. Image-only PDFs can use the external OCR adapter when
+  executing actions. Report-facing AcroForm/widget fields, outlines/bookmarks,
+  name trees, document-info/XMP metadata, and embedded file/FileSpec surfaces
+  should use deterministic typed signatures instead of raw object-surface hashes.
+  Image-only PDFs can use the external OCR adapter when
   `SPDFDIFF_OCR_COMMAND` or `tesseract` is available; OCR text must preserve
   image-object provenance and deterministic diagnostics.
 - Inspect and extract JSON reports include simple tagged-structure and

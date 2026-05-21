@@ -1808,8 +1808,7 @@ struct DocumentSurface {
     category: SurfaceCategory,
     index: usize,
     object_id: ObjectId,
-    summary: String,
-    hash: String,
+    signature: String,
     bbox: Option<Rect>,
     byte_range: Option<ByteRange>,
 }
@@ -1819,6 +1818,7 @@ enum SurfaceCategory {
     Annotation,
     FormField,
     Outline,
+    NameTree,
     Metadata,
     Attachment,
 }
@@ -1832,6 +1832,7 @@ fn append_document_surface_changes(
         SurfaceCategory::Annotation,
         SurfaceCategory::FormField,
         SurfaceCategory::Outline,
+        SurfaceCategory::NameTree,
         SurfaceCategory::Metadata,
         SurfaceCategory::Attachment,
     ] {
@@ -1839,7 +1840,8 @@ fn append_document_surface_changes(
         let new_surfaces = document_surfaces(new_document, category);
         for index in 0..old_surfaces.len().max(new_surfaces.len()) {
             match (old_surfaces.get(index), new_surfaces.get(index)) {
-                (Some(old_surface), Some(new_surface)) if old_surface.hash == new_surface.hash => {}
+                (Some(old_surface), Some(new_surface))
+                    if old_surface.signature == new_surface.signature => {}
                 (Some(old_surface), Some(new_surface)) => push_surface_change(
                     document,
                     Some(old_surface),
@@ -1880,7 +1882,9 @@ impl SurfaceCategory {
                 ChangeKind::AnnotationChanged
             }
             SurfaceCategory::FormField => ChangeKind::FormFieldChanged,
-            SurfaceCategory::Outline | SurfaceCategory::Metadata => ChangeKind::MetadataChanged,
+            SurfaceCategory::Outline | SurfaceCategory::NameTree | SurfaceCategory::Metadata => {
+                ChangeKind::MetadataChanged
+            }
         }
     }
 
@@ -1889,6 +1893,7 @@ impl SurfaceCategory {
             SurfaceCategory::Annotation => "annotation/link surface",
             SurfaceCategory::FormField => "form field surface",
             SurfaceCategory::Outline => "outline/bookmark surface",
+            SurfaceCategory::NameTree => "name tree surface",
             SurfaceCategory::Metadata => "metadata/XMP surface",
             SurfaceCategory::Attachment => "embedded attachment surface",
         }
@@ -1899,6 +1904,7 @@ impl SurfaceCategory {
             SurfaceCategory::Annotation => "annotation",
             SurfaceCategory::FormField => "form",
             SurfaceCategory::Outline => "outline",
+            SurfaceCategory::NameTree => "nametree",
             SurfaceCategory::Metadata => "metadata",
             SurfaceCategory::Attachment => "attachment",
         }
@@ -1915,19 +1921,25 @@ fn document_surfaces(
         .filter(|object| surface_matches_category(&object.body, category))
         .enumerate()
         .map(|(index, object)| {
-            let (summary, hash, bbox) = summarize_and_hash_surface(object, category);
+            let (signature, bbox) = typed_surface_signature(object, category);
             DocumentSurface {
                 category,
                 index,
                 object_id: object.id,
-                summary,
-                hash,
+                signature,
                 bbox,
                 byte_range: object.stream.as_ref().map(|stream| stream.byte_range),
             }
         })
         .collect::<Vec<_>>();
-    surfaces.sort_by_key(|surface| (surface.category, surface.index, surface.object_id));
+    surfaces.sort_by_key(|surface| {
+        (
+            surface.category,
+            surface.signature.clone(),
+            surface.index,
+            surface.object_id,
+        )
+    });
     surfaces
 }
 
@@ -1938,7 +1950,10 @@ fn surface_matches_category(body: &str, category: SurfaceCategory) -> bool {
                 || (body.contains("/Type /Annot") && !body.contains("/Subtype /Widget"))
         }
         SurfaceCategory::FormField => {
-            body.contains("/AcroForm") || body.contains("/Subtype /Widget")
+            body.contains("/AcroForm")
+                || body.contains("/Subtype /Widget")
+                || body.contains("/FT ")
+                || body.contains("/FT/")
         }
         SurfaceCategory::Outline => {
             body.contains("/Outlines")
@@ -1948,50 +1963,66 @@ fn surface_matches_category(body: &str, category: SurfaceCategory) -> bool {
                         || body.contains("/First")
                         || body.contains("/Next")))
         }
+        SurfaceCategory::NameTree => {
+            body.contains("/Names")
+                || body.contains("/Dests")
+                || body.contains("/EmbeddedFiles")
+                || body.contains("/JavaScript")
+                || body.contains("/AP")
+        }
         SurfaceCategory::Metadata => {
-            body.contains("/Type /Metadata") || body.contains("/Metadata") || body.contains("/Info")
+            let document_info_like = body.contains("/Title")
+                || body.contains("/Author")
+                || body.contains("/Subject")
+                || body.contains("/Keywords")
+                || body.contains("/Creator")
+                || body.contains("/Producer")
+                || body.contains("/CreationDate")
+                || body.contains("/ModDate");
+            body.contains("/Type /Metadata")
+                || body.contains("/Metadata")
+                || body.contains("/Info")
+                || (document_info_like
+                    && !body.contains("/Type /Annot")
+                    && !body.contains("/Subtype /Widget")
+                    && !body.contains("/FT ")
+                    && !body.contains("/FT/")
+                    && !body.contains("/Outlines")
+                    && !body.contains("/Dest")
+                    && !body.contains("/Parent")
+                    && !body.contains("/First")
+                    && !body.contains("/Next"))
         }
         SurfaceCategory::Attachment => {
             body.contains("/EmbeddedFiles")
                 || body.contains("/Filespec")
+                || body.contains("/Type /EmbeddedFile")
                 || body.contains("/Subtype /FileAttachment")
         }
     }
 }
 
-fn summarize_surface(body: &str, category: SurfaceCategory) -> String {
-    if category == SurfaceCategory::Annotation {
-        return annotation_signature(body);
-    }
-    let mut parts = vec![category.report_label().to_owned()];
-    for key in ["Subtype", "URI", "Title", "F", "Desc", "Contents", "T", "V"] {
-        if let Some(value) = value_after_pdf_name(body, key) {
-            parts.push(format!("{key}={value}"));
-        }
-    }
-    parts.join(" ")
-}
-
-fn summarize_and_hash_surface(
+fn typed_surface_signature(
     object: &pdf_core::PdfObject,
     category: SurfaceCategory,
-) -> (String, String, Option<Rect>) {
-    let summary = summarize_surface(&object.body, category);
-    let hash = if category == SurfaceCategory::Annotation {
-        stable_hash(summary.as_bytes())
-    } else {
-        let bytes = object
-            .stream
-            .as_ref()
-            .map_or_else(|| object.body.as_bytes(), |stream| stream.bytes.as_slice());
-        stable_hash(bytes)
+) -> (String, Option<Rect>) {
+    let signature = match category {
+        SurfaceCategory::Annotation => annotation_signature(&object.body),
+        SurfaceCategory::FormField => form_field_signature(&object.body),
+        SurfaceCategory::Outline => outline_signature(&object.body),
+        SurfaceCategory::NameTree => name_tree_signature(&object.body),
+        SurfaceCategory::Metadata => metadata_signature(object),
+        SurfaceCategory::Attachment => attachment_signature(object),
     };
-    let bbox = if category == SurfaceCategory::Annotation {
+    let bbox = if matches!(
+        category,
+        SurfaceCategory::Annotation | SurfaceCategory::FormField
+    ) {
         rect_after_pdf_name(&object.body, "Rect")
     } else {
         None
     };
-    (summary, hash, bbox)
+    (signature, bbox)
 }
 
 fn annotation_signature(body: &str) -> String {
@@ -2011,6 +2042,141 @@ fn annotation_signature(body: &str) -> String {
     push_pdf_array_value(&mut parts, body, "QuadPoints", "quad_points");
     push_pdf_array_value(&mut parts, body, "Border", "border");
     parts.join(" ")
+}
+
+fn form_field_signature(body: &str) -> String {
+    let mut parts = vec!["form field semantic surface".to_owned()];
+    push_pdf_name_value(&mut parts, body, "FT", "field_type");
+    push_pdf_name_value(&mut parts, body, "T", "name");
+    push_pdf_name_value(&mut parts, body, "TU", "alternate_name");
+    push_pdf_name_value(&mut parts, body, "TM", "mapping_name");
+    push_pdf_name_value(&mut parts, body, "V", "value");
+    push_pdf_name_value(&mut parts, body, "DV", "default_value");
+    push_pdf_name_value(&mut parts, body, "DA", "default_appearance");
+    push_pdf_name_value(&mut parts, body, "Ff", "field_flags");
+    push_pdf_name_value(&mut parts, body, "F", "annotation_flags");
+    push_pdf_name_value(&mut parts, body, "Q", "justification");
+    push_pdf_name_value(&mut parts, body, "MaxLen", "max_len");
+    push_pdf_name_value(&mut parts, body, "Subtype", "widget_subtype");
+    push_pdf_name_value(&mut parts, body, "AS", "appearance_state");
+    push_pdf_name_value(&mut parts, body, "MK", "appearance_characteristics");
+    push_pdf_name_value(&mut parts, body, "A", "action");
+    push_pdf_name_value(&mut parts, body, "AA", "additional_actions");
+    push_pdf_array_value(&mut parts, body, "Opt", "options");
+    push_pdf_array_value(&mut parts, body, "Kids", "kids");
+    if let Some(rect) = rect_after_pdf_name(body, "Rect") {
+        parts.push(format!("rect={}", canonical_rect(rect)));
+    }
+    parts.join(" ")
+}
+
+fn outline_signature(body: &str) -> String {
+    let mut parts = vec!["outline/bookmark semantic surface".to_owned()];
+    push_pdf_name_value(&mut parts, body, "Title", "title");
+    push_pdf_name_value(&mut parts, body, "Dest", "dest");
+    push_pdf_name_value(&mut parts, body, "S", "action");
+    push_pdf_name_value(&mut parts, body, "URI", "uri");
+    push_pdf_name_value(&mut parts, body, "Count", "count");
+    push_pdf_name_value(&mut parts, body, "F", "flags");
+    push_pdf_array_value(&mut parts, body, "C", "color");
+    for key in ["Parent", "First", "Last", "Next", "Prev", "A", "SE"] {
+        if let Some(reference) = reference_after_key(body, key) {
+            parts.push(format!(
+                "{key}={} {} R",
+                reference.number, reference.generation
+            ));
+        }
+    }
+    parts.join(" ")
+}
+
+fn name_tree_signature(body: &str) -> String {
+    let mut parts = vec!["name tree semantic surface".to_owned()];
+    push_pdf_array_value(&mut parts, body, "Names", "names");
+    push_pdf_array_value(&mut parts, body, "Limits", "limits");
+    push_pdf_array_value(&mut parts, body, "Kids", "kids");
+    for key in [
+        "Dests",
+        "EmbeddedFiles",
+        "JavaScript",
+        "AP",
+        "Pages",
+        "Templates",
+        "IDS",
+    ] {
+        if let Some(reference) = reference_after_key(body, key) {
+            parts.push(format!(
+                "{key}={} {} R",
+                reference.number, reference.generation
+            ));
+        }
+    }
+    parts.join(" ")
+}
+
+fn metadata_signature(object: &pdf_core::PdfObject) -> String {
+    let mut parts = vec!["metadata/XMP semantic surface".to_owned()];
+    for key in [
+        "Title",
+        "Author",
+        "Subject",
+        "Keywords",
+        "Creator",
+        "Producer",
+        "CreationDate",
+        "ModDate",
+        "Trapped",
+        "Subtype",
+    ] {
+        push_pdf_name_value(&mut parts, &object.body, key, key);
+    }
+    if object.body.contains("/Type /Metadata") {
+        parts.push("type=Metadata".to_owned());
+    }
+    if let Some(stream) = &object.stream {
+        parts.push(format!("xmp_bytes={}", stream.bytes.len()));
+        parts.push(format!(
+            "xmp_signature={}",
+            stable_hash(canonical_xmp_text(&stream.bytes).as_bytes())
+        ));
+    }
+    parts.join(" ")
+}
+
+fn attachment_signature(object: &pdf_core::PdfObject) -> String {
+    let mut parts = vec!["embedded attachment semantic surface".to_owned()];
+    for (key, label) in [
+        ("Type", "type"),
+        ("Subtype", "subtype"),
+        ("F", "file_name"),
+        ("UF", "unicode_file_name"),
+        ("Desc", "description"),
+        ("AFRelationship", "relationship"),
+        ("CheckSum", "checksum"),
+        ("Size", "declared_size"),
+        ("CreationDate", "created"),
+        ("ModDate", "modified"),
+    ] {
+        push_pdf_name_value(&mut parts, &object.body, key, label);
+    }
+    if let Some(reference) = reference_after_key(&object.body, "EF") {
+        parts.push(format!(
+            "embedded_file_ref={} {} R",
+            reference.number, reference.generation
+        ));
+    }
+    if let Some(stream) = &object.stream {
+        parts.push(format!("payload_bytes={}", stream.bytes.len()));
+        parts.push(format!("payload_hash={}", stable_hash(&stream.bytes)));
+    }
+    parts.join(" ")
+}
+
+fn canonical_xmp_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn push_pdf_name_value(parts: &mut Vec<String>, body: &str, key: &str, label: &str) {
@@ -2160,11 +2326,11 @@ fn surface_evidence(file_role: FileRole, surface: &DocumentSurface) -> SemanticN
         page: 0,
         bbox: surface.bbox,
         text: Some(format!(
-            "{} object {} 0 R hash={} {}",
+            "{} object {} {} R typed_signature={}",
             surface.category.report_label(),
             surface.object_id.number,
-            surface.hash,
-            surface.summary
+            surface.object_id.generation,
+            surface.signature
         )),
         source: vec![Provenance {
             file_role: Some(file_role),
@@ -3253,6 +3419,148 @@ mod tests {
     }
 
     #[test]
+    fn reports_typed_form_field_changes_without_raw_hash_evidence() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &document_surface_pdf(
+                "/AcroForm << /Fields [5 0 R] >>",
+                "5 0 obj\n<< /FT /Tx /T (customer) /V (Alice) /Subtype /Widget /Rect [10 20 110 40] >>\nendobj\n",
+            ),
+            "new",
+            &document_surface_pdf(
+                "/AcroForm << /Fields [5 0 R] >>",
+                "5 0 obj\n<< /Subtype /Widget /Rect [10 20 110 40] /V (Bob) /T (customer) /FT /Tx >>\nendobj\n",
+            ),
+            DiffConfig::default(),
+        )
+        .expect("form-field diff should complete");
+
+        let change = diff
+            .changes
+            .iter()
+            .find(|change| change.kind == ChangeKind::FormFieldChanged)
+            .expect("form value change should produce typed form change");
+        let evidence = change
+            .new_node
+            .as_ref()
+            .and_then(|node| node.text.as_deref())
+            .expect("new form evidence should include text");
+
+        assert!(evidence.contains("field_type=Tx"));
+        assert!(evidence.contains("name=customer"));
+        assert!(evidence.contains("value=Bob"));
+        assert!(!evidence.contains("hash="));
+    }
+
+    #[test]
+    fn ignores_form_field_dictionary_order_when_typed_values_match() {
+        let diff = diff_pdf_bytes(
+            "old",
+            &document_surface_pdf(
+                "/AcroForm << /Fields [5 0 R] >>",
+                "5 0 obj\n<< /FT /Tx /T (customer) /V (Alice) /Subtype /Widget /Rect [10 20 110 40] >>\nendobj\n",
+            ),
+            "new",
+            &document_surface_pdf(
+                "/AcroForm << /Fields [5 0 R] >>",
+                "5 0 obj\n<< /Rect [10 20 110 40] /Subtype /Widget /V (Alice) /T (customer) /FT /Tx >>\nendobj\n",
+            ),
+            DiffConfig::default(),
+        )
+        .expect("form-field diff should complete");
+
+        assert!(
+            diff.changes
+                .iter()
+                .all(|change| change.kind != ChangeKind::FormFieldChanged)
+        );
+    }
+
+    #[test]
+    fn reports_outline_name_tree_metadata_and_attachment_typed_changes() {
+        let old_extra = "\
+5 0 obj
+<< /Title (Section 1) /Dest [3 0 R /Fit] /Parent 6 0 R >>
+endobj
+6 0 obj
+<< /Type /Outlines /First 5 0 R /Last 5 0 R /Count 1 >>
+endobj
+7 0 obj
+<< /Title (Old title) /Author (Alice) /Producer (spdfdiff) >>
+endobj
+8 0 obj
+<< /Names [(file.txt) 9 0 R] >>
+endobj
+9 0 obj
+<< /Type /Filespec /F (file.txt) /Desc (old attachment) /EF << /F 10 0 R >> >>
+endobj
+10 0 obj
+<< /Type /EmbeddedFile /Subtype /text#2Fplain /Length 3 >>
+stream
+old
+endstream
+endobj
+";
+        let new_extra = old_extra
+            .replace("Section 1", "Section 2")
+            .replace("Old title", "New title")
+            .replace("(file.txt)", "(renamed.txt)")
+            .replace("old attachment", "new attachment")
+            .replace("old\nendstream", "new\nendstream");
+        let diff = diff_pdf_bytes(
+            "old",
+            &document_surface_pdf(
+                "/Outlines 6 0 R /Names << /EmbeddedFiles 8 0 R >>",
+                old_extra,
+            ),
+            "new",
+            &document_surface_pdf(
+                "/Outlines 6 0 R /Names << /EmbeddedFiles 8 0 R >>",
+                &new_extra,
+            ),
+            DiffConfig::default(),
+        )
+        .expect("typed document-surface diff should complete");
+
+        assert!(diff.changes.iter().any(|change| {
+            change.kind == ChangeKind::MetadataChanged
+                && change.reason.contains("outline/bookmark surface")
+                && change
+                    .new_node
+                    .as_ref()
+                    .and_then(|node| node.text.as_deref())
+                    .is_some_and(|text| text.contains("title=Section 2"))
+        }));
+        assert!(diff.changes.iter().any(|change| {
+            change.kind == ChangeKind::MetadataChanged
+                && change.reason.contains("name tree surface")
+                && change
+                    .new_node
+                    .as_ref()
+                    .and_then(|node| node.text.as_deref())
+                    .is_some_and(|text| text.contains("renamed.txt"))
+        }));
+        assert!(diff.changes.iter().any(|change| {
+            change.kind == ChangeKind::MetadataChanged
+                && change.reason.contains("metadata/XMP surface")
+                && change
+                    .new_node
+                    .as_ref()
+                    .and_then(|node| node.text.as_deref())
+                    .is_some_and(|text| text.contains("Title=New title"))
+        }));
+        assert!(diff.changes.iter().any(|change| {
+            change.kind == ChangeKind::AnnotationChanged
+                && change.reason.contains("embedded attachment surface")
+                && change
+                    .new_node
+                    .as_ref()
+                    .and_then(|node| node.text.as_deref())
+                    .is_some_and(|text| text.contains("description=new attachment"))
+        }));
+    }
+
+    #[test]
     fn reports_cid_font_without_tounicode() {
         let semantic = semantic_document_from_pdf(
             "cid-font",
@@ -3976,6 +4284,31 @@ endobj
 << {annotation_body} >>
 endobj
 ",
+            content.len()
+        )
+        .into_bytes()
+    }
+
+    fn document_surface_pdf(catalog_extra: &str, extra_objects: &str) -> Vec<u8> {
+        let content = "BT /F1 12 Tf 72 720 Td (Doc) Tj ET";
+        format!(
+            "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length {} >>
+stream
+{content}
+endstream
+endobj
+{extra_objects}",
             content.len()
         )
         .into_bytes()

@@ -22,7 +22,7 @@ Legend:
 | Milestone 4 — Text extraction | Implemented | Text extraction, ToUnicode, glyph positioning, text-run grouping, and the public font resource model with simple-font width metrics are covered. |
 | Milestone 5 — Layout and semantic extraction | Implemented | Blocks, headings, lists, anchors, aligned text-grid table row/cell candidates, sparse blank-cell reconstruction, conservative row/column spans, merged-cell placeholders, and rectangle table-border hints exist. |
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
-| Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, CLI commands, outputs, and exit behavior are covered. |
+| Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, typed document-surface evidence, CLI commands, outputs, and exit behavior are covered. |
 | Milestone 8 — Hardening | Implemented | Incremental metadata, fonts, tagged PDFs, benchmark, malformed-input checks, and standalone parser/content fuzz targets exist. |
 
 ### Ticket Status
@@ -58,10 +58,10 @@ Legend:
 | M6-T2 — Text hunks | Implemented | Token-level hunks, numeric replacements, small character fallback, and report output are implemented. |
 | M6-T3 — Layout diff | Implemented | Structured layout evidence, bbox deltas, reading-order changes, tolerance config, and CLI tolerance tests are implemented. |
 | M6-T4 — Summary and severity | Implemented | Change counts, deterministic IDs/order, default severity, confidence, and classifier override tests exist. |
-| M7-T1 — JSON report | Implemented | Stable JSON schema, deterministic changes, evidence, diagnostics, text hunks, and layout evidence are emitted. |
+| M7-T1 — JSON report | Implemented | Stable JSON schema, deterministic changes, evidence, diagnostics, text hunks, layout evidence, and typed signatures for report-facing document surfaces are emitted. |
 | M7-T2 — Markdown report | Implemented | Markdown includes summary, changes, page/evidence lines, text hunks, layout diffs, and diagnostics. |
 | M7-T3 — Basic HTML report | Implemented | Self-contained HTML side-by-side report includes page/bbox evidence and inline SVG overlays. |
-| M7-T4 — CLI integration | Implemented | `diff`, `extract`, `inspect`, `corpus`, `benchmark`, formats, outputs, OCR path, and exit-code behavior are integration-tested. |
+| M7-T4 — CLI integration | Implemented | `diff`, `extract`, `inspect`, `corpus`, `benchmark`, formats, outputs, OCR path, typed annotation/form/outline/name-tree/metadata/attachment surfaces, and exit-code behavior are integration-tested. |
 | M8-T1 — Incremental updates and recovery parsing | Implemented | Latest `startxref`, `/Prev` diagnostics, xref recovery, and deterministic incremental-update offset metadata are exposed. |
 | M8-T2 — Better font handling | Implemented | CID/Type0 missing-`ToUnicode` diagnostics, simple-font `/Widths` metrics, and deterministic glyph-width fallbacks are implemented. |
 | M8-T3 — Tagged PDF structure | Implemented | Simple structure trees, parent-tree summaries, MCID preservation, and tagged semantic node ordering are implemented for controlled cases. |

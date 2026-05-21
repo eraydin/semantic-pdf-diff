@@ -38,10 +38,11 @@ Handle enough modern PDFs to make the public alpha honest.
 - more filters;
 - better CID fonts;
 - better CMap parser;
-- annotations;
-- file attachments and embedded file specifications;
-- outlines/bookmarks;
-- metadata and XMP diff;
+- typed annotation/action/destination signatures;
+- typed AcroForm/widget field signatures;
+- typed file attachment and embedded file specification signatures;
+- typed outline/bookmark and name-tree signatures;
+- typed document-info and XMP metadata signatures;
 - redaction overlays, hidden text, and layer/visibility semantics;
 - corpus runner improvements.
 - corpus manifest thresholds for partial-file and diagnostic-code regressions.

@@ -30,6 +30,9 @@ Use this reference with `spdfdiff-report-cli`.
 
 - JSON schema version included.
 - All changes include evidence.
+- Report-facing document surfaces use typed evidence for annotations/actions,
+  AcroForm widgets, outlines/name trees, metadata/XMP, and attachments instead
+  of raw object-surface hashes.
 - No nondeterministic fields by default.
 - Markdown includes summary table, change list, and diagnostics.
 - Basic HTML has no external network resources.

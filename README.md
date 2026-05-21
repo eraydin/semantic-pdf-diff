@@ -27,9 +27,11 @@ accepts a generated PPM image path and writes text to stdout, or install
 path and graphic-style content operations are compared by deterministic parsed
 operation signatures, and annotation/link surfaces are compared by deterministic
 semantic fields such as subtype, rectangle, URI or destination, contents, color,
-and quad points. Text style changes for unchanged text are classified from
-content-stream font resource and font-size operators. Renderer-grade visual
-diffing and renderer-grade table
+and quad points. AcroForm/widget fields, outline/bookmark objects, name trees,
+document-info/XMP metadata, and embedded file/FileSpec surfaces are compared by
+deterministic typed signatures for report-facing evidence. Text style changes
+for unchanged text are classified from content-stream font resource and font-size
+operators. Renderer-grade visual diffing and renderer-grade table
 reconstruction from arbitrary drawing geometry remain incremental compatibility
 work rather than public-alpha claims. Simple aligned
 text-grid table candidates preserve best-effort row/cell, sparse blank-cell,
@@ -42,10 +44,11 @@ supported semantic diffs.
 The diff engine also emits structured word-level text hunks for modified
 paragraphs, structured layout evidence for moved or layout-shifted blocks, and
 compares selected report-facing document surfaces, including image payloads,
-link/annotation semantics, embedded-file/FileSpec objects, outline-like objects,
-and metadata/XMP objects by deterministic signatures or object hashes.
-These object-level comparisons preserve evidence but are not yet full semantic
-attachment, outline, or metadata interpreters.
+link/annotation semantics, AcroForm/widget fields, embedded-file/FileSpec
+objects, outline/bookmark objects, name trees, and metadata/XMP objects by
+deterministic typed signatures instead of raw object-surface hashes.
+These object-level comparisons preserve evidence but remain compatibility-gate
+interpreters rather than full renderer-backed PDF application models.
 Common non-text drawing, color, clipping, marked-content, and XObject operators
 are recognized so visual PDF content does not create `CONTENT_OPERATOR_UNKNOWN`
 noise during text extraction, and recognized drawing/color operands are retained
