@@ -729,7 +729,7 @@ fn corpus_command_sorts_files_and_summarizes_partial_and_failed_inputs() {
 #[test]
 fn benchmark_command_reports_m8_t5_phase_metrics() {
     let fixture = TestFixture::new("benchmark_command_phase_metrics");
-    let output_path = fixture.path("benchmark.json");
+    let output_path = fixture.path("reports/benchmark.json");
 
     let output = run_spdfdiff([
         "benchmark",

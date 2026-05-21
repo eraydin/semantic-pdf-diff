@@ -215,8 +215,7 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
                 build_corpus_report_model(&folder, ParseConfig::default(), manifest.as_ref())?;
             let gate_failed = report.gate.as_ref().is_some_and(|gate| !gate.passed);
             let rendered = to_json_pretty(&report)?;
-            std::fs::write(&output, rendered)
-                .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+            write_output_file(&output, rendered)?;
             if fail_on_gate && gate_failed {
                 return Ok(1);
             }
@@ -230,8 +229,7 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
         Command::Benchmark { pages, output } => {
             let report = run_synthetic_benchmark(pages)?;
             let rendered = to_json_pretty(&report)?;
-            std::fs::write(&output, rendered)
-                .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+            write_output_file(&output, rendered)?;
         }
         Command::Review {
             ai_json,
@@ -1348,12 +1346,22 @@ fn to_json_pretty(value: &impl Serialize) -> Result<String, PdfDiffError> {
 
 fn write_or_print(rendered: String, output: Option<PathBuf>) -> Result<(), PdfDiffError> {
     if let Some(output) = output {
-        std::fs::write(output, rendered)
-            .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))
+        write_output_file(&output, rendered)
     } else {
         println!("{rendered}");
         Ok(())
     }
+}
+
+fn write_output_file(path: &Path, rendered: String) -> Result<(), PdfDiffError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    }
+    std::fs::write(path, rendered).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))
 }
 
 fn review_ai_json_with_openai_compatible(
