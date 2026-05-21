@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="semantic-pdf-diff documentation: stable semantic PDF diff reports, CLI usage, CI checks, schemas, and compatibility boundaries."
+    >
+    <title>semantic-pdf-diff Documentation</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="semantic-pdf-diff home">
+        <span class="brand-mark" aria-hidden="true">sp</span>
+        <span>semantic-pdf-diff</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary navigation">
+        <a href="#features">Features</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#cli">CLI</a>
+        <a href="#ci">CI</a>
+        <a href="#compatibility">Compatibility</a>
+        <a href="https://github.com/eraydin/semantic-pdf-diff">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Rust CLI and library</p>
+          <h1>Evidence-preserving semantic diffs for generated PDFs.</h1>
+          <p class="intro">
+            Compare PDF revisions by extracted text blocks, semantic document
+            surfaces, and deterministic evidence instead of unstable screenshots
+            or raw byte changes.
+          </p>
+          <div class="status-strip" aria-label="Project status">
+            <span><strong>Status</strong> compatibility-gate</span>
+            <span><strong>Reports</strong> JSON, AI JSON, Markdown, HTML</span>
+            <span><strong>Core</strong> Rust 2024, MSRV 1.85</span>
+          </div>
+          <div class="hero-actions">
+            <a class="button primary" href="#quickstart">Get started</a>
+            <a class="button secondary" href="#ci">Use in CI</a>
+          </div>
+        </div>
+        <div class="report-preview" aria-label="Example diff report preview">
+          <div class="preview-toolbar">
+            <span>diff.json</span>
+            <span>stable output</span>
+          </div>
+          <div class="preview-grid">
+            <div>
+              <p class="preview-label">Summary</p>
+              <dl class="metrics">
+                <div><dt>Inserted</dt><dd>1</dd></div>
+                <div><dt>Modified</dt><dd>2</dd></div>
+                <div><dt>Moved</dt><dd>1</dd></div>
+                <div><dt>Diagnostics</dt><dd>0</dd></div>
+              </dl>
+            </div>
+            <div class="evidence-page">
+              <span class="bbox b1">payment terms</span>
+              <span class="bbox b2">delivery date</span>
+              <span class="bbox b3">signature block</span>
+            </div>
+          </div>
+          <pre><code>{
+  "id": "change-0001",
+  "kind": "Modified",
+  "severity": "Major",
+  "confidence": 0.90,
+  "reason": "paragraph text differs"
+}</code></pre>
+        </div>
+      </section>
+
+      <section class="content-layout">
+        <aside class="side-nav" aria-label="Documentation sections">
+          <a href="#features">Feature Set</a>
+          <a href="#quickstart">Quickstart</a>
+          <a href="#cli">CLI Commands</a>
+          <a href="#reports">Report Formats</a>
+          <a href="#ci">CI Workflows</a>
+          <a href="#schemas">Schemas</a>
+          <a href="#compatibility">Compatibility</a>
+          <a href="#architecture">Architecture</a>
+        </aside>
+
+        <div class="docs-flow">
+          <section id="features" class="doc-section">
+            <p class="section-kicker">Features</p>
+            <h2>What the project does today</h2>
+            <p>
+              <code>spdfdiff</code> extracts parser-backed evidence from digitally
+              generated PDFs and emits deterministic reports for review,
+              automation, and agent workflows.
+            </p>
+            <div class="feature-grid">
+              <article>
+                <h3>Semantic text diffing</h3>
+                <p>
+                  Builds text blocks from extracted positioned text, compares
+                  inserted, deleted, modified, moved, and layout-shifted blocks,
+                  and includes page and bounding-box evidence when available.
+                </p>
+              </article>
+              <article>
+                <h3>Stable report output</h3>
+                <p>
+                  Produces deterministic JSON, compact AI review JSON, Markdown,
+                  and self-contained HTML reports without timestamps, absolute
+                  paths, or random IDs.
+                </p>
+              </article>
+              <article>
+                <h3>Document surface checks</h3>
+                <p>
+                  Compares selected images, vector operations, annotations,
+                  links, form fields, outlines, name trees, metadata, XMP, and
+                  embedded file surfaces through typed deterministic signatures.
+                </p>
+              </article>
+              <article>
+                <h3>Parser-backed diagnostics</h3>
+                <p>
+                  Surfaces unsupported or degraded PDF features through stable
+                  diagnostic codes instead of hiding gaps behind silent fallbacks.
+                </p>
+              </article>
+              <article>
+                <h3>CI check command</h3>
+                <p>
+                  Runs configured PDF pairs with threshold checks, baseline
+                  suppression, deterministic artifacts, and a composite GitHub
+                  Action wrapper.
+                </p>
+              </article>
+              <article>
+                <h3>External OCR adapter</h3>
+                <p>
+                  Can call <code>SPDFDIFF_OCR_COMMAND</code> or <code>tesseract</code> for supported
+                  image-only samples while preserving provenance and diagnostics.
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <section id="quickstart" class="doc-section split-section">
+            <div>
+              <p class="section-kicker">Quickstart</p>
+              <h2>Build and run locally</h2>
+              <p>
+                Build the workspace from a checkout, then compare two PDFs with
+                the <code>spdfdiff</code> binary.
+              </p>
+            </div>
+            <div class="code-stack">
+              <pre><code>git clone https://github.com/eraydin/semantic-pdf-diff.git
+cd semantic-pdf-diff
+cargo build --workspace</code></pre>
+              <pre><code>.\target\debug\spdfdiff.exe diff .\old.pdf .\new.pdf --format json --output .\diff.json</code></pre>
+            </div>
+          </section>
+
+          <section id="cli" class="doc-section">
+            <p class="section-kicker">CLI</p>
+            <h2>Command reference</h2>
+            <div class="command-list">
+              <article>
+                <h3><code>diff</code></h3>
+                <p>Compare two PDF files and write JSON, AI JSON, Markdown, or HTML.</p>
+                <pre><code>spdfdiff diff old.pdf new.pdf --format md --output diff.md</code></pre>
+              </article>
+              <article>
+                <h3><code>inspect</code></h3>
+                <p>Inspect parser-level PDF structure and diagnostics.</p>
+                <pre><code>spdfdiff inspect document.pdf --format json</code></pre>
+              </article>
+              <article>
+                <h3><code>extract</code></h3>
+                <p>Extract text blocks and semantic evidence from one PDF.</p>
+                <pre><code>spdfdiff extract document.pdf --format json</code></pre>
+              </article>
+              <article>
+                <h3><code>check</code></h3>
+                <p>Run configured PDF comparisons for CI and policy gates.</p>
+                <pre><code>spdfdiff check --config .spdfdiff.toml</code></pre>
+              </article>
+              <article>
+                <h3><code>corpus</code> and <code>benchmark</code></h3>
+                <p>Evaluate sample manifests and run deterministic benchmark smoke gates.</p>
+                <pre><code>spdfdiff corpus samples --manifest samples/compatibility_corpus_manifest.json --fail-on-gate
+spdfdiff benchmark --pages 50 --output benchmark.json</code></pre>
+              </article>
+              <article>
+                <h3><code>review</code></h3>
+                <p>Send AI review JSON to an optional local OpenAI-compatible HTTP endpoint.</p>
+                <pre><code>spdfdiff review ai-review.json --endpoint http://127.0.0.1:8080/v1 --model local-model</code></pre>
+              </article>
+            </div>
+          </section>
+
+          <section id="reports" class="doc-section split-section">
+            <div>
+              <p class="section-kicker">Reports</p>
+              <h2>Choose the output for your workflow</h2>
+              <p>
+                JSON is the stable machine contract. AI review JSON is compact
+                and prompt-ready. Markdown is readable in code review. HTML is a
+                self-contained evidence report with inline overlays where
+                bounding boxes are available.
+              </p>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Format</th>
+                  <th>Use case</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>json</code></td>
+                  <td>Automated diff gates and artifact storage.</td>
+                </tr>
+                <tr>
+                  <td><code>ai-json</code></td>
+                  <td>Neutral review prompts and local LLM workflows.</td>
+                </tr>
+                <tr>
+                  <td><code>md</code></td>
+                  <td>Pull request notes and human-readable summaries.</td>
+                </tr>
+                <tr>
+                  <td><code>html</code></td>
+                  <td>Self-contained visual evidence review.</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section id="ci" class="doc-section">
+            <p class="section-kicker">CI</p>
+            <h2>Use semantic PDF checks in GitHub Actions</h2>
+            <p>
+              The repository includes a composite Action that runs
+              <code>spdfdiff check</code>, uploads deterministic artifacts, and fails the
+              workflow when configured thresholds are exceeded.
+            </p>
+            <div class="code-stack">
+              <pre><code>schema_version = "1"
+output_dir = "target/spdfdiff-check"
+formats = ["json", "html"]
+fail_on_changes = true
+
+[[pairs]]
+name = "contract"
+old = "old.pdf"
+new = "new.pdf"
+baseline = "approved-contract-diff.json"
+max_diagnostics = 0</code></pre>
+              <pre><code>name: PDF semantic diff
+
+on: [pull_request]
+
+jobs:
+  pdf-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: eraydin/semantic-pdf-diff@main
+        with:
+          config: .spdfdiff.toml</code></pre>
+            </div>
+          </section>
+
+          <section id="schemas" class="doc-section split-section">
+            <div>
+              <p class="section-kicker">Schemas</p>
+              <h2>Machine-readable contracts</h2>
+              <p>
+                Stable report schemas live in the repository so downstream tools
+                can validate diff reports, AI review artifacts, and CI check
+                summaries.
+              </p>
+            </div>
+            <ul class="link-list">
+              <li><a href="https://github.com/eraydin/semantic-pdf-diff/blob/main/schemas/diff_document.schema.json">Diff report schema</a></li>
+              <li><a href="https://github.com/eraydin/semantic-pdf-diff/blob/main/schemas/ai_review.schema.json">AI review schema</a></li>
+              <li><a href="https://github.com/eraydin/semantic-pdf-diff/blob/main/schemas/check_report.schema.json">Check report schema</a></li>
+              <li><a href="https://github.com/eraydin/semantic-pdf-diff/blob/main/schemas/CHANGELOG.md">Schema changelog</a></li>
+            </ul>
+          </section>
+
+          <section id="compatibility" class="doc-section">
+            <p class="section-kicker">Compatibility</p>
+            <h2>Current boundary</h2>
+            <p>
+              <code>semantic-pdf-diff</code> is a compatibility-gate project. It is useful
+              for controlled digitally generated PDFs and committed sample
+              scenarios, but it is not yet a broad public-alpha compatibility
+              claim for arbitrary real-world PDFs.
+            </p>
+            <div class="notice">
+              <strong>Supported parser foundation:</strong>
+              classic xref tables, controlled xref streams, controlled object
+              streams, selected stream filters, page tree traversal, inherited
+              page resources, text extraction paths, structure-tree summaries,
+              incremental-update metadata, and resource-limit enforcement.
+            </div>
+            <div class="notice muted">
+              <strong>Still incremental work:</strong>
+              renderer-grade visual diffing, arbitrary table reconstruction,
+              broad tagged-PDF coverage, and corpus-backed public-alpha
+              compatibility labels.
+            </div>
+          </section>
+
+          <section id="architecture" class="doc-section">
+            <p class="section-kicker">Architecture</p>
+            <h2>Crate map</h2>
+            <div class="crate-map">
+              <span>spdfdiff_types</span>
+              <span>pdf_core</span>
+              <span>pdf_content</span>
+              <span>pdf_text</span>
+              <span>pdf_semantic</span>
+              <span>diff_core</span>
+              <span>diff_report</span>
+              <span>spdfdiff_cli</span>
+            </div>
+            <p>
+              Core PDF parsing stays in <code>pdf_core</code>. Content interpretation,
+              text extraction, semantic layout, diff matching, reporting, and
+              CLI orchestration remain separated so downstream crates do not
+              couple semantic diff logic directly to raw PDF object internals.
+            </p>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>semantic-pdf-diff documentation</span>
+      <span><a href="https://github.com/eraydin/semantic-pdf-diff">Repository</a></span>
+      <span><a href="https://github.com/eraydin/semantic-pdf-diff/blob/main/README.md">README</a></span>
+    </footer>
+  </body>
+</html>

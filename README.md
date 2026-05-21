@@ -5,6 +5,19 @@ digitally generated PDFs and producing stable semantic diff reports.
 
 The current CLI entry point is `spdfdiff`.
 
+## Documentation Website
+
+The project website lives in `docs/` and is published through GitHub Pages by
+the `GitHub Pages` workflow. It documents the feature set, CLI usage, CI
+workflow, report formats, schemas, architecture, and current compatibility
+boundary.
+
+When Pages is enabled for the repository, the site is available at:
+
+```text
+https://eraydin.github.io/semantic-pdf-diff/
+```
+
 ## Current Capabilities
 
 The `spdfdiff diff` command currently compares extracted text from simple,
