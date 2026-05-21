@@ -10,7 +10,8 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 1. Read `AGENTS.md`, then read `references/report-cli-plan.md`.
 2. Keep `DiffDocument` serialization stable and machine-readable first.
 3. Treat JSON, AI review JSON, Markdown, HTML, and inline SVG evidence overlays as deterministic report outputs.
-4. Keep the public CLI shape stable: `spdfdiff diff`, `inspect`, `extract`, and `corpus`.
+4. Keep the public CLI shape stable: `spdfdiff diff`, `inspect`, `extract`,
+   `corpus`, `benchmark`, `review`, and `check`.
 5. Add snapshot-style tests for report output whenever fields or ordering change.
 
 ## Report Rules
@@ -57,6 +58,7 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
     compatibility regression gates
   - `spdfdiff benchmark --pages 50 --output benchmark.json`
   - `spdfdiff review review.ai.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output review.llm.json`
+  - `spdfdiff check --config .spdfdiff.toml`
 - Exit codes must match `plan/01_ARCHITECTURE.md`.
 - Missing input files and unsupported encrypted/protected PDFs need useful user-facing errors.
 

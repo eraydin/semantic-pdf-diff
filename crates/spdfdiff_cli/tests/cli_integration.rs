@@ -364,6 +364,185 @@ fn diff_fail_on_changes_exits_one_only_when_changes_exist() {
 }
 
 #[test]
+fn check_command_writes_artifacts_and_fails_on_unsuppressed_changes() {
+    let fixture = TestFixture::new("check_command_fails_on_changes");
+    fixture.write_pdf("old.pdf", "Annual revenue was 10 million.");
+    fixture.write_pdf("new.pdf", "Annual revenue was 12 million.");
+    let config = fixture.path(".spdfdiff.toml");
+    fs::write(
+        &config,
+        r#"
+schema_version = "1"
+output_dir = "artifacts"
+formats = ["json", "html"]
+fail_on_changes = true
+
+[[pairs]]
+name = "contract"
+old = "old.pdf"
+new = "new.pdf"
+max_diagnostics = 10
+"#,
+    )
+    .expect("check config should be written");
+
+    let output = run_spdfdiff(["check", "--config", path_arg(&config).as_str()]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("check stdout should be valid JSON");
+    assert_eq!(report["schema_version"], "1");
+    assert_eq!(report["passed"], false);
+    assert_eq!(report["total_pairs"], 1);
+    assert_eq!(report["changed_pairs"], 1);
+    assert_eq!(report["total_unsuppressed_changes"], 1);
+    assert_eq!(report["pairs"][0]["name"], "contract");
+    assert_eq!(report["pairs"][0]["status"], "failed");
+    assert_eq!(report["pairs"][0]["changes"], 1);
+    assert_eq!(report["pairs"][0]["unsuppressed_changes"], 1);
+    assert_eq!(
+        report["pairs"][0]["outputs"]["json"],
+        "artifacts/contract.json"
+    );
+    assert_eq!(
+        report["pairs"][0]["outputs"]["html"],
+        "artifacts/contract.html"
+    );
+    assert!(fixture.path("artifacts/contract.json").exists());
+    assert!(fixture.path("artifacts/contract.html").exists());
+}
+
+#[test]
+fn check_command_disambiguates_colliding_artifact_names() {
+    let fixture = TestFixture::new("check_command_artifact_name_collisions");
+    fixture.write_pdf("old-a.pdf", "Annual revenue was 10 million.");
+    fixture.write_pdf("new-a.pdf", "Annual revenue was 12 million.");
+    fixture.write_pdf("old-b.pdf", "Payment is due within 30 days.");
+    fixture.write_pdf("new-b.pdf", "Payment is due within 15 days.");
+    let config = fixture.path(".spdfdiff.toml");
+    fs::write(
+        &config,
+        r#"
+schema_version = "1"
+output_dir = "artifacts"
+formats = ["json"]
+fail_on_changes = false
+
+[[pairs]]
+name = "contract/a"
+old = "old-a.pdf"
+new = "new-a.pdf"
+
+[[pairs]]
+name = "contract?a"
+old = "old-b.pdf"
+new = "new-b.pdf"
+"#,
+    )
+    .expect("check config should be written");
+
+    let output = run_spdfdiff(["check", "--config", path_arg(&config).as_str()]);
+
+    assert_success(&output);
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("check stdout should be valid JSON");
+    assert_eq!(report["passed"], true);
+    assert_eq!(
+        report["pairs"][0]["outputs"]["json"],
+        "artifacts/contract-a.json"
+    );
+    assert_eq!(
+        report["pairs"][1]["outputs"]["json"],
+        "artifacts/contract-a-0002.json"
+    );
+    assert!(fixture.path("artifacts/contract-a.json").exists());
+    assert!(fixture.path("artifacts/contract-a-0002.json").exists());
+}
+
+#[test]
+fn check_command_rejects_unsupported_config_schema_version() {
+    let fixture = TestFixture::new("check_command_rejects_schema_version");
+    fixture.write_pdf("old.pdf", "Annual revenue was 10 million.");
+    fixture.write_pdf("new.pdf", "Annual revenue was 12 million.");
+    let config = fixture.path(".spdfdiff.toml");
+    fs::write(
+        &config,
+        r#"
+schema_version = "2"
+output_dir = "artifacts"
+formats = ["json"]
+
+[[pairs]]
+old = "old.pdf"
+new = "new.pdf"
+"#,
+    )
+    .expect("check config should be written");
+
+    let output = run_spdfdiff(["check", "--config", path_arg(&config).as_str()]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("unsupported check config schema_version 2; expected 1"));
+}
+
+#[test]
+fn check_command_suppresses_changes_from_baseline_report() {
+    let fixture = TestFixture::new("check_command_baseline");
+    let old_pdf = fixture.write_pdf("old.pdf", "Payment is due within 30 days.");
+    let new_pdf = fixture.write_pdf("new.pdf", "Payment is due within 15 days.");
+    let baseline = fixture.path("baseline.json");
+    assert_success(&run_spdfdiff([
+        "diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+        "--output",
+        path_arg(&baseline).as_str(),
+    ]));
+    let mut baseline_json: Value =
+        serde_json::from_slice(&fs::read(&baseline).expect("baseline should be readable"))
+            .expect("baseline should be JSON");
+    baseline_json["changes"][0]["reason"] =
+        Value::String("approved baseline reason wording changed".to_owned());
+    fs::write(
+        &baseline,
+        serde_json::to_vec_pretty(&baseline_json).expect("baseline should render"),
+    )
+    .expect("baseline should be rewritten");
+    let config = fixture.path(".spdfdiff.toml");
+    fs::write(
+        &config,
+        r#"
+schema_version = "1"
+output_dir = "artifacts"
+formats = ["json"]
+fail_on_changes = true
+
+[[pairs]]
+name = "payment-terms"
+old = "old.pdf"
+new = "new.pdf"
+baseline = "baseline.json"
+"#,
+    )
+    .expect("check config should be written");
+
+    let output = run_spdfdiff(["check", "--config", path_arg(&config).as_str()]);
+
+    assert_success(&output);
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("check stdout should be valid JSON");
+    assert_eq!(report["passed"], true);
+    assert_eq!(report["total_changes"], 1);
+    assert_eq!(report["total_suppressed_changes"], 1);
+    assert_eq!(report["total_unsuppressed_changes"], 0);
+    assert_eq!(report["pairs"][0]["status"], "passed");
+    assert_eq!(report["pairs"][0]["suppressed_changes"], 1);
+    assert_eq!(report["pairs"][0]["unsuppressed_changes"], 0);
+}
+
+#[test]
 fn inspect_command_reports_object_graph_for_supported_formats() {
     let fixture = TestFixture::new("inspect_command_reports_object_graph");
     let pdf = fixture.write_pdf("inspect.pdf", "Inspection target");

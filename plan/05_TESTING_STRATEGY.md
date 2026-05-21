@@ -322,8 +322,10 @@ Extended CI:
 
 ```bash
 cargo test --workspace --features fuzzing
+cargo check --manifest-path fuzz/Cargo.toml --bins
 cargo bench --workspace
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
+spdfdiff check --config .spdfdiff.toml
 ```
 
 ## 12. Bug report template

@@ -57,6 +57,10 @@ enum Command {
         #[arg(long)]
         fail_on_gate: bool,
     },
+    Check {
+        #[arg(long, default_value = ".spdfdiff.toml")]
+        config: PathBuf,
+    },
     Benchmark {
         #[arg(long, default_value_t = 50)]
         pages: usize,
@@ -80,12 +84,33 @@ enum Command {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum DiffReportFormat {
     Json,
     AiJson,
     Md,
     Html,
+}
+
+impl DiffReportFormat {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::AiJson => "ai-json",
+            Self::Md => "md",
+            Self::Html => "html",
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::AiJson => "ai.json",
+            Self::Md => "md",
+            Self::Html => "html",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -196,6 +221,12 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
                 return Ok(1);
             }
         }
+        Command::Check { config } => {
+            let report = run_check_command(&config)?;
+            let exit_code = if report.passed { 0 } else { 1 };
+            println!("{}", to_json_pretty(&report)?);
+            return Ok(exit_code);
+        }
         Command::Benchmark { pages, output } => {
             let report = run_synthetic_benchmark(pages)?;
             let rendered = to_json_pretty(&report)?;
@@ -255,6 +286,68 @@ struct CorpusManifestDiffPair {
     name: String,
     old_file: String,
     new_file: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct CheckConfig {
+    schema_version: String,
+    output_dir: PathBuf,
+    layout_tolerance_pt: f32,
+    fail_on_changes: bool,
+    max_total_unsuppressed_changes: Option<usize>,
+    max_total_diagnostics: Option<usize>,
+    formats: Vec<DiffReportFormat>,
+    pairs: Vec<CheckPairConfig>,
+}
+
+impl Default for CheckConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: "1".to_owned(),
+            output_dir: PathBuf::from("spdfdiff-check"),
+            layout_tolerance_pt: 2.0,
+            fail_on_changes: true,
+            max_total_unsuppressed_changes: None,
+            max_total_diagnostics: None,
+            formats: vec![DiffReportFormat::Json, DiffReportFormat::Html],
+            pairs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct CheckPairConfig {
+    name: String,
+    old: PathBuf,
+    new: PathBuf,
+    baseline: Option<PathBuf>,
+    layout_tolerance_pt: Option<f32>,
+    fail_on_changes: Option<bool>,
+    max_unsuppressed_changes: Option<usize>,
+    max_diagnostics: Option<usize>,
+    ignore_change_kinds: Vec<ChangeKind>,
+    diagnostic_maxima: BTreeMap<String, usize>,
+    formats: Option<Vec<DiffReportFormat>>,
+}
+
+impl Default for CheckPairConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            old: PathBuf::new(),
+            new: PathBuf::new(),
+            baseline: None,
+            layout_tolerance_pt: None,
+            fail_on_changes: None,
+            max_unsuppressed_changes: None,
+            max_diagnostics: None,
+            ignore_change_kinds: Vec::new(),
+            diagnostic_maxima: BTreeMap::new(),
+            formats: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -406,6 +499,45 @@ struct BenchmarkTimings {
 }
 
 #[derive(Debug, Serialize)]
+struct CheckReport {
+    schema_version: String,
+    config_schema_version: String,
+    passed: bool,
+    output_dir: String,
+    total_pairs: usize,
+    failed_pairs: usize,
+    changed_pairs: usize,
+    total_changes: usize,
+    total_suppressed_changes: usize,
+    total_unsuppressed_changes: usize,
+    total_diagnostics: usize,
+    failures: Vec<String>,
+    pairs: Vec<CheckPairReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct CheckPairReport {
+    name: String,
+    old_file: String,
+    new_file: String,
+    status: CheckPairStatus,
+    changes: usize,
+    suppressed_changes: usize,
+    unsuppressed_changes: usize,
+    diagnostics: Vec<String>,
+    outputs: BTreeMap<String, String>,
+    failures: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CheckPairStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
 struct ExternalLlmReviewReport {
     schema_version: String,
     provider: String,
@@ -501,6 +633,417 @@ fn load_corpus_manifest(path: &Path) -> Result<CorpusManifest, PdfDiffError> {
             path.display()
         ))
     })
+}
+
+fn load_check_config(path: &Path) -> Result<CheckConfig, PdfDiffError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    let config = toml::from_str::<CheckConfig>(&text).map_err(|error| {
+        PdfDiffError::InvalidInput(format!(
+            "failed to parse check config {}: {error}",
+            path.display()
+        ))
+    })?;
+    validate_check_config(&config)?;
+    if config.pairs.is_empty() {
+        return Err(PdfDiffError::InvalidInput(
+            "check config must include at least one [[pairs]] entry".into(),
+        ));
+    }
+    Ok(config)
+}
+
+fn validate_check_config(config: &CheckConfig) -> Result<(), PdfDiffError> {
+    if config.schema_version != "1" {
+        return Err(PdfDiffError::InvalidInput(format!(
+            "unsupported check config schema_version {}; expected 1",
+            config.schema_version
+        )));
+    }
+    if config.output_dir.as_os_str().is_empty() {
+        return Err(PdfDiffError::InvalidInput(
+            "check config output_dir must not be empty".into(),
+        ));
+    }
+    if config.formats.is_empty() {
+        return Err(PdfDiffError::InvalidInput(
+            "check config formats must include at least one format".into(),
+        ));
+    }
+    for (index, pair) in config.pairs.iter().enumerate() {
+        if pair.old.as_os_str().is_empty() {
+            return Err(PdfDiffError::InvalidInput(format!(
+                "check config pair {index} old path must not be empty"
+            )));
+        }
+        if pair.new.as_os_str().is_empty() {
+            return Err(PdfDiffError::InvalidInput(format!(
+                "check config pair {index} new path must not be empty"
+            )));
+        }
+        if pair.formats.as_ref().is_some_and(Vec::is_empty) {
+            return Err(PdfDiffError::InvalidInput(format!(
+                "check config pair {index} formats must include at least one format"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn run_check_command(config_path: &Path) -> Result<CheckReport, PdfDiffError> {
+    let config = load_check_config(config_path)?;
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let output_dir = resolve_config_path(config_dir, &config.output_dir);
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+
+    let mut pairs = Vec::new();
+    let mut artifact_stem_counts = BTreeMap::new();
+    for (index, pair) in config.pairs.iter().enumerate() {
+        let name = check_pair_name(pair, index);
+        let artifact_stem = unique_artifact_stem(&mut artifact_stem_counts, &name);
+        pairs.push(run_check_pair(
+            &config,
+            config_dir,
+            &output_dir,
+            pair,
+            name,
+            artifact_stem,
+        ));
+    }
+
+    let total_changes = pairs.iter().map(|pair| pair.changes).sum();
+    let total_suppressed_changes = pairs.iter().map(|pair| pair.suppressed_changes).sum();
+    let total_unsuppressed_changes = pairs.iter().map(|pair| pair.unsuppressed_changes).sum();
+    let total_diagnostics = pairs.iter().map(|pair| pair.diagnostics.len()).sum();
+    let failed_pairs = pairs
+        .iter()
+        .filter(|pair| matches!(pair.status, CheckPairStatus::Failed))
+        .count();
+    let changed_pairs = pairs
+        .iter()
+        .filter(|pair| pair.unsuppressed_changes > 0)
+        .count();
+    let mut failures = Vec::new();
+    if let Some(maximum) = config.max_total_unsuppressed_changes {
+        if total_unsuppressed_changes > maximum {
+            failures.push(format!(
+                "total unsuppressed change count {total_unsuppressed_changes} exceeds maximum {maximum}"
+            ));
+        }
+    }
+    if let Some(maximum) = config.max_total_diagnostics {
+        if total_diagnostics > maximum {
+            failures.push(format!(
+                "total diagnostic count {total_diagnostics} exceeds maximum {maximum}"
+            ));
+        }
+    }
+    if failed_pairs > 0 {
+        failures.push(format!("{failed_pairs} configured PDF pair(s) failed"));
+    }
+
+    Ok(CheckReport {
+        schema_version: "1".to_owned(),
+        config_schema_version: config.schema_version,
+        passed: failures.is_empty() && failed_pairs == 0,
+        output_dir: path_for_report(&config.output_dir),
+        total_pairs: pairs.len(),
+        failed_pairs,
+        changed_pairs,
+        total_changes,
+        total_suppressed_changes,
+        total_unsuppressed_changes,
+        total_diagnostics,
+        failures,
+        pairs,
+    })
+}
+
+fn run_check_pair(
+    config: &CheckConfig,
+    config_dir: &Path,
+    output_dir: &Path,
+    pair: &CheckPairConfig,
+    name: String,
+    artifact_stem: String,
+) -> CheckPairReport {
+    let result = run_check_pair_inner(config, config_dir, output_dir, pair, &name, &artifact_stem);
+    match result {
+        Ok(report) => report,
+        Err(error) => CheckPairReport {
+            name,
+            old_file: path_for_report(&pair.old),
+            new_file: path_for_report(&pair.new),
+            status: CheckPairStatus::Failed,
+            changes: 0,
+            suppressed_changes: 0,
+            unsuppressed_changes: 0,
+            diagnostics: Vec::new(),
+            outputs: BTreeMap::new(),
+            failures: vec![error.to_string()],
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+fn run_check_pair_inner(
+    config: &CheckConfig,
+    config_dir: &Path,
+    output_dir: &Path,
+    pair: &CheckPairConfig,
+    name: &str,
+    artifact_stem: &str,
+) -> Result<CheckPairReport, PdfDiffError> {
+    let old_path = resolve_config_path(config_dir, &pair.old);
+    let new_path = resolve_config_path(config_dir, &pair.new);
+    let old_bytes =
+        std::fs::read(&old_path).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    let new_bytes =
+        std::fs::read(&new_path).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    let diff = diff_pdf_bytes(
+        &display_file_name(&old_path),
+        &old_bytes,
+        &display_file_name(&new_path),
+        &new_bytes,
+        DiffConfig {
+            layout_tolerance_pt: pair
+                .layout_tolerance_pt
+                .unwrap_or(config.layout_tolerance_pt),
+            ..DiffConfig::default()
+        },
+    )?;
+
+    let ignored_kinds = &pair.ignore_change_kinds;
+    let mut baseline_signatures = pair
+        .baseline
+        .as_ref()
+        .map(|baseline| load_baseline_signatures(&resolve_config_path(config_dir, baseline)))
+        .transpose()?
+        .unwrap_or_default();
+    let mut suppressed_changes = 0usize;
+    for change in &diff.changes {
+        if ignored_kinds.contains(&change.kind) {
+            suppressed_changes += 1;
+            continue;
+        }
+        let signature = change_signature(change);
+        if let Some(count) = baseline_signatures.get_mut(&signature) {
+            if *count > 0 {
+                *count -= 1;
+                suppressed_changes += 1;
+            }
+        }
+    }
+    let unsuppressed_changes = diff.changes.len().saturating_sub(suppressed_changes);
+    let diagnostics = diff
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.clone())
+        .collect::<Vec<_>>();
+    let mut diagnostic_counts = BTreeMap::new();
+    for code in &diagnostics {
+        *diagnostic_counts.entry(code.clone()).or_insert(0usize) += 1;
+    }
+
+    let mut failures = Vec::new();
+    let should_fail_on_changes = pair.fail_on_changes.unwrap_or(config.fail_on_changes);
+    if should_fail_on_changes && unsuppressed_changes > 0 {
+        failures.push(format!(
+            "unsuppressed change count {unsuppressed_changes} is greater than 0"
+        ));
+    }
+    if let Some(maximum) = pair.max_unsuppressed_changes {
+        if unsuppressed_changes > maximum {
+            failures.push(format!(
+                "unsuppressed change count {unsuppressed_changes} exceeds maximum {maximum}"
+            ));
+        }
+    }
+    if let Some(maximum) = pair.max_diagnostics {
+        if diagnostics.len() > maximum {
+            failures.push(format!(
+                "diagnostic count {} exceeds maximum {maximum}",
+                diagnostics.len()
+            ));
+        }
+    }
+    append_diagnostic_gate_failures(
+        "pair diagnostic",
+        &diagnostic_counts,
+        &pair.diagnostic_maxima,
+        &mut failures,
+    );
+
+    let mut outputs = BTreeMap::new();
+    let formats = pair.formats.as_deref().unwrap_or(&config.formats);
+    for format in formats {
+        let file_name = format!("{artifact_stem}.{}", format.extension());
+        let output_path = output_dir.join(file_name);
+        std::fs::write(&output_path, render_diff(&diff, *format))
+            .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+        outputs.insert(
+            format.key().to_owned(),
+            path_for_report(
+                &config
+                    .output_dir
+                    .join(output_path.file_name().unwrap_or_default()),
+            ),
+        );
+    }
+
+    Ok(CheckPairReport {
+        name: name.to_owned(),
+        old_file: path_for_report(&pair.old),
+        new_file: path_for_report(&pair.new),
+        status: if failures.is_empty() {
+            CheckPairStatus::Passed
+        } else {
+            CheckPairStatus::Failed
+        },
+        changes: diff.changes.len(),
+        suppressed_changes,
+        unsuppressed_changes,
+        diagnostics,
+        outputs,
+        failures,
+        error: None,
+    })
+}
+
+fn load_baseline_signatures(path: &Path) -> Result<BTreeMap<String, usize>, PdfDiffError> {
+    let bytes =
+        std::fs::read(path).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    let baseline: DiffDocument = serde_json::from_slice(&bytes).map_err(|error| {
+        PdfDiffError::InvalidInput(format!(
+            "failed to parse baseline diff {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut signatures = BTreeMap::new();
+    for change in &baseline.changes {
+        *signatures.entry(change_signature(change)).or_insert(0) += 1;
+    }
+    Ok(signatures)
+}
+
+fn change_signature(change: &SemanticChange) -> String {
+    format!(
+        "{:?}|old:{}|new:{}|hunks:{}|layout:{}",
+        change.kind,
+        node_evidence_signature(change.old_node.as_ref()),
+        node_evidence_signature(change.new_node.as_ref()),
+        text_hunks_signature(&change.text_hunks),
+        layout_diff_signature(change.layout_diff.as_ref())
+    )
+}
+
+fn node_evidence_signature(node: Option<&SemanticNodeEvidence>) -> String {
+    node.map_or_else(String::new, |node| {
+        format!(
+            "page={}|bbox={}|text={}",
+            node.page,
+            rect_option_signature(node.bbox),
+            node.text.as_deref().unwrap_or("")
+        )
+    })
+}
+
+fn text_hunks_signature(hunks: &[spdfdiff_types::TextHunk]) -> String {
+    hunks
+        .iter()
+        .map(|hunk| {
+            format!(
+                "{:?}:old_range={}:new_range={}:old_text={}:new_text={}",
+                hunk.kind,
+                text_range_signature(hunk.old_range),
+                text_range_signature(hunk.new_range),
+                hunk.old_text.as_deref().unwrap_or(""),
+                hunk.new_text.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn text_range_signature(range: Option<spdfdiff_types::TextRange>) -> String {
+    range.map_or_else(String::new, |range| {
+        format!("{}..{}", range.start, range.end)
+    })
+}
+
+fn layout_diff_signature(layout: Option<&spdfdiff_types::LayoutDiff>) -> String {
+    layout.map_or_else(String::new, |layout| {
+        format!(
+            "old_bbox={}|new_bbox={}|dx={}|dy={}|dw={}|dh={}|page_changed={}|reading_order_changed={}",
+            rect_option_signature(layout.old_bbox),
+            rect_option_signature(layout.new_bbox),
+            number_option_signature(layout.delta_x),
+            number_option_signature(layout.delta_y),
+            number_option_signature(layout.delta_width),
+            number_option_signature(layout.delta_height),
+            layout.page_changed,
+            layout.reading_order_changed
+        )
+    })
+}
+
+fn rect_option_signature(rect: Option<Rect>) -> String {
+    rect.map_or_else(String::new, canonical_rect)
+}
+
+fn number_option_signature(value: Option<f32>) -> String {
+    value.map_or_else(String::new, canonical_report_number)
+}
+
+fn resolve_config_path(config_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config_dir.join(path)
+    }
+}
+
+fn check_pair_name(pair: &CheckPairConfig, index: usize) -> String {
+    if pair.name.trim().is_empty() {
+        format!("pair-{index:04}")
+    } else {
+        pair.name.clone()
+    }
+}
+
+fn unique_artifact_stem(counts: &mut BTreeMap<String, usize>, name: &str) -> String {
+    let base = sanitize_artifact_name(name);
+    let count = counts.entry(base.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        base
+    } else {
+        format!("{base}-{count:04}")
+    }
+}
+
+fn sanitize_artifact_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "pair".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn path_for_report(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]

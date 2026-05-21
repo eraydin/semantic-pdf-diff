@@ -28,6 +28,9 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   file diagnostic counts, and diff diagnostic counts as compatibility
   regression baselines. With `--fail-on-gate`, a failed gate exits with code
   `1`.
+- `check --config .spdfdiff.toml` runs configured PDF pairs for CI, writes
+  deterministic artifacts, applies threshold and baseline suppression rules, and
+  emits stable summary JSON on stdout. A failed check exits with code `1`.
 - `benchmark --pages <n>` runs the synthetic benchmark path and reports
   deterministic phase timing fields for parse, extract, semantic, diff, report,
   and total work.
@@ -44,7 +47,29 @@ spdfdiff diff old.pdf new.pdf --format ai-json --output review.json
 spdfdiff review review.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output llm-review.json
 spdfdiff extract old.pdf --format json --output extract.json
 spdfdiff corpus samples --manifest samples\compatibility_corpus_manifest.json --output corpus.json --fail-on-gate
+spdfdiff check --config .spdfdiff.toml
 ```
+
+## CI Check Config
+
+```toml
+schema_version = "1"
+output_dir = "spdfdiff-check"
+formats = ["json", "html"]
+fail_on_changes = true
+
+[[pairs]]
+name = "contract"
+old = "old.pdf"
+new = "new.pdf"
+baseline = "approved-contract-diff.json"
+max_diagnostics = 0
+```
+
+Baseline files are normal `spdfdiff diff --format json` reports. Matching
+baseline changes and configured `ignore_change_kinds` values are counted as
+suppressed, while remaining unsuppressed changes drive the check exit code and
+summary report.
 
 ## Local LLM Review
 

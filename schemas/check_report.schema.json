@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eraydin/semantic-pdf-diff/schemas/check_report.schema.json",
+  "title": "semantic-pdf-diff Check Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "config_schema_version",
+    "passed",
+    "output_dir",
+    "total_pairs",
+    "failed_pairs",
+    "changed_pairs",
+    "total_changes",
+    "total_suppressed_changes",
+    "total_unsuppressed_changes",
+    "total_diagnostics",
+    "failures",
+    "pairs"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "config_schema_version": { "type": "string" },
+    "passed": { "type": "boolean" },
+    "output_dir": { "type": "string" },
+    "total_pairs": { "type": "integer", "minimum": 0 },
+    "failed_pairs": { "type": "integer", "minimum": 0 },
+    "changed_pairs": { "type": "integer", "minimum": 0 },
+    "total_changes": { "type": "integer", "minimum": 0 },
+    "total_suppressed_changes": { "type": "integer", "minimum": 0 },
+    "total_unsuppressed_changes": { "type": "integer", "minimum": 0 },
+    "total_diagnostics": { "type": "integer", "minimum": 0 },
+    "failures": { "type": "array", "items": { "type": "string" } },
+    "pairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "old_file",
+          "new_file",
+          "status",
+          "changes",
+          "suppressed_changes",
+          "unsuppressed_changes",
+          "diagnostics",
+          "outputs",
+          "failures",
+          "error"
+        ],
+        "properties": {
+          "name": { "type": "string" },
+          "old_file": { "type": "string" },
+          "new_file": { "type": "string" },
+          "status": { "type": "string", "enum": ["passed", "failed"] },
+          "changes": { "type": "integer", "minimum": 0 },
+          "suppressed_changes": { "type": "integer", "minimum": 0 },
+          "unsuppressed_changes": { "type": "integer", "minimum": 0 },
+          "diagnostics": { "type": "array", "items": { "type": "string" } },
+          "outputs": { "type": "object", "additionalProperties": { "type": "string" } },
+          "failures": { "type": "array", "items": { "type": "string" } },
+          "error": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

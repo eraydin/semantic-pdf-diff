@@ -22,9 +22,12 @@ Use this reference with `spdfdiff-report-cli`.
 - `spdfdiff inspect file.pdf --format json`
 - `spdfdiff extract file.pdf --format json`
 - `spdfdiff corpus tests/fixtures/real_world --output corpus_report.json`
+- `spdfdiff check --config .spdfdiff.toml`
 - Corpus manifests may declare maximum partial-file counts, per-file
   diagnostic maxima, and diff diagnostic maxima. Treat those as deterministic
   compatibility regression gates.
+- Check configs may declare PDF pairs, artifact formats, threshold budgets,
+  ignored change kinds, and baseline diff reports for CI suppression.
 
 ## Test Expectations
 

@@ -336,6 +336,7 @@ spdfdiff inspect file.pdf --format json
 spdfdiff extract file.pdf --format json
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
 spdfdiff benchmark --pages 50 --output benchmark.json
+spdfdiff check --config .spdfdiff.toml
 ```
 
 ## 3. Semantic anchor strategy
@@ -441,8 +442,8 @@ unstable_visual = []
 - Library functions return `Result<T, PdfDiffError>` only for unrecoverable problems.
 - Unsupported PDF features produce diagnostics and partial results when possible.
 - CLI exits with:
-  - `0`: diff succeeded;
-  - `1`: diff succeeded and changes found, if `--fail-on-changes` is enabled;
+  - `0`: command succeeded;
+  - `1`: diff/check/corpus gate succeeded but found configured changes or gate failures;
   - `2`: input or parse failure;
   - `3`: unsupported encrypted or protected PDF;
   - `4`: internal invariant failure.

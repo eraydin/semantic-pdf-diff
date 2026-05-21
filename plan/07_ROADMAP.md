@@ -186,6 +186,14 @@ Make the engine embeddable.
 
 The engine can power CI checks, web apps, desktop PDF tools, and AI document pipelines.
 
+### Current implementation
+
+`spdfdiff check --config .spdfdiff.toml` provides the first CI-oriented
+workflow: configured PDF pairs, deterministic JSON/HTML artifacts, threshold
+budgets, baseline suppression, and stable summary JSON. The repository includes
+a composite GitHub Action that runs the check and uploads artifacts. Language
+bindings and desktop integration remain future ecosystem work.
+
 ## Prioritization matrix
 
 | Feature | User value | Difficulty | Priority |
@@ -201,6 +209,7 @@ The engine can power CI checks, web apps, desktop PDF tools, and AI document pip
 | Table cell diff | Medium/High | High | P2 |
 | Visual fallback | Medium | High | P3 |
 | OCR external adapter | Medium | High | P2 |
+| GitHub Action / CI check | High | Medium | P1 |
 | PDF editing | High | Very High | Separate product line |
 
 ## Recommended MVP release name

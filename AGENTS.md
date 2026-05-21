@@ -59,8 +59,8 @@ minimal_old.pdf + minimal_new.pdf
   severity defaults.
 - `diff_report` owns stable JSON, AI review JSON, Markdown, HTML report
   generation, and deterministic inline SVG evidence overlays.
-- `spdfdiff_cli` owns the public CLI shape: `diff`, `inspect`, `extract`, and
-  `corpus`.
+- `spdfdiff_cli` owns the public CLI shape: `diff`, `inspect`, `extract`,
+  `corpus`, `benchmark`, `review`, and `check`.
 
 ## Repo-Local Skills
 

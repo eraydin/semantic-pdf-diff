@@ -32,6 +32,7 @@ cargo bench --workspace
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
 spdfdiff corpus samples --manifest samples/compatibility_corpus_manifest.json --output corpus_report.json --fail-on-gate
 spdfdiff benchmark --pages 50 --output benchmark.json
+spdfdiff check --config .spdfdiff.toml
 ```
 
 Only run extended commands when the needed features/tools exist.

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eraydin/semantic-pdf-diff/schemas/diff_document.schema.json",
+  "title": "semantic-pdf-diff DiffDocument",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "old_fingerprint",
+    "new_fingerprint",
+    "summary",
+    "changes",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "old_fingerprint": { "type": "string" },
+    "new_fingerprint": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inserted", "deleted", "modified", "moved", "layout_changed"],
+      "properties": {
+        "inserted": { "type": "integer", "minimum": 0 },
+        "deleted": { "type": "integer", "minimum": 0 },
+        "modified": { "type": "integer", "minimum": 0 },
+        "moved": { "type": "integer", "minimum": 0 },
+        "layout_changed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/change" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "$defs": {
+    "change": {
+      "type": "object",
+      "required": ["id", "kind", "severity", "confidence", "reason"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Inserted",
+            "Deleted",
+            "Modified",
+            "Moved",
+            "LayoutChanged",
+            "StyleChanged",
+            "MetadataChanged",
+            "AnnotationChanged",
+            "FormFieldChanged",
+            "ObjectChanged",
+            "Unknown"
+          ]
+        },
+        "severity": { "type": "string", "enum": ["Critical", "Major", "Minor", "Info"] },
+        "old_node": { "anyOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] },
+        "new_node": { "anyOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] },
+        "text_hunks": { "type": "array" },
+        "layout_diff": { "type": "object" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reason": { "type": "string" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["node_id", "page", "source"],
+      "properties": {
+        "node_id": { "type": "string" },
+        "page": { "type": "integer", "minimum": 0 },
+        "bbox": { "anyOf": [{ "$ref": "#/$defs/rect" }, { "type": "null" }] },
+        "text": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "source": { "type": "array" }
+      }
+    },
+    "rect": {
+      "type": "object",
+      "required": ["x0", "y0", "x1", "y1"],
+      "properties": {
+        "x0": { "type": "number" },
+        "y0": { "type": "number" },
+        "x1": { "type": "number" },
+        "y1": { "type": "number" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["severity", "code", "message"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["Info", "Warning", "Error"] },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "object": {},
+        "page_index": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
+  }
+}

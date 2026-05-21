@@ -77,6 +77,11 @@ diagnostic-code ceilings, diff diagnostic-code ceilings, and release-blocking
 thresholds. Use `--manifest samples\compatibility_corpus_manifest.json` and
 `--fail-on-gate` to make the command return exit code `1` when the compatibility
 gate fails.
+For CI workflows, `spdfdiff check --config .spdfdiff.toml` runs configured PDF
+pairs, writes deterministic JSON/HTML artifacts, applies threshold and baseline
+suppression rules, and emits a stable summary JSON report on stdout. The
+repository also includes a composite GitHub Action in `action.yml` for running
+that check and uploading artifacts.
 
 The `pdf_core` library crate also exposes parser APIs for:
 
@@ -170,6 +175,46 @@ The CLI also provides `SPDFDIFF_OCR_OBJECT_ID`, `SPDFDIFF_OCR_IMAGE_INDEX`, and
 `SPDFDIFF_OCR_IMAGE_HASH` environment variables to the OCR process for
 diagnostics or deterministic test adapters.
 
+## CI Check
+
+Run the repository sample check config:
+
+```powershell
+.\target\debug\spdfdiff.exe check --config .\.spdfdiff.toml
+```
+
+Example `.spdfdiff.toml`:
+
+```toml
+schema_version = "1"
+output_dir = "spdfdiff-check"
+formats = ["json", "html"]
+fail_on_changes = true
+
+[[pairs]]
+name = "contract"
+old = "old.pdf"
+new = "new.pdf"
+baseline = "approved-contract-diff.json"
+max_diagnostics = 0
+```
+
+Baseline files are normal `spdfdiff diff --format json` reports. Matching
+changes from the baseline are counted as suppressed; new unsuppressed changes
+fail the check when `fail_on_changes` is enabled.
+
+In GitHub Actions:
+
+```yaml
+- uses: eraydin/semantic-pdf-diff@main
+  with:
+    config: .spdfdiff.toml
+```
+
+The action uses an existing `spdfdiff` binary when one is already on `PATH`;
+otherwise it installs the CLI from the pinned action source before running the
+check.
+
 ## Benchmark
 
 Run the synthetic 50-page benchmark gate:
@@ -194,6 +239,12 @@ cargo fuzz run parse_content_stream
 
 The committed seed corpora cover minimal, truncated, stream-object, primitive,
 and malformed content-stream cases.
+
+## JSON Schemas
+
+Machine-readable JSON Schemas live under `schemas/` for the stable diff report,
+AI review report, and CI check summary. Schema changes are tracked in
+`schemas/CHANGELOG.md`.
 
 ## Versioning And Releases
 

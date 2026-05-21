@@ -24,6 +24,7 @@ Legend:
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
 | Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, typed document-surface evidence, CLI commands, outputs, and exit behavior are covered. |
 | Milestone 8 — Hardening | Implemented | Incremental metadata, fonts, tagged PDFs, benchmark, malformed-input checks, and standalone parser/content fuzz targets exist. |
+| Milestone 9 — CI productization | Implemented | Config-driven `spdfdiff check`, baseline suppression, deterministic CI summary JSON, schemas, sample config, composite GitHub Action, and extended CI gates exist. |
 
 ### Ticket Status
 
@@ -67,6 +68,9 @@ Legend:
 | M8-T3 — Tagged PDF structure | Implemented | Simple structure trees, parent-tree summaries, MCID preservation, and tagged semantic node ordering are implemented for controlled cases. |
 | M8-T4 — Fuzzing and malformed PDFs | Implemented | Feature-gated malformed-input tests plus standalone parser/object/content fuzz targets and seed corpora exist. |
 | M8-T5 — Benchmark target | Implemented | CLI benchmark reports parse/extract/semantic/diff/report timings, threshold result, diagnostics, summary, and memory sample when available. |
+| M9-T1 — Config-driven CI check | Implemented | `.spdfdiff.toml` supports PDF pairs, output formats, thresholds, ignored change kinds, and baseline diff report suppression through `spdfdiff check`. |
+| M9-T2 — CI artifacts and action | Implemented | Check emits stable summary JSON, writes configured artifacts, and the repository includes a composite GitHub Action for running checks and uploading artifacts. |
+| M9-T3 — Report schemas and gates | Implemented | JSON Schema files cover diff, AI review, and check summary reports; CI runs locked fetch, fuzz-feature tests, fuzz target check, corpus gate, benchmark smoke, and sample check. |
 
 ## Milestone 0 — Repository skeleton
 

@@ -1,0 +1,13 @@
+schema_version = "1"
+output_dir = "target/spdfdiff-check"
+formats = ["json", "html"]
+fail_on_changes = false
+max_total_unsuppressed_changes = 3
+max_total_diagnostics = 0
+
+[[pairs]]
+name = "sample-document"
+old = "samples/document_v1.pdf"
+new = "samples/document_v2.pdf"
+max_unsuppressed_changes = 3
+max_diagnostics = 0

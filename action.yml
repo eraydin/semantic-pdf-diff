@@ -1,0 +1,82 @@
+name: Semantic PDF Diff Check
+description: Run spdfdiff check from a repository .spdfdiff.toml and upload deterministic artifacts.
+
+inputs:
+  config:
+    description: Path to the spdfdiff TOML check config.
+    required: false
+    default: .spdfdiff.toml
+  binary:
+    description: spdfdiff executable name or path.
+    required: false
+    default: spdfdiff
+  install-command:
+    description: Command used when the binary is not already available.
+    required: false
+    default: cargo install --locked --path "${GITHUB_ACTION_PATH}/crates/spdfdiff_cli"
+  artifact-name:
+    description: Name for uploaded check artifacts.
+    required: false
+    default: spdfdiff-check
+  artifact-path:
+    description: Directory containing artifacts written by the check config.
+    required: false
+    default: target/spdfdiff-check
+  upload-artifacts:
+    description: Upload the configured output directory as a workflow artifact.
+    required: false
+    default: "true"
+
+outputs:
+  exit-code:
+    description: Exit code returned by spdfdiff check.
+    value: ${{ steps.check.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check spdfdiff availability
+      id: binary
+      shell: bash
+      run: |
+        if command -v "${{ inputs.binary }}" >/dev/null 2>&1; then
+          echo "available=true" >> "${GITHUB_OUTPUT}"
+        else
+          echo "available=false" >> "${GITHUB_OUTPUT}"
+        fi
+
+    - name: Install Rust toolchain when needed
+      if: ${{ steps.binary.outputs.available != 'true' }}
+      uses: dtolnay/rust-toolchain@1.85.0
+
+    - name: Install spdfdiff when needed
+      if: ${{ steps.binary.outputs.available != 'true' }}
+      shell: bash
+      run: |
+        ${{ inputs.install-command }}
+
+    - name: Run semantic PDF diff check
+      id: check
+      shell: bash
+      run: |
+        set +e
+        "${{ inputs.binary }}" check --config "${{ inputs.config }}" > spdfdiff-check-summary.json
+        status=$?
+        cat spdfdiff-check-summary.json
+        echo "exit-code=${status}" >> "${GITHUB_OUTPUT}"
+        exit 0
+
+    - name: Upload check artifacts
+      if: ${{ inputs.upload-artifacts == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          spdfdiff-check-summary.json
+          ${{ inputs.artifact-path }}/**
+        if-no-files-found: ignore
+
+    - name: Fail on check result
+      if: ${{ steps.check.outputs.exit-code != '0' }}
+      shell: bash
+      run: exit "${{ steps.check.outputs.exit-code }}"
