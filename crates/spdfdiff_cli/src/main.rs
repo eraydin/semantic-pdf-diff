@@ -456,6 +456,9 @@ struct ExtractTableReport {
     page: usize,
     rows: usize,
     columns: usize,
+    header_rows: usize,
+    repeated_header_rows: Vec<usize>,
+    continuation_group: Option<String>,
     cells: Vec<Vec<String>>,
     cell_spans: Vec<Vec<ExtractTableCellSpanReport>>,
     border_hints: usize,
@@ -3793,10 +3796,13 @@ fn render_extract_report(
                 if let Some(text) = &node.normalized_text {
                     out.push_str(&format!("- {}\n", text));
                     if let Some(table) = &node.table {
+                        let repeated_header_text =
+                            repeated_header_rows_text(table.repeated_header_rows.len());
                         out.push_str(&format!(
-                            "  table: {} rows x {} columns, {} border hints, confidence {:.2}\n",
+                            "  table: {} rows x {} columns, {}, {} border hints, confidence {:.2}\n",
                             table.rows.len(),
                             table.column_x_positions.len(),
+                            repeated_header_text,
                             table.border_hints.len(),
                             table.confidence
                         ));
@@ -3838,6 +3844,9 @@ fn extract_table_reports(document: &pdf_semantic::SemanticDocument) -> Vec<Extra
                 page: node.page_index,
                 rows: table.rows.len(),
                 columns: table.column_x_positions.len(),
+                header_rows: table.repeated_header_rows.len(),
+                repeated_header_rows: table.repeated_header_rows.clone(),
+                continuation_group: table.continuation_group.clone(),
                 cells: table
                     .rows
                     .iter()
@@ -3863,6 +3872,14 @@ fn extract_table_reports(document: &pdf_semantic::SemanticDocument) -> Vec<Extra
             })
         })
         .collect()
+}
+
+fn repeated_header_rows_text(count: usize) -> String {
+    match count {
+        0 => "0 repeated header rows".to_owned(),
+        1 => "1 repeated header row".to_owned(),
+        _ => format!("{count} repeated header rows"),
+    }
 }
 
 fn escape_html(value: &str) -> String {
@@ -4501,6 +4518,39 @@ endobj
     }
 
     #[test]
+    fn extract_report_serializes_repeated_table_header_evidence() {
+        let semantic = pdf_semantic::build_semantic_document(
+            "page-split-table",
+            &[
+                text_run("p1-h1", "Item", 10.0, 116.0),
+                text_run("p1-h2", "Qty", 70.0, 116.0),
+                text_run("p1-a1", "A1", 10.0, 100.0),
+                text_run("p1-a2", "4", 70.0, 100.0),
+                text_run_on_page("p2-h1", "Item", 1, 12.0, 116.0),
+                text_run_on_page("p2-h2", "Qty", 1, 72.0, 116.0),
+                text_run_on_page("p2-a1", "B1", 1, 12.0, 100.0),
+                text_run_on_page("p2-a2", "2", 1, 72.0, 100.0),
+            ],
+            Vec::new(),
+        );
+        let json = render_extract_report(&semantic, ReportFormat::Json);
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("extract JSON should parse");
+
+        assert_eq!(value["table_candidates"], 2);
+        assert_eq!(value["tables"][0]["repeated_header_rows"][0], 0);
+        assert_eq!(value["tables"][1]["repeated_header_rows"][0], 0);
+        assert_eq!(
+            value["tables"][0]["continuation_group"],
+            value["tables"][1]["continuation_group"]
+        );
+        assert_eq!(value["tables"][0]["header_rows"], 1);
+
+        let markdown = render_extract_report(&semantic, ReportFormat::Md);
+        assert!(markdown.contains("1 repeated header row"));
+    }
+
+    #[test]
     fn review_command_calls_openai_compatible_endpoint() {
         let folder = PathBuf::from("target/spdfdiff_cli_tests/llm_review");
         let _ = std::fs::remove_dir_all(&folder);
@@ -4652,6 +4702,22 @@ endobj
 
     fn text_run(id: &str, text: &str, x: f32, y: f32) -> pdf_text::TextRun {
         text_run_with_width(id, text, x, y, 10.0)
+    }
+
+    fn text_run_on_page(
+        id: &str,
+        text: &str,
+        page_index: usize,
+        x: f32,
+        y: f32,
+    ) -> pdf_text::TextRun {
+        pdf_text::TextRun {
+            source: Provenance {
+                page_index: Some(page_index),
+                ..Provenance::unknown()
+            },
+            ..text_run(id, text, x, y)
+        }
     }
 
     fn text_run_with_width(id: &str, text: &str, x: f32, y: f32, width: f32) -> pdf_text::TextRun {
