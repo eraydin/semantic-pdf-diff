@@ -20,6 +20,8 @@ raw PDF text extraction and semantic diff matching.
   rows with deterministic blank cells, conservative row spans, column spans,
   merged-cell placeholders, cell text, bounding boxes, provenance, and column
   positions.
+- Repeated header-row evidence for page-split table candidates when the first
+  row text and column geometry match across pages.
 - Table border hint evidence from page-scoped rectangle paths when it overlaps a
   detected table candidate.
 - Deterministic semantic anchors with strong normalized-text hashes, weak text

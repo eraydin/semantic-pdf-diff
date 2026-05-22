@@ -18,8 +18,8 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   summaries and incremental-update offsets when present.
 - `extract <file.pdf>` runs parse/content/text/semantic extraction across parsed
   page content and reports paragraph text, aligned text-grid table row/cell,
-  row-span, column-span, merged-cell, rectangle table-border hints, diagnostics,
-  and tagged-structure summaries.
+  row-span, column-span, merged-cell, repeated table header-row evidence,
+  rectangle table-border hints, diagnostics, and tagged-structure summaries.
 - `corpus <folder>` scans `.pdf` files, runs parse/extract for each file, and
   writes stable aggregate totals, per-file status, extracted node counts, and
   diagnostic-code frequencies. With `--manifest <json>`, it also checks required
@@ -94,7 +94,8 @@ review works without adding TLS or hosted provider dependencies.
 - Moved blocks and layout-only changes when text anchors and bounding boxes
   support them.
 - Simple aligned text-grid table candidates with row/cell, sparse blank-cell,
-  row-span, column-span, merged-cell, and rectangle border-hint evidence.
+  row-span, column-span, merged-cell, repeated header-row, continuation-group,
+  and rectangle border-hint evidence.
 - Image XObject payload changes by deterministic stream hash.
 - Native vector path operations and graphic-style operations by deterministic
   parsed content-operation signature.

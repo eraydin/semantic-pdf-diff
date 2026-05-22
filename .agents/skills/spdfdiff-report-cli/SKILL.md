@@ -53,6 +53,9 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   - `spdfdiff diff old.pdf new.pdf --fail-on-changes`
   - `spdfdiff inspect file.pdf --format json`
   - `spdfdiff extract file.pdf --format json`
+  - extract JSON table entries include repeated header-row and continuation
+    group evidence when page-split table candidates share a stable header
+    signature.
   - `spdfdiff corpus tests/fixtures/real_world --output corpus_report.json`
   - corpus manifests may include partial-file and diagnostic-code ceilings for
     compatibility regression gates

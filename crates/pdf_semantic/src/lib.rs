@@ -70,6 +70,8 @@ pub struct TableStructure {
     pub rows: Vec<TableRow>,
     pub column_x_positions: Vec<f32>,
     pub border_hints: Vec<TableBorderHint>,
+    pub repeated_header_rows: Vec<usize>,
+    pub continuation_group: Option<String>,
     pub confidence: f32,
 }
 
@@ -145,6 +147,14 @@ struct RepeatedLayoutSignature {
     page_index: usize,
     x: f32,
     y: f32,
+}
+
+#[derive(Debug, Clone)]
+struct RepeatedTableHeaderCandidate {
+    node_index: usize,
+    page_index: usize,
+    header_signature: String,
+    column_x_positions: Vec<f32>,
 }
 
 impl TextLine {
@@ -248,6 +258,7 @@ fn build_layout_nodes(runs: &[TextRun]) -> Vec<SemanticNode> {
     classify_heading_candidates(&mut nodes);
     classify_repeated_page_template_candidates(&mut nodes);
     classify_table_candidates(&mut nodes);
+    classify_repeated_table_headers(&mut nodes);
     classify_list_candidates(&mut nodes);
     nodes
 }
@@ -896,8 +907,107 @@ fn table_structure_from_cells(cells: &[TableCell]) -> Option<TableStructure> {
         rows,
         column_x_positions,
         border_hints: Vec::new(),
+        repeated_header_rows: Vec::new(),
+        continuation_group: None,
         confidence: 0.65,
     })
+}
+
+fn classify_repeated_table_headers(nodes: &mut [SemanticNode]) {
+    let candidates = repeated_table_header_candidates(nodes);
+    let mut visited = vec![false; candidates.len()];
+    for start_index in 0..candidates.len() {
+        if visited[start_index] {
+            continue;
+        }
+        let seed = &candidates[start_index];
+        let mut group_indices = vec![start_index];
+        for (candidate_index, candidate) in candidates.iter().enumerate().skip(start_index + 1) {
+            if candidate.page_index != seed.page_index
+                && candidate.header_signature == seed.header_signature
+                && table_columns_compatible(&candidate.column_x_positions, &seed.column_x_positions)
+            {
+                group_indices.push(candidate_index);
+            }
+        }
+        if group_indices.len() < 2 {
+            continue;
+        }
+        let continuation_group =
+            table_continuation_group_id(&seed.header_signature, &seed.column_x_positions);
+        for group_index in group_indices {
+            visited[group_index] = true;
+            let node_index = candidates[group_index].node_index;
+            let Some(node) = nodes.get_mut(node_index) else {
+                continue;
+            };
+            let Some(table) = &mut node.table else {
+                continue;
+            };
+            if !table.repeated_header_rows.contains(&0) {
+                table.repeated_header_rows.push(0);
+            }
+            table.repeated_header_rows.sort_unstable();
+            table.continuation_group = Some(continuation_group.clone());
+            table.confidence = table.confidence.max(0.72);
+            node.confidence = node.confidence.max(table.confidence);
+        }
+    }
+}
+
+fn repeated_table_header_candidates(nodes: &[SemanticNode]) -> Vec<RepeatedTableHeaderCandidate> {
+    nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_index, node)| {
+            if node.kind != SemanticNodeKind::TableCandidate {
+                return None;
+            }
+            let table = node.table.as_ref()?;
+            let header_signature = table_header_signature(table)?;
+            Some(RepeatedTableHeaderCandidate {
+                node_index,
+                page_index: node.page_index,
+                header_signature,
+                column_x_positions: table.column_x_positions.clone(),
+            })
+        })
+        .collect()
+}
+
+fn table_header_signature(table: &TableStructure) -> Option<String> {
+    if table.rows.len() < 2 || table.column_x_positions.len() < 2 {
+        return None;
+    }
+    let header = table.rows.first()?;
+    let mut parts = Vec::new();
+    for cell in &header.cells {
+        if cell.is_placeholder {
+            return None;
+        }
+        let normalized = normalize_anchor_text(&cell.text);
+        if normalized.is_empty() {
+            return None;
+        }
+        parts.push(normalized);
+    }
+    (parts.len() >= 2).then(|| parts.join("|"))
+}
+
+fn table_columns_compatible(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| (*left - *right).abs() <= TABLE_COLUMN_TOLERANCE)
+}
+
+fn table_continuation_group_id(header_signature: &str, column_x_positions: &[f32]) -> String {
+    let column_count = column_x_positions.len();
+    format!(
+        "table-continuation:{:016x}",
+        stable_hash(format!("{header_signature}|columns:{column_count}"))
+    )
 }
 
 fn median_cell_height(cells: &[TableCell]) -> Option<f32> {
@@ -1771,6 +1881,42 @@ mod tests {
         assert_eq!(table.rows[2].cells[0].text, "C1");
         assert_eq!(table.rows[2].cells[1].text, "C2");
         assert_eq!(table.rows[2].cells[2].text, "C3");
+    }
+
+    #[test]
+    fn marks_repeated_header_rows_across_page_split_tables() {
+        let runs = vec![
+            text_run("p1-h1", "Item", 0, rect(10.0, 116.0, 30.0, 128.0)),
+            text_run("p1-h2", "Qty", 0, rect(70.0, 116.0, 90.0, 128.0)),
+            text_run("p1-a1", "Paper", 0, rect(10.0, 100.0, 36.0, 112.0)),
+            text_run("p1-a2", "4", 0, rect(70.0, 100.0, 76.0, 112.0)),
+            text_run("p2-h1", "Item", 1, rect(12.0, 116.0, 32.0, 128.0)),
+            text_run("p2-h2", "Qty", 1, rect(72.0, 116.0, 92.0, 128.0)),
+            text_run("p2-a1", "Ink", 1, rect(12.0, 100.0, 28.0, 112.0)),
+            text_run("p2-a2", "2", 1, rect(72.0, 100.0, 78.0, 112.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(document.nodes.len(), 2);
+        let first_table = document.nodes[0]
+            .table
+            .as_ref()
+            .expect("first page should preserve table evidence");
+        let second_table = document.nodes[1]
+            .table
+            .as_ref()
+            .expect("second page should preserve table evidence");
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::TableCandidate);
+        assert_eq!(document.nodes[1].kind, SemanticNodeKind::TableCandidate);
+        assert_eq!(first_table.repeated_header_rows, vec![0]);
+        assert_eq!(second_table.repeated_header_rows, vec![0]);
+        assert_eq!(
+            first_table.continuation_group,
+            second_table.continuation_group
+        );
+        assert!(first_table.continuation_group.is_some());
+        assert!(first_table.confidence >= 0.72);
+        assert!(second_table.confidence >= 0.72);
     }
 
     #[test]

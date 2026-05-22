@@ -254,7 +254,8 @@ Current implementation status:
 - layout-only changes are detected separately from text edits with a configurable
   layout tolerance in `diff_core`;
 - heading, list, table, and figure candidates are produced by deterministic
-  semantic extraction heuristics;
+  semantic extraction heuristics, including repeated header-row evidence for
+  page-split table candidates with matching first-row text and column geometry;
 - HTML reports include side-by-side evidence and deterministic inline SVG
   overlays for available old/new bounding boxes in PDF user space;
 - the corpus command emits aggregate parse/partial/failure totals,

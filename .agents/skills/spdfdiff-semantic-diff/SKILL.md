@@ -24,6 +24,8 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
 - Preserve aligned text-grid table evidence as deterministic rows/cells when
   the geometry supports it, including sparse rows with deterministic blank
   cells, conservative row spans, column spans, and merged-cell placeholders.
+  Preserve repeated header-row evidence for page-split table candidates only
+  when first-row text and column geometry match across pages.
   Preserve rectangle table-border hints as evidence when they overlap detected
   table candidates; keep uncertain table-like text as low-scope
   paragraph/unknown content instead of inventing cell structure.
