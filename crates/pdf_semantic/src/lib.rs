@@ -42,6 +42,7 @@ pub struct SemanticAnchor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaggedStructureSummary {
     pub root_object_id: Option<ObjectId>,
+    pub role_map: Vec<TaggedRoleMapSummary>,
     pub element_count: usize,
     pub mcid_count: usize,
     pub parent_tree_entries: usize,
@@ -50,9 +51,16 @@ pub struct TaggedStructureSummary {
     pub confidence: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedRoleMapSummary {
+    pub source: String,
+    pub target: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaggedStructureElementSummary {
     pub structure_type: String,
+    pub mapped_structure_type: Option<String>,
     pub mcids: Vec<usize>,
     pub children: Vec<TaggedStructureElementSummary>,
 }
@@ -296,7 +304,7 @@ fn tagged_element_to_node(
         source.push(run.source.clone());
         cells.push(table_cell_from_run(run));
     }
-    let kind = tagged_structure_kind(&element.structure_type);
+    let kind = tagged_structure_kind(effective_tagged_structure_type(element));
     let table = if kind == SemanticNodeKind::TableCandidate {
         table_structure_from_cells(&cells)
     } else {
@@ -331,6 +339,13 @@ fn tagged_structure_kind(structure_type: &str) -> SemanticNodeKind {
         "P" | "Span" => SemanticNodeKind::Paragraph,
         _ => SemanticNodeKind::UnknownBlock,
     }
+}
+
+fn effective_tagged_structure_type(element: &TaggedStructureElementSummary) -> &str {
+    element
+        .mapped_structure_type
+        .as_deref()
+        .unwrap_or(&element.structure_type)
 }
 
 fn reindex_nodes(nodes: &mut [SemanticNode]) {
@@ -1857,6 +1872,7 @@ mod tests {
         ];
         let tagged_structure = TaggedStructureSummary {
             root_object_id: None,
+            role_map: Vec::new(),
             element_count: 2,
             mcid_count: 2,
             parent_tree_entries: 1,
@@ -1864,11 +1880,13 @@ mod tests {
             elements: vec![
                 TaggedStructureElementSummary {
                     structure_type: "H1".to_owned(),
+                    mapped_structure_type: None,
                     mcids: vec![0],
                     children: Vec::new(),
                 },
                 TaggedStructureElementSummary {
                     structure_type: "P".to_owned(),
+                    mapped_structure_type: None,
                     mcids: vec![1],
                     children: Vec::new(),
                 },
@@ -1893,6 +1911,49 @@ mod tests {
         assert_eq!(
             document.nodes[1].normalized_text.as_deref(),
             Some("Body first")
+        );
+    }
+
+    #[test]
+    fn uses_mapped_tagged_role_for_semantic_node_kind() {
+        let runs = vec![tagged_text_run(
+            "heading",
+            "Mapped Heading",
+            0,
+            rect(10.0, 120.0, 120.0, 132.0),
+            "ChapterTitle",
+            0,
+        )];
+        let tagged_structure = TaggedStructureSummary {
+            root_object_id: None,
+            role_map: vec![TaggedRoleMapSummary {
+                source: "ChapterTitle".to_owned(),
+                target: "H1".to_owned(),
+            }],
+            element_count: 1,
+            mcid_count: 1,
+            parent_tree_entries: 1,
+            structure_types: vec!["ChapterTitle".to_owned(), "H1".to_owned()],
+            elements: vec![TaggedStructureElementSummary {
+                structure_type: "ChapterTitle".to_owned(),
+                mapped_structure_type: Some("H1".to_owned()),
+                mcids: vec![0],
+                children: Vec::new(),
+            }],
+            confidence: 0.9,
+        };
+        let document = build_semantic_document_with_tagged_structure(
+            "fixture",
+            &runs,
+            Vec::new(),
+            Some(tagged_structure),
+        );
+
+        assert_eq!(document.nodes.len(), 1);
+        assert_eq!(document.nodes[0].kind, SemanticNodeKind::HeadingCandidate);
+        assert_eq!(
+            document.nodes[0].normalized_text.as_deref(),
+            Some("Mapped Heading")
         );
     }
 

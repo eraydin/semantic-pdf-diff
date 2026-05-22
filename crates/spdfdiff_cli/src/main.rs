@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 
+const PUBLIC_ALPHA_MIN_PARSED_FILES: usize = 30;
+
 #[derive(Debug, Parser)]
 #[command(name = "spdfdiff", version, about = "Semantic PDF diff CLI")]
 struct Cli {
@@ -272,11 +274,22 @@ struct CorpusReport {
 struct CorpusManifest {
     schema_version: String,
     #[serde(default)]
+    compatibility_label: CompatibilityLabel,
+    #[serde(default)]
     required_files: Vec<String>,
     #[serde(default)]
     diff_pairs: Vec<CorpusManifestDiffPair>,
     #[serde(default)]
     thresholds: CorpusGateThresholds,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum CompatibilityLabel {
+    VerticalSlice,
+    #[default]
+    CompatibilityGate,
+    PublicAlpha,
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,7 +400,10 @@ enum CorpusDiffPairStatus {
 #[derive(Debug, Serialize)]
 struct CorpusGateReport {
     manifest_schema_version: String,
+    compatibility_label: CompatibilityLabel,
     passed: bool,
+    public_alpha_ready: bool,
+    public_alpha_blockers: Vec<String>,
     thresholds: CorpusGateThresholds,
     missing_required_files: Vec<String>,
     failures: Vec<String>,
@@ -458,11 +474,18 @@ struct ExtractTableCellSpanReport {
 struct TaggedStructureReport {
     detected: bool,
     root_object: Option<String>,
+    role_map: Vec<TaggedRoleMapReport>,
     element_count: usize,
     mcid_count: usize,
     parent_tree_entries: usize,
     structure_types: Vec<String>,
     diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TaggedRoleMapReport {
+    source: String,
+    target: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1306,14 +1329,72 @@ fn build_corpus_gate_report(
         &manifest.thresholds.diff_diagnostic_maxima,
         &mut failures,
     );
+    let public_alpha_blockers = public_alpha_blockers(manifest, inputs.parsed, failed_diff_pairs);
+    if manifest.compatibility_label == CompatibilityLabel::PublicAlpha {
+        failures.extend(public_alpha_blockers.iter().cloned());
+    }
+    let passed = failures.is_empty();
+    let public_alpha_ready = manifest.compatibility_label == CompatibilityLabel::PublicAlpha
+        && public_alpha_blockers.is_empty()
+        && passed;
 
     CorpusGateReport {
         manifest_schema_version: manifest.schema_version.clone(),
-        passed: failures.is_empty(),
+        compatibility_label: manifest.compatibility_label,
+        passed,
+        public_alpha_ready,
+        public_alpha_blockers,
         thresholds: manifest.thresholds.clone(),
         missing_required_files,
         failures,
     }
+}
+
+fn public_alpha_blockers(
+    manifest: &CorpusManifest,
+    parsed_files: usize,
+    failed_diff_pairs: usize,
+) -> Vec<String> {
+    if manifest.compatibility_label != CompatibilityLabel::PublicAlpha {
+        return Vec::new();
+    }
+    let mut blockers = Vec::new();
+    match manifest.thresholds.min_parsed_files {
+        Some(minimum) if minimum >= PUBLIC_ALPHA_MIN_PARSED_FILES => {}
+        Some(minimum) => blockers.push(format!(
+            "public-alpha label requires min_parsed_files >= {PUBLIC_ALPHA_MIN_PARSED_FILES}; configured {minimum}"
+        )),
+        None => blockers.push(format!(
+            "public-alpha label requires min_parsed_files >= {PUBLIC_ALPHA_MIN_PARSED_FILES}"
+        )),
+    }
+    if parsed_files < PUBLIC_ALPHA_MIN_PARSED_FILES {
+        blockers.push(format!(
+            "public-alpha label requires at least {PUBLIC_ALPHA_MIN_PARSED_FILES} parsed files; observed {parsed_files}"
+        ));
+    }
+    if manifest.thresholds.max_partial_files.is_none() {
+        blockers
+            .push("public-alpha label requires an explicit max_partial_files threshold".to_owned());
+    }
+    if manifest.diff_pairs.is_empty() {
+        blockers.push("public-alpha label requires at least one diff pair".to_owned());
+    }
+    if manifest.required_files.is_empty() {
+        blockers.push("public-alpha label requires a curated required_files list".to_owned());
+    }
+    if manifest.thresholds.max_failed_files != 0 {
+        blockers.push("public-alpha label requires max_failed_files = 0".to_owned());
+    }
+    if manifest.thresholds.max_failed_diff_pairs != 0 {
+        blockers.push("public-alpha label requires max_failed_diff_pairs = 0".to_owned());
+    }
+    if failed_diff_pairs > 0 {
+        blockers.push(format!(
+            "public-alpha label requires all diff pairs to complete; observed {failed_diff_pairs} failed diff pairs"
+        ));
+    }
+    blockers
 }
 
 fn append_diagnostic_gate_failures(
@@ -2200,6 +2281,7 @@ fn semantic_tagged_structure_summary(
     structure_types.dedup();
     pdf_semantic::TaggedStructureSummary {
         root_object_id: structure.root_object_id,
+        role_map: semantic_tagged_role_map(&structure.role_map),
         element_count: tagged_element_count(&structure.roots),
         mcid_count: tagged_mcid_count(&structure.roots),
         parent_tree_entries: structure.parent_tree.len(),
@@ -2220,8 +2302,21 @@ fn semantic_tagged_elements(
         .iter()
         .map(|element| pdf_semantic::TaggedStructureElementSummary {
             structure_type: element.structure_type.clone(),
+            mapped_structure_type: element.mapped_structure_type.clone(),
             mcids: element.mcids.clone(),
             children: semantic_tagged_elements(&element.children),
+        })
+        .collect()
+}
+
+fn semantic_tagged_role_map(
+    role_map: &[pdf_core::TaggedRoleMapEntry],
+) -> Vec<pdf_semantic::TaggedRoleMapSummary> {
+    role_map
+        .iter()
+        .map(|entry| pdf_semantic::TaggedRoleMapSummary {
+            source: entry.source.clone(),
+            target: entry.target.clone(),
         })
         .collect()
 }
@@ -2236,6 +2331,7 @@ fn tagged_structure_report(structure: &pdf_core::TaggedStructure) -> TaggedStruc
         root_object: structure
             .root_object_id
             .map(|object_id| format!("{} {} R", object_id.number, object_id.generation)),
+        role_map: tagged_role_map_report(&structure.role_map),
         element_count: tagged_element_count(&structure.roots),
         mcid_count: tagged_mcid_count(&structure.roots),
         parent_tree_entries: structure.parent_tree.len(),
@@ -2256,12 +2352,30 @@ fn tagged_structure_report_from_semantic(
         root_object: summary
             .root_object_id
             .map(|object_id| format!("{} {} R", object_id.number, object_id.generation)),
+        role_map: summary
+            .role_map
+            .iter()
+            .map(|entry| TaggedRoleMapReport {
+                source: entry.source.clone(),
+                target: entry.target.clone(),
+            })
+            .collect(),
         element_count: summary.element_count,
         mcid_count: summary.mcid_count,
         parent_tree_entries: summary.parent_tree_entries,
         structure_types: summary.structure_types.clone(),
         diagnostics: Vec::new(),
     }
+}
+
+fn tagged_role_map_report(role_map: &[pdf_core::TaggedRoleMapEntry]) -> Vec<TaggedRoleMapReport> {
+    role_map
+        .iter()
+        .map(|entry| TaggedRoleMapReport {
+            source: entry.source.clone(),
+            target: entry.target.clone(),
+        })
+        .collect()
 }
 
 fn incremental_update_report(
@@ -2305,6 +2419,9 @@ fn collect_tagged_structure_types(
 ) {
     for element in elements {
         structure_types.push(element.structure_type.clone());
+        if let Some(mapped) = &element.mapped_structure_type {
+            structure_types.push(mapped.clone());
+        }
         collect_tagged_structure_types(&element.children, structure_types);
     }
 }
@@ -4606,6 +4723,7 @@ endobj
             .expect("new fixture should be written");
         let manifest = CorpusManifest {
             schema_version: "1".to_owned(),
+            compatibility_label: CompatibilityLabel::CompatibilityGate,
             required_files: vec![
                 "old.pdf".to_owned(),
                 "new.pdf".to_owned(),
@@ -4648,6 +4766,7 @@ endobj
         diagnostic_maxima.insert("MISSING_TOUNICODE".to_owned(), 0);
         let manifest = CorpusManifest {
             schema_version: "1".to_owned(),
+            compatibility_label: CompatibilityLabel::CompatibilityGate,
             required_files: vec!["old.pdf".to_owned()],
             diff_pairs: Vec::new(),
             thresholds: CorpusGateThresholds {
@@ -4674,6 +4793,46 @@ endobj
             gate.failures.iter().any(|failure| failure
                 .contains("file diagnostic count for MISSING_TOUNICODE is 1, exceeding maximum 0"))
         );
+
+        std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
+    }
+
+    #[test]
+    fn corpus_gate_blocks_public_alpha_label_without_release_evidence() {
+        let folder = PathBuf::from("target/spdfdiff_cli_tests/public_alpha_gate");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("fixture folder should be created");
+        std::fs::write(folder.join("old.pdf"), minimal_pdf("Hello"))
+            .expect("old fixture should be written");
+        let manifest = CorpusManifest {
+            schema_version: "1".to_owned(),
+            compatibility_label: CompatibilityLabel::PublicAlpha,
+            required_files: vec!["old.pdf".to_owned()],
+            diff_pairs: Vec::new(),
+            thresholds: CorpusGateThresholds {
+                min_parsed_files: Some(1),
+                max_missing_required_files: 0,
+                max_failed_files: 0,
+                max_failed_diff_pairs: 0,
+                max_partial_files: Some(1),
+                diagnostic_maxima: BTreeMap::new(),
+                diff_diagnostic_maxima: BTreeMap::new(),
+            },
+        };
+
+        let report = build_corpus_report_model(&folder, ParseConfig::default(), Some(&manifest))
+            .expect("manifest corpus report should render");
+        let gate = report.gate.expect("manifest should produce gate report");
+
+        assert_eq!(gate.compatibility_label, CompatibilityLabel::PublicAlpha);
+        assert!(!gate.public_alpha_ready);
+        assert!(!gate.passed);
+        assert!(gate.public_alpha_blockers.iter().any(|blocker| {
+            blocker.contains("public-alpha label requires min_parsed_files >= 30")
+        }));
+        assert!(gate.public_alpha_blockers.iter().any(|blocker| {
+            blocker.contains("public-alpha label requires at least one diff pair")
+        }));
 
         std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
     }

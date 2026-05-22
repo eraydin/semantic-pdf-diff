@@ -75,15 +75,23 @@ pub struct PdfPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaggedStructure {
     pub root_object_id: Option<ObjectId>,
+    pub role_map: Vec<TaggedRoleMapEntry>,
     pub roots: Vec<TaggedStructureElement>,
     pub parent_tree: Vec<TaggedParentTreeEntry>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedRoleMapEntry {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaggedStructureElement {
     pub object_id: Option<ObjectId>,
     pub structure_type: String,
+    pub mapped_structure_type: Option<String>,
     pub mcids: Vec<usize>,
     pub children: Vec<TaggedStructureElement>,
 }
@@ -309,17 +317,24 @@ impl PdfDocument {
         let Some(root_object_id) = struct_tree_root_id(self, config, &mut diagnostics) else {
             return TaggedStructure {
                 root_object_id: None,
+                role_map: Vec::new(),
                 roots: Vec::new(),
                 parent_tree: Vec::new(),
                 diagnostics,
             };
         };
+        let role_map = parse_structure_role_map(self, root_object_id, config, &mut diagnostics);
         let mut seen = Vec::new();
-        let parsed =
-            parse_structure_reference(self, root_object_id, config, 0, &mut seen, &mut diagnostics);
+        let mut context = StructureParseContext {
+            config,
+            role_map: &role_map,
+            diagnostics: &mut diagnostics,
+        };
+        let parsed = parse_structure_reference(self, root_object_id, 0, &mut seen, &mut context);
         let parent_tree = parse_parent_tree(self, root_object_id, config, &mut diagnostics);
         TaggedStructure {
             root_object_id: Some(root_object_id),
+            role_map,
             roots: parsed.elements,
             parent_tree,
             diagnostics,
@@ -331,6 +346,12 @@ impl PdfDocument {
 struct StructureParseResult {
     elements: Vec<TaggedStructureElement>,
     mcids: Vec<usize>,
+}
+
+struct StructureParseContext<'a> {
+    config: ParseConfig,
+    role_map: &'a [TaggedRoleMapEntry],
+    diagnostics: &'a mut Vec<Diagnostic>,
 }
 
 fn struct_tree_root_id(
@@ -367,18 +388,17 @@ fn struct_tree_root_id(
 fn parse_structure_reference(
     document: &PdfDocument,
     object_id: ObjectId,
-    config: ParseConfig,
     depth: usize,
     seen: &mut Vec<ObjectId>,
-    diagnostics: &mut Vec<Diagnostic>,
+    context: &mut StructureParseContext<'_>,
 ) -> StructureParseResult {
-    if depth > config.limits.max_indirect_depth {
-        diagnostics.push(
+    if depth > context.config.limits.max_indirect_depth {
+        context.diagnostics.push(
             Diagnostic::warning(
                 "TAGGED_STRUCTURE_DEPTH_LIMIT",
                 format!(
                     "tagged structure exceeds reference depth limit of {}",
-                    config.limits.max_indirect_depth
+                    context.config.limits.max_indirect_depth
                 ),
             )
             .with_object(object_id),
@@ -386,7 +406,7 @@ fn parse_structure_reference(
         return StructureParseResult::default();
     }
     if seen.contains(&object_id) {
-        diagnostics.push(
+        context.diagnostics.push(
             Diagnostic::warning(
                 "TAGGED_STRUCTURE_CYCLE",
                 format!(
@@ -403,7 +423,7 @@ fn parse_structure_reference(
         .iter()
         .find(|object| object.id == object_id)
     else {
-        diagnostics.push(
+        context.diagnostics.push(
             Diagnostic::warning(
                 "TAGGED_STRUCTURE_MISSING_OBJECT",
                 format!(
@@ -415,32 +435,25 @@ fn parse_structure_reference(
         );
         return StructureParseResult::default();
     };
-    let value = match parse_primitive(object.body.as_bytes(), config).map(|parsed| parsed.value) {
-        Ok(value) => value,
-        Err(error) => {
-            diagnostics.push(
-                Diagnostic::warning(
-                    "TAGGED_STRUCTURE_MALFORMED",
-                    format!(
-                        "tagged structure object {} could not be parsed: {error}",
-                        object_id.number
-                    ),
-                )
-                .with_object(object_id),
-            );
-            return StructureParseResult::default();
-        }
-    };
+    let value =
+        match parse_primitive(object.body.as_bytes(), context.config).map(|parsed| parsed.value) {
+            Ok(value) => value,
+            Err(error) => {
+                context.diagnostics.push(
+                    Diagnostic::warning(
+                        "TAGGED_STRUCTURE_MALFORMED",
+                        format!(
+                            "tagged structure object {} could not be parsed: {error}",
+                            object_id.number
+                        ),
+                    )
+                    .with_object(object_id),
+                );
+                return StructureParseResult::default();
+            }
+        };
     seen.push(object_id);
-    let result = parse_structure_value(
-        document,
-        &value,
-        Some(object_id),
-        config,
-        depth + 1,
-        seen,
-        diagnostics,
-    );
+    let result = parse_structure_value(document, &value, Some(object_id), depth + 1, seen, context);
     seen.pop();
     result
 }
@@ -449,20 +462,18 @@ fn parse_structure_value(
     document: &PdfDocument,
     value: &PdfPrimitive,
     object_id: Option<ObjectId>,
-    config: ParseConfig,
     depth: usize,
     seen: &mut Vec<ObjectId>,
-    diagnostics: &mut Vec<Diagnostic>,
+    context: &mut StructureParseContext<'_>,
 ) -> StructureParseResult {
     match value {
         PdfPrimitive::Reference(id) => {
-            parse_structure_reference(document, *id, config, depth, seen, diagnostics)
+            parse_structure_reference(document, *id, depth, seen, context)
         }
         PdfPrimitive::Array(items) => {
             let mut result = StructureParseResult::default();
             for item in items {
-                let child =
-                    parse_structure_value(document, item, None, config, depth, seen, diagnostics);
+                let child = parse_structure_value(document, item, None, depth, seen, context);
                 result.elements.extend(child.elements);
                 result.mcids.extend(child.mcids);
             }
@@ -475,7 +486,7 @@ fn parse_structure_value(
             },
             Err(_) => {
                 if let Some(object_id) = object_id {
-                    diagnostics.push(
+                    context.diagnostics.push(
                         Diagnostic::warning(
                             "TAGGED_STRUCTURE_MALFORMED",
                             "tagged structure contains a negative MCID",
@@ -487,7 +498,7 @@ fn parse_structure_value(
             }
         },
         PdfPrimitive::Dictionary(_) => {
-            parse_structure_dictionary(document, value, object_id, config, depth, seen, diagnostics)
+            parse_structure_dictionary(document, value, object_id, depth, seen, context)
         }
         PdfPrimitive::Null
         | PdfPrimitive::Boolean(_)
@@ -502,10 +513,9 @@ fn parse_structure_dictionary(
     document: &PdfDocument,
     value: &PdfPrimitive,
     object_id: Option<ObjectId>,
-    config: ParseConfig,
     depth: usize,
     seen: &mut Vec<ObjectId>,
-    diagnostics: &mut Vec<Diagnostic>,
+    context: &mut StructureParseContext<'_>,
 ) -> StructureParseResult {
     if let Some(PdfPrimitive::Integer(mcid)) = dictionary_value(value, "MCID") {
         return match usize::try_from(*mcid) {
@@ -518,17 +528,7 @@ fn parse_structure_dictionary(
     }
 
     let children = dictionary_value(value, "K")
-        .map(|children| {
-            parse_structure_value(
-                document,
-                children,
-                None,
-                config,
-                depth + 1,
-                seen,
-                diagnostics,
-            )
-        })
+        .map(|children| parse_structure_value(document, children, None, depth + 1, seen, context))
         .unwrap_or_default();
 
     if let Some(PdfPrimitive::Name(structure_type)) = dictionary_value(value, "S") {
@@ -536,6 +536,7 @@ fn parse_structure_dictionary(
             elements: vec![TaggedStructureElement {
                 object_id,
                 structure_type: structure_type.clone(),
+                mapped_structure_type: mapped_structure_type(structure_type, context.role_map),
                 mcids: children.mcids,
                 children: children.elements,
             }],
@@ -544,6 +545,70 @@ fn parse_structure_dictionary(
     }
 
     children
+}
+
+fn parse_structure_role_map(
+    document: &PdfDocument,
+    root_object_id: ObjectId,
+    config: ParseConfig,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<TaggedRoleMapEntry> {
+    let Some(root_object) = document
+        .objects
+        .iter()
+        .find(|object| object.id == root_object_id)
+    else {
+        return Vec::new();
+    };
+    let Ok(root_value) =
+        parse_primitive(root_object.body.as_bytes(), config).map(|parsed| parsed.value)
+    else {
+        return Vec::new();
+    };
+    let Some(role_map_value) = dictionary_value(&root_value, "RoleMap") else {
+        return Vec::new();
+    };
+    let PdfPrimitive::Dictionary(entries) = role_map_value else {
+        diagnostics.push(
+            Diagnostic::warning(
+                "TAGGED_ROLE_MAP_MALFORMED",
+                "tagged /RoleMap is not a dictionary",
+            )
+            .with_object(root_object_id),
+        );
+        return Vec::new();
+    };
+    let mut role_map = Vec::new();
+    for (source, target) in entries {
+        match target {
+            PdfPrimitive::Name(target) => role_map.push(TaggedRoleMapEntry {
+                source: source.clone(),
+                target: target.clone(),
+            }),
+            _ => diagnostics.push(
+                Diagnostic::warning(
+                    "TAGGED_ROLE_MAP_MALFORMED",
+                    format!("tagged /RoleMap entry /{source} does not map to a name"),
+                )
+                .with_object(root_object_id),
+            ),
+        }
+    }
+    role_map.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    role_map.dedup_by(|left, right| left.source == right.source && left.target == right.target);
+    role_map
+}
+
+fn mapped_structure_type(structure_type: &str, role_map: &[TaggedRoleMapEntry]) -> Option<String> {
+    role_map
+        .iter()
+        .find(|entry| entry.source == structure_type)
+        .map(|entry| entry.target.clone())
+        .filter(|target| target != structure_type)
 }
 
 fn parse_parent_tree(
@@ -3863,6 +3928,29 @@ endobj
     }
 
     #[test]
+    fn parses_tagged_role_map_and_applies_mapped_structure_type() {
+        let document = PdfDocument::parse(tagged_role_map_pdf())
+            .expect("tagged role-map fixture should parse");
+        let structure = document.tagged_structure(ParseConfig::default());
+
+        assert_eq!(
+            structure.role_map,
+            vec![TaggedRoleMapEntry {
+                source: "ChapterTitle".to_owned(),
+                target: "H1".to_owned(),
+            }]
+        );
+        assert_eq!(structure.roots.len(), 1);
+        assert_eq!(structure.roots[0].structure_type, "ChapterTitle");
+        assert_eq!(
+            structure.roots[0].mapped_structure_type.as_deref(),
+            Some("H1")
+        );
+        assert_eq!(structure.roots[0].mcids, vec![0]);
+        assert!(structure.diagnostics.is_empty());
+    }
+
+    #[test]
     fn reports_missing_tagged_structure_as_empty_summary() {
         let document = PdfDocument::parse(minimal_pdf()).expect("fixture should parse");
         let structure = document.tagged_structure(ParseConfig::default());
@@ -3918,6 +4006,32 @@ endobj
 endobj
 8 0 obj
 << /Type /StructElem /S /P /P 6 0 R /K 1 >>
+endobj
+"
+    }
+
+    fn tagged_role_map_pdf() -> &'static [u8] {
+        b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /StructParents 0 >>
+endobj
+4 0 obj
+<< /Length 49 >>
+stream
+BT /ChapterTitle << /MCID 0 >> BDC (Title) Tj EMC ET
+endstream
+endobj
+6 0 obj
+<< /Type /StructTreeRoot /K [7 0 R] /RoleMap << /ChapterTitle /H1 >> >>
+endobj
+7 0 obj
+<< /Type /StructElem /S /ChapterTitle /P 6 0 R /K 0 >>
 endobj
 "
     }

@@ -25,9 +25,9 @@ raw PDF text extraction and semantic diff matching.
 - Deterministic semantic anchors with strong normalized-text hashes, weak text
   signatures, geometry buckets, and optional heading context.
 - Tagged-PDF structure summaries when `pdf_core` parses a simple
-  `/StructTreeRoot`.
+  `/StructTreeRoot`, including mapped roles from `/RoleMap`.
 - High-confidence tagged nodes when explicit `/MCID` values map structure
-  elements to text runs.
+  elements to text runs; mapped roles drive conservative semantic node kinds.
 
 ## Pipeline Context
 

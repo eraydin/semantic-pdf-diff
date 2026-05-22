@@ -24,10 +24,11 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   writes stable aggregate totals, per-file status, extracted node counts, and
   diagnostic-code frequencies. With `--manifest <json>`, it also checks required
   files, runs declared diff pairs, emits diff diagnostic counts, and reports a
-  deterministic release gate. Manifests can pin maximum partial-file counts,
-  file diagnostic counts, and diff diagnostic counts as compatibility
-  regression baselines. With `--fail-on-gate`, a failed gate exits with code
-  `1`.
+  deterministic release gate with a manifest compatibility label. Manifests can
+  pin maximum partial-file counts, file diagnostic counts, and diff diagnostic
+  counts as compatibility regression baselines. A `public-alpha` label is
+  release-blocking unless the corpus gate has curated release evidence. With
+  `--fail-on-gate`, a failed gate exits with code `1`.
 - `check --config .spdfdiff.toml` runs configured PDF pairs for CI, writes
   deterministic artifacts, applies threshold and baseline suppression rules, and
   emits stable summary JSON on stdout. A failed check exits with code `1`.
@@ -104,7 +105,8 @@ review works without adding TLS or hosted provider dependencies.
 - Selected report-facing document surfaces such as embedded-file/FileSpec
   objects, outline-like objects, and metadata/XMP objects by deterministic
   object hash.
-- Simple tagged-PDF structure markers and MCID-backed text mapping.
+- Simple tagged-PDF structure markers, `/RoleMap` summaries, and MCID-backed
+  text mapping.
 
 ## OCR Path
 

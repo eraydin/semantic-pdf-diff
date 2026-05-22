@@ -72,10 +72,11 @@ Use actual PDF semantic structure when available.
 High-precision semantic diffs for accessible/tagged PDFs, with fallback to layout heuristics for untagged PDFs.
 
 Current compatibility-gate progress: simple `/StructTreeRoot` trees are parsed
-into deterministic structure elements with structure type names and MCID
-references, controlled `/ParentTree` entries are summarized, CLI
-inspect/extract JSON reports expose tagged summaries, and explicit MCID-to-text
-matches can produce high-confidence tagged semantic nodes in structure order.
+into deterministic structure elements with structure type names, `/RoleMap`
+mappings, and MCID references, controlled `/ParentTree` entries are summarized,
+CLI inspect/extract JSON reports expose tagged summaries, and explicit
+MCID-to-text matches can produce high-confidence tagged semantic nodes in
+structure order using mapped roles when present.
 Full parent-tree use and broader tagged-PDF coverage remain future Phase 2
 work.
 

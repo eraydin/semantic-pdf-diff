@@ -28,6 +28,8 @@ stable diagnostics rather than silent success.
 - Selected document-surface comparisons for images, vector/style signatures,
   annotations, links, form fields, outlines, name trees, metadata/XMP, and
   embedded-file surfaces.
+- Simple tagged-PDF summaries with `/RoleMap`, parent-tree, and MCID-backed
+  text mapping for controlled cases.
 - Optional external OCR through `SPDFDIFF_OCR_COMMAND` or `tesseract` for
   supported image-only samples.
 

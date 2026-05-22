@@ -87,7 +87,7 @@ minimal_old.pdf + minimal_new.pdf
   supported no-filter, `FlateDecode`, `ASCIIHexDecode`, and `RunLengthDecode`
   filters with paired `/DecodeParms` metadata,
   simple `/StructTreeRoot` structure-tree parsing with structure types,
-  parent-tree entries, and MCID references, encrypted-PDF rejection, and
+  `/RoleMap` entries, parent-tree entries, and MCID references, encrypted-PDF rejection, and
   resource-limit enforcement for parser-owned limits, plus deterministic
   incremental-update metadata for repeated `startxref` and trailer `/Prev`
   offsets.
@@ -114,6 +114,10 @@ minimal_old.pdf + minimal_new.pdf
 - Corpus gate manifests may pin maximum partial-file and diagnostic-code counts;
   treat those thresholds as compatibility regression baselines, not broad
   compatibility claims.
+- Corpus gate manifests may declare a compatibility label. A `public-alpha`
+  label is release-blocking unless the manifest includes a curated release gate
+  with at least 30 parsed files, explicit partial-file thresholds, diff pairs,
+  and zero failed files/pairs.
 
 ## Determinism
 

@@ -28,8 +28,9 @@ description: Implement or review semantic-pdf-diff semantic extraction and diff 
   table candidates; keep uncertain table-like text as low-scope
   paragraph/unknown content instead of inventing cell structure.
 - Tagged-PDF structure and marked-content IDs are compatibility-gate surfaces:
-  parse simple structure trees, keep diagnostics stable, and use tagged reading
-  order only when MCID-to-text mapping is explicit and confidence-bearing.
+  parse simple structure trees, preserve `/RoleMap` mapped roles, keep
+  diagnostics stable, and use tagged reading order only when MCID-to-text
+  mapping is explicit and confidence-bearing.
 
 ## Diff Rules
 

@@ -1,5 +1,6 @@
 {
   "schema_version": "1",
+  "compatibility_label": "compatibility-gate",
   "thresholds": {
     "min_parsed_files": 40,
     "max_missing_required_files": 0,

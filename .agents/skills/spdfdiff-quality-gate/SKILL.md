@@ -46,7 +46,9 @@ gate.
 - Invalid input must not panic.
 - Unsupported features must emit stable diagnostic codes.
 - Snapshot output must not include timestamps, absolute paths, random IDs, or nondeterministic map ordering.
-- Public-alpha claims require xref streams, object streams, resource limits, curated corpus metrics, and documented unsupported cases.
+- Public-alpha claims require xref streams, object streams, resource limits,
+  curated corpus metrics, documented unsupported cases, and a manifest
+  compatibility label whose release blockers are empty.
 - External PDF tools may be used only as optional dev/reference comparisons, not core dependencies.
 
 ## Review Checklist

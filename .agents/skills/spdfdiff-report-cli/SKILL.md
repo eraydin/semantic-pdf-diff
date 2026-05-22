@@ -41,10 +41,10 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   Image-only PDFs can use the external OCR adapter when
   `SPDFDIFF_OCR_COMMAND` or `tesseract` is available; OCR text must preserve
   image-object provenance and deterministic diagnostics.
-- Inspect and extract JSON reports include simple tagged-structure and
-  parent-tree summaries when `pdf_core` parses `/StructTreeRoot`; mapped MCID
-  text can now produce tagged semantic nodes, while broader tagged-PDF coverage
-  remains compatibility-gate work.
+- Inspect and extract JSON reports include simple tagged-structure,
+  `/RoleMap`, and parent-tree summaries when `pdf_core` parses
+  `/StructTreeRoot`; mapped MCID text can now produce tagged semantic nodes,
+  while broader tagged-PDF coverage remains compatibility-gate work.
 
 ## CLI Rules
 

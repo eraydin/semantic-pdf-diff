@@ -22,8 +22,8 @@ silently ignoring unsupported features.
   `/MediaBox`, `/CropBox`, and `/Rotate`.
 - Page content stream resolution for single `/Contents` streams and ordered
   `/Contents [...]` arrays.
-- Simple `/StructTreeRoot` and parent-tree summaries with structure type names
-  and MCID references.
+- Simple `/StructTreeRoot`, `/RoleMap`, and parent-tree summaries with
+  structure type names, mapped role names, and MCID references.
 - Incremental-update metadata for repeated `startxref` sections, the selected
   latest xref offset, prior xref offsets, and trailer `/Prev` offsets.
 - Resource-limit enforcement through `spdfdiff_types::ResourceLimits`.
