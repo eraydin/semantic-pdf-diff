@@ -17,7 +17,8 @@ model as the `spdfdiff` CLI.
 - `Provenance`, `ObjectId`, `ByteRange`, `Rect`, `Point`, and `Matrix` for
   preserving where evidence came from in a PDF.
 - `DiffDocument`, `SemanticChange`, `SemanticNodeEvidence`, `LayoutDiff`, and
-  `TextHunk` for stable semantic PDF comparison output.
+  `TextHunk` for stable semantic PDF comparison output, including optional
+  semantic-role evidence for extracted nodes.
 - `AiReviewReport` and related review item/tag/confidence types for
   prompt-ready, evidence-preserving review JSON.
 
@@ -50,6 +51,8 @@ Use `spdfdiff_types` when you need:
 - a stable Rust model for semantic PDF comparison reports;
 - explicit diagnostics for unsupported PDF features;
 - provenance-aware evidence for text, layout, and object-level changes;
+- semantic-role evidence for candidate headers, footers, page templates, and
+  body blocks when downstream extraction provides it;
 - resource-limit configuration shared with the parser stack.
 
 If you only need a command-line PDF diff tool, use the `spdfdiff_cli` crate and

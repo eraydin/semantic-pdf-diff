@@ -30,10 +30,10 @@ The `ai-json` report is expected to be valid JSON and include:
 - `summary.total_changes`, `diagnostic_count`, `low_confidence_change_count`,
   and `unsupported_surface_count`;
 - `question_hints` for obligation, payment-term, layout-only, low-confidence,
-  and unsupported-surface review questions;
+  repeated page-region, and unsupported-surface review questions;
 - `review_items` with deterministic `change_id`, `kind`, neutral candidate
-  `tags`, `confidence_bucket`, explanation text, old/new semantic node IDs when
-  available, text hunks, page/bbox evidence, and provenance;
+  `tags`, `confidence_bucket`, explanation text, old/new semantic node IDs and
+  roles when available, text hunks, page/bbox evidence, and provenance;
 - `diagnostic_summary` grouped by stable diagnostic code.
 
 The AI review report must remain deterministic and evidence-preserving. It is a
@@ -196,6 +196,8 @@ and layout changes in one stress test.
 - A single body-text change, "and verify firewall logs", appears on page 2.
 - A good semantic diff should ideally help users separate repeated header/footer
   changes from core body changes.
+- `diff --format ai-json` should tag changed repeated header/footer evidence as
+  `RepeatedPageRegion` and include semantic-role evidence.
 
 ## 10. Inline Formatting And Typographic Semantics
 

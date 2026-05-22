@@ -143,7 +143,7 @@ struct PageVerticalProfile {
 
 #[derive(Debug, Clone)]
 struct RepeatedLayoutSignature {
-    normalized_text: String,
+    template_signature: String,
     page_index: usize,
     x: f32,
     y: f32,
@@ -700,14 +700,14 @@ fn classify_repeated_page_template_candidates(nodes: &mut [SemanticNode]) {
         let Some(bbox) = node.bbox else {
             continue;
         };
-        let normalized_text = normalize_anchor_text(text);
-        if normalized_text.is_empty() {
+        let template_signature = repeated_region_signature(text);
+        if template_signature.is_empty() {
             continue;
         }
         let repeat_count = signatures
             .iter()
             .filter(|signature| {
-                signature.normalized_text == normalized_text
+                signature.template_signature == template_signature
                     && signature.page_index != node.page_index
                     && (signature.x - bbox.x0).abs() <= REPEATED_POSITION_TOLERANCE
                     && (signature.y - bbox.y0).abs() <= REPEATED_POSITION_TOLERANCE
@@ -769,10 +769,10 @@ fn repeated_layout_signatures(nodes: &[SemanticNode]) -> Vec<RepeatedLayoutSigna
     nodes
         .iter()
         .filter_map(|node| {
-            let text = normalize_anchor_text(node.normalized_text.as_deref()?);
+            let text = repeated_region_signature(node.normalized_text.as_deref()?);
             let bbox = node.bbox?;
             (!text.is_empty()).then_some(RepeatedLayoutSignature {
-                normalized_text: text,
+                template_signature: text,
                 page_index: node.page_index,
                 x: bbox.x0,
                 y: bbox.y0,
@@ -1358,6 +1358,23 @@ fn normalize_anchor_text(text: &str) -> String {
         .to_lowercase()
 }
 
+fn repeated_region_signature(text: &str) -> String {
+    let mut in_digit_run = false;
+    let mut signature = String::new();
+    for character in normalize_anchor_text(text).chars() {
+        if character.is_ascii_digit() {
+            if !in_digit_run {
+                signature.push('#');
+                in_digit_run = true;
+            }
+        } else {
+            in_digit_run = false;
+            signature.push(character);
+        }
+    }
+    signature
+}
+
 fn weak_signature_text(text: &str) -> String {
     let tokens = normalize_anchor_text(text)
         .split_whitespace()
@@ -1564,6 +1581,36 @@ mod tests {
                 .filter(|node| node.kind == SemanticNodeKind::FooterCandidate)
                 .count()
                 >= 2
+        );
+    }
+
+    #[test]
+    fn classifies_repeated_page_regions_with_variable_page_numbers() {
+        let runs = vec![
+            text_run(
+                "f1",
+                "Confidential - 2025 | Page 1",
+                0,
+                rect(10.0, 20.0, 180.0, 32.0),
+            ),
+            text_run("b1", "First page body", 0, rect(10.0, 600.0, 140.0, 612.0)),
+            text_run(
+                "f2",
+                "Confidential - 2025 | Page 2",
+                1,
+                rect(10.0, 20.0, 180.0, 32.0),
+            ),
+            text_run("b2", "Second page body", 1, rect(10.0, 600.0, 150.0, 612.0)),
+        ];
+        let document = build_semantic_document("fixture", &runs, Vec::new());
+
+        assert_eq!(
+            document
+                .nodes
+                .iter()
+                .filter(|node| node.kind == SemanticNodeKind::FooterCandidate)
+                .count(),
+            2
         );
     }
 

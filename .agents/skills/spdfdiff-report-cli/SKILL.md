@@ -20,8 +20,9 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
 - Keep JSON canonical enough for agents and CI to consume.
 - AI review JSON must stay deterministic, evidence-preserving, and neutral:
   include question hints, candidate tags, confidence buckets, explanation
-  templates, semantic node identities, and prompt-ready evidence bundles without
-  embedding an LLM or making legal/business conclusions.
+  templates, semantic node identities, semantic roles when available, and
+  prompt-ready evidence bundles without embedding an LLM or making
+  legal/business conclusions.
 - Markdown should summarize counts, changes, page references, and diagnostics.
 - HTML must not depend on external network resources.
 - Basic HTML diff reports should render old/new evidence side by side and show
@@ -45,6 +46,8 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   `/RoleMap`, and parent-tree summaries when `pdf_core` parses
   `/StructTreeRoot`; mapped MCID text can now produce tagged semantic nodes,
   while broader tagged-PDF coverage remains compatibility-gate work.
+- AI review JSON tags repeated page-region evidence when changed nodes carry
+  header, footer, or page-template candidate roles.
 
 ## CLI Rules
 

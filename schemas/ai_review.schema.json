@@ -21,7 +21,45 @@
     "new_fingerprint": { "type": "string" },
     "summary": { "type": "object" },
     "question_hints": { "type": "array" },
-    "review_items": { "type": "array" },
+    "review_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "TextChanged",
+                "ContentInserted",
+                "ContentDeleted",
+                "ContentMoved",
+                "LayoutOnly",
+                "RepeatedPageRegion",
+                "PaymentTermsCandidate",
+                "DateOrDurationCandidate",
+                "PartyNameCandidate",
+                "NumericValueChanged",
+                "AnnotationOrLinkChanged",
+                "FormFieldChanged",
+                "MetadataChanged",
+                "VisualSurfaceChanged",
+                "UnsupportedSurface",
+                "LowConfidence"
+              ]
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "old_semantic_role": { "type": "string" },
+              "new_semantic_role": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
     "diagnostic_summary": {
       "type": "array",
       "items": {

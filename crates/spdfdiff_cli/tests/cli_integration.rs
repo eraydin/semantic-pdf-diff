@@ -233,10 +233,12 @@ fn diff_command_reports_text_changes_in_stdout_and_output_file() {
         json["changes"][0]["old_node"]["text"],
         "Annual revenue was 10 million."
     );
+    assert_eq!(json["changes"][0]["old_node"]["semantic_role"], "Paragraph");
     assert_eq!(
         json["changes"][0]["new_node"]["text"],
         "Annual revenue was 12 million."
     );
+    assert_eq!(json["changes"][0]["new_node"]["semantic_role"], "Paragraph");
     assert_eq!(json["changes"][0]["text_hunks"][1]["kind"], "Replaced");
     assert_eq!(json["changes"][0]["text_hunks"][1]["old_text"], "10");
     assert_eq!(json["changes"][0]["text_hunks"][1]["new_text"], "12");
@@ -334,8 +336,16 @@ fn diff_command_emits_ai_review_json() {
         "Payment is due within 30 days."
     );
     assert_eq!(
+        json["review_items"][0]["evidence"]["old_semantic_role"],
+        "Paragraph"
+    );
+    assert_eq!(
         json["review_items"][0]["evidence"]["new_text"],
         "Payment is due within 15 days."
+    );
+    assert_eq!(
+        json["review_items"][0]["evidence"]["new_semantic_role"],
+        "Paragraph"
     );
 }
 
@@ -1034,7 +1044,7 @@ fn ai_json_outputs_complete_against_real_sample_pdfs() {
                 .as_array()
                 .expect("ai-json question_hints should be an array")
                 .len(),
-            5
+            6
         );
         assert!(report["diagnostic_summary"].is_array());
 
@@ -1052,6 +1062,16 @@ fn ai_json_outputs_complete_against_real_sample_pdfs() {
             assert_eq!(
                 ai_json_question_answer(&report, "Were unsupported PDF surfaces encountered?"),
                 Some("No")
+            );
+        }
+        if pair.slug == "headers-footers" {
+            assert!(
+                ai_json_has_tag(&report, "RepeatedPageRegion"),
+                "headers/footers ai-json should tag repeated page-region evidence"
+            );
+            assert_eq!(
+                ai_json_question_answer(&report, "Did repeated page regions change?"),
+                Some("Yes")
             );
         }
     }

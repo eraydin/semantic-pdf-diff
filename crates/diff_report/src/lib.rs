@@ -366,6 +366,9 @@ fn review_tags(change: &SemanticChange) -> Vec<AiReviewTag> {
     if change.text_hunks.iter().any(hunk_has_digit_change) {
         tags.insert(AiReviewTag::NumericValueChanged);
     }
+    if is_repeated_page_region_change(change) {
+        tags.insert(AiReviewTag::RepeatedPageRegion);
+    }
     if change.confidence < 0.75 {
         tags.insert(AiReviewTag::LowConfidence);
     }
@@ -384,6 +387,19 @@ fn hunk_has_digit_change(hunk: &spdfdiff_types::TextHunk) -> bool {
             .new_text
             .as_deref()
             .is_some_and(|text| text.chars().any(|character| character.is_ascii_digit()))
+}
+
+fn is_repeated_page_region_change(change: &SemanticChange) -> bool {
+    [change.old_node.as_ref(), change.new_node.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.semantic_role.as_deref())
+        .any(|role| {
+            matches!(
+                role,
+                "HeaderCandidate" | "FooterCandidate" | "PageTemplateCandidate"
+            )
+        })
 }
 
 fn has_any(value: &str, needles: &[&str]) -> bool {
@@ -431,6 +447,9 @@ fn review_explanation(change: &SemanticChange, tags: &[AiReviewTag]) -> String {
     if tags.contains(&AiReviewTag::DateOrDurationCandidate) {
         parts.push("Date, duration, or notice language is mentioned.".into());
     }
+    if tags.contains(&AiReviewTag::RepeatedPageRegion) {
+        parts.push("The changed evidence is classified as repeated page-region content such as a header, footer, or page template candidate.".into());
+    }
     if tags.contains(&AiReviewTag::LowConfidence) {
         parts.push("Confidence is low; inspect extraction diagnostics and source evidence.".into());
     }
@@ -450,6 +469,14 @@ fn evidence_bundle(change: &SemanticChange) -> AiEvidenceBundle {
     AiEvidenceBundle {
         old_node_id: change.old_node.as_ref().map(|node| node.node_id.clone()),
         new_node_id: change.new_node.as_ref().map(|node| node.node_id.clone()),
+        old_semantic_role: change
+            .old_node
+            .as_ref()
+            .and_then(|node| node.semantic_role.clone()),
+        new_semantic_role: change
+            .new_node
+            .as_ref()
+            .and_then(|node| node.semantic_role.clone()),
         section_hint: section_hint(change),
         old_page: change.old_node.as_ref().map(|node| node.page),
         new_page: change.new_node.as_ref().map(|node| node.page),
@@ -552,6 +579,12 @@ fn build_question_hints(
             review_items,
             |item| item.tags.contains(&AiReviewTag::LowConfidence),
             "Low-confidence answers use the engine confidence bucket and should be cross-checked with diagnostics.",
+        ),
+        question_hint(
+            "Did repeated page regions change?",
+            review_items,
+            |item| item.tags.contains(&AiReviewTag::RepeatedPageRegion),
+            "Repeated page-region answers use semantic header, footer, and page-template candidate evidence.",
         ),
         AiReviewQuestionHint {
             question: "Were unsupported PDF surfaces encountered?".into(),
@@ -696,6 +729,12 @@ fn push_html_evidence(
         evidence.page + 1,
         escape_html(&evidence.node_id)
     ));
+    if let Some(role) = &evidence.semantic_role {
+        output.push_str(&format!(
+            "<div class=\"meta\">semantic role <code>{}</code></div>",
+            escape_html(role)
+        ));
+    }
     if let Some(bbox) = evidence.bbox {
         output.push_str(&format!(
             "<div class=\"meta\">bbox [{:.2}, {:.2}, {:.2}, {:.2}] in PDF user space</div>",
@@ -728,6 +767,9 @@ fn push_evidence_line(
         evidence.page + 1,
         evidence.node_id
     ));
+    if let Some(role) = &evidence.semantic_role {
+        output.push_str(&format!(" ({role})"));
+    }
     if let Some(text) = &evidence.text {
         output.push_str(&format!(": {text}"));
     }
@@ -786,6 +828,7 @@ mod tests {
             severity: ChangeSeverity::Major,
             old_node: Some(SemanticNodeEvidence {
                 node_id: "old-node".into(),
+                semantic_role: None,
                 page: 0,
                 bbox: Some(Rect {
                     x0: 72.0,
@@ -798,6 +841,7 @@ mod tests {
             }),
             new_node: Some(SemanticNodeEvidence {
                 node_id: "new-node".into(),
+                semantic_role: None,
                 page: 0,
                 bbox: Some(Rect {
                     x0: 72.0,
@@ -860,6 +904,7 @@ mod tests {
             severity: ChangeSeverity::Major,
             old_node: Some(SemanticNodeEvidence {
                 node_id: "old-node".into(),
+                semantic_role: None,
                 page: 0,
                 bbox: Some(Rect {
                     x0: 72.0,
@@ -872,6 +917,7 @@ mod tests {
             }),
             new_node: Some(SemanticNodeEvidence {
                 node_id: "new-node".into(),
+                semantic_role: None,
                 page: 0,
                 bbox: Some(Rect {
                     x0: 72.0,
@@ -933,6 +979,7 @@ mod tests {
             severity: ChangeSeverity::Major,
             old_node: Some(SemanticNodeEvidence {
                 node_id: "old-node".into(),
+                semantic_role: None,
                 page: 0,
                 bbox: None,
                 text: Some("Payment is due within 30 days.".into()),
@@ -940,6 +987,7 @@ mod tests {
             }),
             new_node: Some(SemanticNodeEvidence {
                 node_id: "new-node".into(),
+                semantic_role: None,
                 page: 0,
                 bbox: None,
                 text: Some("Payment is due within 15 days.".into()),
@@ -994,5 +1042,64 @@ mod tests {
             .expect("payment question hint should be present");
         assert_eq!(payment_hint.answer, AiReviewAnswer::Yes);
         assert_eq!(payment_hint.supporting_change_ids, vec!["change-0000"]);
+    }
+
+    #[test]
+    fn ai_review_report_tags_repeated_page_region_changes() {
+        let mut document = DiffDocument::empty("old.pdf", "new.pdf");
+        document.summary.modified = 1;
+        document.changes.push(SemanticChange {
+            id: "change-0000".into(),
+            kind: ChangeKind::Modified,
+            severity: ChangeSeverity::Minor,
+            old_node: Some(SemanticNodeEvidence {
+                node_id: "old-header".into(),
+                semantic_role: Some("HeaderCandidate".into()),
+                page: 0,
+                bbox: None,
+                text: Some("DocID: 994-A".into()),
+                source: vec![Provenance::unknown()],
+            }),
+            new_node: Some(SemanticNodeEvidence {
+                node_id: "new-header".into(),
+                semantic_role: Some("HeaderCandidate".into()),
+                page: 0,
+                bbox: None,
+                text: Some("DocID: 994-B".into()),
+                source: vec![Provenance::unknown()],
+            }),
+            text_hunks: Vec::new(),
+            layout_diff: None,
+            confidence: 0.82,
+            reason: "repeated header text differs".into(),
+        });
+
+        let report = build_ai_review_report(&document);
+
+        assert!(
+            report.review_items[0]
+                .tags
+                .contains(&AiReviewTag::RepeatedPageRegion)
+        );
+        assert_eq!(
+            report.review_items[0].evidence.old_semantic_role.as_deref(),
+            Some("HeaderCandidate")
+        );
+        assert_eq!(
+            report.review_items[0].evidence.new_semantic_role.as_deref(),
+            Some("HeaderCandidate")
+        );
+        assert!(
+            report.review_items[0]
+                .explanation
+                .contains("repeated page-region content")
+        );
+        let hint = report
+            .question_hints
+            .iter()
+            .find(|hint| hint.question == "Did repeated page regions change?")
+            .expect("repeated page-region question hint should be present");
+        assert_eq!(hint.answer, AiReviewAnswer::Yes);
+        assert_eq!(hint.supporting_change_ids, vec!["change-0000"]);
     }
 }

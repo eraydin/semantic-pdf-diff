@@ -21,6 +21,8 @@ stable diagnostics rather than silent success.
 
 - Semantic text diffing from extracted positioned text blocks.
 - Stable JSON, AI review JSON, Markdown, and self-contained HTML reports.
+- Report evidence carries semantic roles for extracted blocks, including
+  candidate headers, footers, page templates, tables, lists, and headings.
 - Parser-backed diagnostics and partial results for unsupported or degraded PDF
   surfaces.
 - CI checks with configured PDF pairs, thresholds, baseline suppression, and

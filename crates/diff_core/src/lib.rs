@@ -1299,10 +1299,26 @@ fn renumber_and_recompute_summary(document: &mut DiffDocument) {
 fn to_evidence(node: &SemanticNode) -> SemanticNodeEvidence {
     SemanticNodeEvidence {
         node_id: node.id.clone(),
+        semantic_role: Some(semantic_role_name(&node.kind).to_owned()),
         page: node.page_index,
         bbox: node.bbox,
         text: node.normalized_text.clone(),
         source: node.source.clone(),
+    }
+}
+
+fn semantic_role_name(kind: &pdf_semantic::SemanticNodeKind) -> &'static str {
+    match kind {
+        pdf_semantic::SemanticNodeKind::Page => "Page",
+        pdf_semantic::SemanticNodeKind::HeadingCandidate => "HeadingCandidate",
+        pdf_semantic::SemanticNodeKind::Paragraph => "Paragraph",
+        pdf_semantic::SemanticNodeKind::ListCandidate => "ListCandidate",
+        pdf_semantic::SemanticNodeKind::TableCandidate => "TableCandidate",
+        pdf_semantic::SemanticNodeKind::FigureCandidate => "FigureCandidate",
+        pdf_semantic::SemanticNodeKind::HeaderCandidate => "HeaderCandidate",
+        pdf_semantic::SemanticNodeKind::FooterCandidate => "FooterCandidate",
+        pdf_semantic::SemanticNodeKind::PageTemplateCandidate => "PageTemplateCandidate",
+        pdf_semantic::SemanticNodeKind::UnknownBlock => "UnknownBlock",
     }
 }
 
@@ -1628,6 +1644,31 @@ mod tests {
         assert_eq!(layout_diff.delta_height, Some(0.0));
         assert!(!layout_diff.page_changed);
         assert!(!layout_diff.reading_order_changed);
+    }
+
+    #[test]
+    fn preserves_semantic_roles_in_report_evidence() {
+        let mut old = document_with_text("old", "DocID: 994-A");
+        let mut new = document_with_text("new", "DocID: 994-B");
+        old.nodes[0].kind = SemanticNodeKind::HeaderCandidate;
+        new.nodes[0].kind = SemanticNodeKind::HeaderCandidate;
+
+        let diff = diff_semantic_documents(&old, &new, DiffConfig::default());
+
+        assert_eq!(
+            diff.changes[0]
+                .old_node
+                .as_ref()
+                .and_then(|node| node.semantic_role.as_deref()),
+            Some("HeaderCandidate")
+        );
+        assert_eq!(
+            diff.changes[0]
+                .new_node
+                .as_ref()
+                .and_then(|node| node.semantic_role.as_deref()),
+            Some("HeaderCandidate")
+        );
     }
 
     #[test]

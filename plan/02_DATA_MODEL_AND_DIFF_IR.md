@@ -213,6 +213,15 @@ pub struct ExtractionQuality {
     pub diagnostic_codes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticNodeEvidence {
+    pub node_id: SemanticNodeId,
+    pub semantic_role: Option<String>,
+    pub page: usize,
+    pub bbox: Option<Rect>,
+    pub text: Option<String>,
+    pub source: Vec<Provenance>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticChange {
@@ -354,12 +363,14 @@ Recommended rounding for reports:
       "reason": "same_heading_context_and_high_text_similarity",
       "old_node": {
         "node_id": "old_p3_b12",
+        "semantic_role": "Paragraph",
         "page": 3,
         "bbox": { "x0": 72.0, "y0": 420.2, "x1": 510.0, "y1": 455.3 },
         "text": "Payment is due within 30 days."
       },
       "new_node": {
         "node_id": "new_p3_b12",
+        "semantic_role": "Paragraph",
         "page": 3,
         "bbox": { "x0": 72.0, "y0": 420.2, "x1": 510.0, "y1": 455.3 },
         "text": "Payment is due within 15 days."

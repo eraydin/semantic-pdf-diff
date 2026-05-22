@@ -243,6 +243,8 @@ pub struct DiffSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticNodeEvidence {
     pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_role: Option<String>,
     pub page: usize,
     pub bbox: Option<Rect>,
     pub text: Option<String>,
@@ -396,6 +398,7 @@ pub enum AiReviewTag {
     ContentDeleted,
     ContentMoved,
     LayoutOnly,
+    RepeatedPageRegion,
     PaymentTermsCandidate,
     DateOrDurationCandidate,
     PartyNameCandidate,
@@ -412,6 +415,10 @@ pub enum AiReviewTag {
 pub struct AiEvidenceBundle {
     pub old_node_id: Option<String>,
     pub new_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_semantic_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_semantic_role: Option<String>,
     pub section_hint: Option<String>,
     pub old_page: Option<usize>,
     pub new_page: Option<usize>,

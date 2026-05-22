@@ -2994,6 +2994,7 @@ fn push_surface_change(
 fn surface_evidence(file_role: FileRole, surface: &DocumentSurface) -> SemanticNodeEvidence {
     SemanticNodeEvidence {
         node_id: format!("{}-{:04}", surface.category.node_prefix(), surface.index),
+        semantic_role: None,
         page: 0,
         bbox: surface.bbox,
         text: Some(format!(
@@ -3057,6 +3058,7 @@ fn push_image_payload_change(
 fn image_payload_evidence(file_role: FileRole, image: &ImagePayload) -> SemanticNodeEvidence {
     SemanticNodeEvidence {
         node_id: format!("image-{:04}", image.index),
+        semantic_role: None,
         page: 0,
         bbox: None,
         text: Some(format!(
@@ -3404,6 +3406,7 @@ fn graphic_surface_evidence(file_role: FileRole, surface: &GraphicSurface) -> Se
     source.file_role = Some(file_role);
     SemanticNodeEvidence {
         node_id: format!("{}-{:04}", surface.category.node_prefix(), surface.index),
+        semantic_role: None,
         page: surface.page_index,
         bbox: surface.bbox,
         text: Some(format!(

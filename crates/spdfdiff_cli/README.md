@@ -91,6 +91,9 @@ review works without adding TLS or hosted provider dependencies.
 - Extracted paragraph text and deterministic text hunks.
 - Controlled multi-column reading order plus repeated header, footer, and
   page-template candidate counts in extract JSON.
+- Semantic-role evidence in diff and AI-review reports, including
+  `RepeatedPageRegion` tags for changed header, footer, and page-template
+  candidates.
 - Moved blocks and layout-only changes when text anchors and bounding boxes
   support them.
 - Simple aligned text-grid table candidates with row/cell, sparse blank-cell,

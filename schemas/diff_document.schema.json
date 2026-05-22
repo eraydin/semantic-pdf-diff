@@ -73,6 +73,7 @@
       "required": ["node_id", "page", "source"],
       "properties": {
         "node_id": { "type": "string" },
+        "semantic_role": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "page": { "type": "integer", "minimum": 0 },
         "bbox": { "anyOf": [{ "$ref": "#/$defs/rect" }, { "type": "null" }] },
         "text": { "anyOf": [{ "type": "string" }, { "type": "null" }] },

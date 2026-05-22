@@ -153,6 +153,7 @@ AI agents can ask and answer:
 - “Which contractual obligations changed?”
 - “Were payment terms modified?”
 - “Did layout change without text changing?”
+- “Did repeated headers, footers, or page templates change?”
 - “Which changes are low-confidence because extraction was incomplete?”
 
 ### Current implementation
@@ -256,6 +257,8 @@ Current implementation status:
 - heading, list, table, and figure candidates are produced by deterministic
   semantic extraction heuristics, including repeated header-row evidence for
   page-split table candidates with matching first-row text and column geometry;
+- diff evidence preserves semantic roles for extracted nodes, and AI review
+  JSON tags repeated header, footer, and page-template candidate changes;
 - HTML reports include side-by-side evidence and deterministic inline SVG
   overlays for available old/new bounding boxes in PDF user space;
 - the corpus command emits aggregate parse/partial/failure totals,

@@ -12,6 +12,8 @@ screenshots or nondeterministic prose summaries.
 - Pretty JSON serialization of the stable diff report IR.
 - AI review JSON with summary counts, question hints, neutral candidate tags,
   confidence buckets, evidence bundles, text hunks, and diagnostic summaries.
+- AI review tags for repeated page-region changes when evidence is classified
+  as a candidate header, footer, or page template.
 - Markdown summaries with old/new evidence text and page references.
 - Self-contained HTML reports with side-by-side evidence.
 - Deterministic inline SVG evidence overlays when changed nodes include page and
