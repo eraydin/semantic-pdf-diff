@@ -20,6 +20,8 @@ stable diagnostics rather than silent success.
 ## What It Supports Today
 
 - Semantic text diffing from extracted positioned text blocks.
+- Text extraction prefers `/ToUnicode` and includes a conservative Base14 Latin
+  fallback for safe Helvetica, Times, and Courier-family simple-font text.
 - Stable JSON, AI review JSON, Markdown, and self-contained HTML reports.
 - Report evidence carries semantic roles for extracted blocks, including
   candidate headers, footers, page templates, tables, lists, and headings.

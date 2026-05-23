@@ -6,17 +6,17 @@
     "max_missing_required_files": 0,
     "max_failed_files": 0,
     "max_failed_diff_pairs": 0,
-    "max_partial_files": 8,
+    "max_partial_files": 4,
     "diagnostic_maxima": {
       "MISSING_TEXT_LAYER": 2,
-      "MISSING_TOUNICODE": 6,
+      "MISSING_TOUNICODE": 0,
       "STREAM_LENGTH_MISMATCH": 0,
       "TAGGED_MCID_DETECTED": 2,
       "TAGGED_PDF_STRUCTURE_DETECTED": 2
     },
     "diff_diagnostic_maxima": {
       "MISSING_TEXT_LAYER": 2,
-      "MISSING_TOUNICODE": 6,
+      "MISSING_TOUNICODE": 0,
       "STREAM_LENGTH_MISMATCH": 0,
       "TAGGED_MCID_DETECTED": 2,
       "TAGGED_PDF_STRUCTURE_DETECTED": 2

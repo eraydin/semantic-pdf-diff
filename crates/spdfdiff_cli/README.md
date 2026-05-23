@@ -104,6 +104,8 @@ review works without adding TLS or hosted provider dependencies.
   parsed content-operation signature.
 - Text font resource and font-size changes for unchanged text as
   deterministic `StyleChanged` entries.
+- Text extraction that prefers `/ToUnicode` and uses a conservative Base14 Latin
+  fallback for safe Helvetica, Times, and Courier-family simple fonts.
 - Link/annotation semantic fields, including subtype, rectangle, URI or
   destination, contents, color, border, and quad-point evidence.
 - Selected report-facing document surfaces such as embedded-file/FileSpec
@@ -129,8 +131,10 @@ OCR is an adapter path, not a replacement for parser/content diagnostics.
 
 Native vector/style comparison is a parsed-operation signature comparison, not a
 pixel renderer. Text style classification currently covers content-stream font
-resource and font-size changes for unchanged text. Link/annotation comparison is
-field-level semantic comparison, not JavaScript/action execution. Renderer-grade visual diffing and
-renderer-grade table reconstruction from arbitrary drawing geometry remain
-incremental compatibility work. Unsupported surfaces are reported through stable
-diagnostics instead of being silently treated as supported semantic diffs.
+resource and font-size changes for unchanged text. Base14 fallback is limited to
+safe Latin simple-font bytes and does not claim broad font encoding support.
+Link/annotation comparison is field-level semantic comparison, not
+JavaScript/action execution. Renderer-grade visual diffing and renderer-grade
+table reconstruction from arbitrary drawing geometry remain incremental
+compatibility work. Unsupported surfaces are reported through stable diagnostics
+instead of being silently treated as supported semantic diffs.

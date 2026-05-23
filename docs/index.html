@@ -118,6 +118,14 @@
                 </p>
               </article>
               <article>
+                <h3>Text extraction</h3>
+                <p>
+                  Uses <code>/ToUnicode</code> when available and a conservative
+                  Base14 Latin fallback for safe Helvetica, Times, and
+                  Courier-family simple-font text.
+                </p>
+              </article>
+              <article>
                 <h3>Document surface checks</h3>
                 <p>
                   Compares selected images, vector operations, annotations,
@@ -310,7 +318,8 @@ jobs:
               <strong>Supported parser foundation:</strong>
               classic xref tables, controlled xref streams, controlled object
               streams, selected stream filters, page tree traversal, inherited
-              page resources, text extraction paths, structure-tree summaries,
+              page resources, <code>/ToUnicode</code> and conservative Base14
+              Latin text extraction paths, structure-tree summaries,
               incremental-update metadata, and resource-limit enforcement.
             </div>
             <div class="notice muted">

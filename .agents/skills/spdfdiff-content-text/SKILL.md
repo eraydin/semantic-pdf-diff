@@ -35,6 +35,10 @@ description: Implement or review semantic-pdf-diff content stream and text extra
 - For simple fonts, prefer parsed `/FirstChar` and `/Widths` metrics when
   present; fall back to deterministic character-shape heuristics when metrics
   are missing or cannot safely apply.
+- For simple Base14 Latin fonts, allow fallback decoding only for safe
+  Helvetica, Times, and Courier-family Type1 fonts with absent,
+  `/StandardEncoding`, or `/WinAnsiEncoding` encodings and printable
+  ASCII/basic-whitespace bytes.
 - `pdf_text` exposes the public font resource model plus `/ToUnicode` CMap
   parsing and application helpers for `bfchar` and controlled `bfrange`
   mappings. Keep expanding resource-aware font decoding in `pdf_text` instead

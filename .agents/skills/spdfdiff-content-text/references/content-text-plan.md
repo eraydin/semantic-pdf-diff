@@ -30,5 +30,7 @@ Use this reference with `spdfdiff-content-text`.
 - Handle `TJ` arrays with strings and numeric spacing adjustments.
 - Track simple text matrix changes.
 - Use simple-font `/FirstChar` and `/Widths` metrics when present.
-- Extract `Hello World` from synthetic PDFs with `/ToUnicode`.
-- Emit diagnostics for missing font resources, missing `/ToUnicode`, unsupported CMap syntax, and unknown operators.
+- Extract `Hello World` from synthetic PDFs with `/ToUnicode` or safe Base14
+  Latin simple-font fallback.
+- Emit diagnostics for missing font resources, unsafe missing `/ToUnicode`
+  cases, unsupported CMap syntax, and unknown operators.

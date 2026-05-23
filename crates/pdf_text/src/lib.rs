@@ -75,6 +75,24 @@ impl FontResource {
         let index = usize::from(code).checked_sub(first_char)?;
         self.widths.get(index).map(|width| width / 1000.0)
     }
+
+    fn supports_base14_latin_fallback(&self) -> bool {
+        if self.to_unicode.is_some()
+            || self.is_cid_or_type0()
+            || self.subtype.as_deref() != Some("Type1")
+        {
+            return false;
+        }
+        if !matches!(
+            self.encoding.as_deref(),
+            None | Some("/StandardEncoding" | "/WinAnsiEncoding")
+        ) {
+            return false;
+        }
+        self.base_font
+            .as_deref()
+            .is_some_and(is_base14_latin_font_name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,7 +439,8 @@ fn extract_text_runs_with_optional_fonts(
                 ..
             } => {
                 let run_page_index = source.page_index.unwrap_or(page_index);
-                if !emitted_missing_tounicode {
+                let fallback_text = base14_latin_fallback_text(raw_bytes, &state, font_resources);
+                if fallback_text.is_none() && !emitted_missing_tounicode {
                     diagnostics.push(
                         Diagnostic::warning(
                             "MISSING_TOUNICODE",
@@ -435,7 +454,7 @@ fn extract_text_runs_with_optional_fonts(
                     &mut runs,
                     RunEmission {
                         page_index: run_page_index,
-                        text,
+                        text: fallback_text.as_deref().unwrap_or(text),
                         raw_bytes,
                         source: source.clone(),
                         marked_content: marked_content_stack.last().cloned(),
@@ -564,6 +583,50 @@ fn font_width_sum(
         width += font.glyph_width_em_for_code(*byte)? * state.font_size;
     }
     Some(width)
+}
+
+fn base14_latin_fallback_text(
+    raw_bytes: &[u8],
+    state: &TextState,
+    font_resources: Option<&FontResourceSet>,
+) -> Option<String> {
+    let font_name = state.font_name.as_deref()?;
+    let font = font_resources?.fonts.get(font_name)?;
+    if !font.supports_base14_latin_fallback() {
+        return None;
+    }
+    decode_base14_latin_bytes(raw_bytes)
+}
+
+fn decode_base14_latin_bytes(raw_bytes: &[u8]) -> Option<String> {
+    let mut text = String::with_capacity(raw_bytes.len());
+    for byte in raw_bytes {
+        match *byte {
+            b'\t' | b'\n' | b'\r' => text.push(char::from(*byte)),
+            0x20..=0x7e => text.push(char::from(*byte)),
+            _ => return None,
+        }
+    }
+    Some(text)
+}
+
+fn is_base14_latin_font_name(name: &str) -> bool {
+    let base_name = name.rsplit_once('+').map_or(name, |(_, suffix)| suffix);
+    matches!(
+        base_name,
+        "Helvetica"
+            | "Helvetica-Bold"
+            | "Helvetica-Oblique"
+            | "Helvetica-BoldOblique"
+            | "Times-Roman"
+            | "Times-Bold"
+            | "Times-Italic"
+            | "Times-BoldItalic"
+            | "Courier"
+            | "Courier-Bold"
+            | "Courier-Oblique"
+            | "Courier-BoldOblique"
+    )
 }
 
 fn approximate_glyph_width(character: char) -> f32 {
@@ -1006,6 +1069,101 @@ mod tests {
     }
 
     #[test]
+    fn base14_helvetica_ascii_extracts_without_missing_tounicode() {
+        let program = parse_content_stream(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET");
+        let extraction = extract_text_runs_with_fonts(&program, 0, &base14_font_resources(None));
+
+        assert_eq!(extraction.runs.len(), 1);
+        assert_eq!(extraction.runs[0].text, "Hello");
+        assert_no_diagnostic(&extraction.diagnostics, "MISSING_TOUNICODE");
+    }
+
+    #[test]
+    fn base14_fallback_handles_adjusted_text_arrays() {
+        let program = parse_content_stream(b"BT /F1 10 Tf 10 20 Td [(Hel) -120 (lo)] TJ ET");
+        let extraction = extract_text_runs_with_fonts(&program, 0, &base14_font_resources(None));
+
+        assert_eq!(extraction.runs.len(), 1);
+        assert_eq!(extraction.runs[0].text, "Hello");
+        assert_no_diagnostic(&extraction.diagnostics, "MISSING_TOUNICODE");
+    }
+
+    #[test]
+    fn base14_fallback_rejects_non_ascii_bytes() {
+        let program = parse_content_stream(b"BT /F1 12 Tf 72 720 Td <80> Tj ET");
+        let extraction = extract_text_runs_with_fonts(&program, 0, &base14_font_resources(None));
+
+        assert_has_diagnostic(&extraction.diagnostics, "MISSING_TOUNICODE");
+    }
+
+    #[test]
+    fn base14_fallback_rejects_custom_encoding() {
+        let program = parse_content_stream(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET");
+        let extraction = extract_text_runs_with_fonts(
+            &program,
+            0,
+            &base14_font_resources(Some("<< /Type /Encoding /Differences [65 /Alpha] >>")),
+        );
+
+        assert_has_diagnostic(&extraction.diagnostics, "MISSING_TOUNICODE");
+    }
+
+    #[test]
+    fn base14_fallback_rejects_symbol_and_cid_fonts() {
+        let program = parse_content_stream(b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET");
+        let symbol = extract_text_runs_with_fonts(
+            &program,
+            0,
+            &font_resources(FontResource {
+                base_font: Some("Symbol".to_owned()),
+                ..base14_font(None)
+            }),
+        );
+        let cid = extract_text_runs_with_fonts(
+            &program,
+            0,
+            &font_resources(FontResource {
+                subtype: Some("Type0".to_owned()),
+                base_font: Some("Helvetica".to_owned()),
+                ..base14_font(None)
+            }),
+        );
+
+        assert_has_diagnostic(&symbol.diagnostics, "MISSING_TOUNICODE");
+        assert_has_diagnostic(&cid.diagnostics, "MISSING_TOUNICODE");
+    }
+
+    #[test]
+    fn tounicode_text_is_not_replaced_by_base14_fallback() {
+        let cmap = parse_tounicode_cmap(b"1 beginbfchar\n<26> <0043>\nendbfchar\n");
+        let mut maps = BTreeMap::new();
+        maps.insert("F1".to_owned(), cmap);
+        let mut program = parse_content_stream(b"BT /F1 12 Tf 72 720 Td <26> Tj ET");
+
+        let result = apply_tounicode_maps(
+            &mut program,
+            &ToUnicodeMaps {
+                maps,
+                diagnostics: Vec::new(),
+            },
+        );
+        let extraction = extract_text_runs_with_fonts(
+            &program,
+            0,
+            &font_resources(FontResource {
+                to_unicode: Some(ObjectId {
+                    number: 7,
+                    generation: 0,
+                }),
+                ..base14_font(None)
+            }),
+        );
+
+        assert!(result.applied);
+        assert_eq!(extraction.runs[0].text, "C");
+    }
+
+    #[test]
     fn builds_font_resource_model_from_indirect_resource_dictionary() {
         let document = pdf_core::PdfDocument::parse(indirect_font_resource_pdf().as_slice())
             .expect("indirect font resource fixture should parse");
@@ -1091,6 +1249,51 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "MISSING_FONT_RESOURCE")
         );
+    }
+
+    fn assert_no_diagnostic(diagnostics: &[Diagnostic], code: &str) {
+        assert!(
+            diagnostics.iter().all(|diagnostic| diagnostic.code != code),
+            "did not expect diagnostic {code} in {diagnostics:?}"
+        );
+    }
+
+    fn assert_has_diagnostic(diagnostics: &[Diagnostic], code: &str) {
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.code == code),
+            "expected diagnostic {code} in {diagnostics:?}"
+        );
+    }
+
+    fn base14_font_resources(encoding: Option<&str>) -> FontResourceSet {
+        font_resources(base14_font(encoding))
+    }
+
+    fn font_resources(font: FontResource) -> FontResourceSet {
+        let mut fonts = BTreeMap::new();
+        fonts.insert("F1".to_owned(), font);
+        FontResourceSet {
+            fonts,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn base14_font(encoding: Option<&str>) -> FontResource {
+        FontResource {
+            resource_name: "F1".to_owned(),
+            object_id: ObjectId {
+                number: 5,
+                generation: 0,
+            },
+            subtype: Some("Type1".to_owned()),
+            base_font: Some("Helvetica".to_owned()),
+            encoding: encoding.map(ToOwned::to_owned),
+            to_unicode: None,
+            first_char: None,
+            widths: Vec::new(),
+            descendant_font_object_ids: Vec::new(),
+            descendant_subtypes: Vec::new(),
+        }
     }
 
     fn font_resource_pdf() -> Vec<u8> {

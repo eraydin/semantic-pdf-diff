@@ -38,8 +38,5 @@
       "layout_diff": null
     }
   ],
-  "diagnostic_codes": [
-    "MISSING_TOUNICODE",
-    "MISSING_TOUNICODE"
-  ]
+  "diagnostic_codes": []
 }

@@ -605,10 +605,7 @@ fn extract_command_reports_positioned_text_and_writes_json() {
     )
     .expect("extract output file should be valid JSON");
     assert_eq!(json["paragraphs"], 1);
-    assert!(
-        json["diagnostic_count"].as_u64().unwrap_or_default() >= 1,
-        "literal-string fallback extraction should remain visibly diagnostic"
-    );
+    assert_eq!(json["diagnostic_count"], 0);
 }
 
 #[test]
@@ -727,13 +724,13 @@ fn corpus_command_sorts_files_and_summarizes_partial_and_failed_inputs() {
     assert_eq!(report["folder"], "corpus");
     assert_eq!(report["total"], 2);
     assert_eq!(report["parsed"], 1);
-    assert_eq!(report["partial"], 1);
+    assert_eq!(report["partial"], 0);
     assert_eq!(report["failed"], 1);
     assert_eq!(report["files"][0]["file"], "a.pdf");
     assert_eq!(report["files"][0]["status"], "failed");
     assert_eq!(report["files"][1]["file"], "b.pdf");
-    assert_eq!(report["files"][1]["status"], "partial");
-    assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 1);
+    assert_eq!(report["files"][1]["status"], "parsed");
+    assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
 }
 
 #[test]
@@ -817,12 +814,7 @@ fn assert_real_sample_diff(fixture: &TestFixture, pair: RealSamplePair) {
             "expected at least the documented semantic changes; object-level surfaces may add evidence changes"
         );
     }
-    if !matches!(
-        pair.slug,
-        "attachment-link-bundle" | "layered-redaction" | "tagged-table-reflow"
-    ) {
-        assert_diagnostic_code_absent(&report, "MISSING_TOUNICODE");
-    }
+    assert_diagnostic_code_absent(&report, "MISSING_TOUNICODE");
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_STREAM_FILTER");
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_OBJECT_STREAM");
     assert_diagnostic_code_absent(&report, "MISSING_PAGE_CONTENT");
@@ -1344,7 +1336,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert_eq!(report["folder"], "real_corpus");
     assert_eq!(report["total"], 40);
     assert_eq!(report["parsed"], 40);
-    assert_eq!(report["partial"], 8);
+    assert_eq!(report["partial"], 4);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
@@ -1355,7 +1347,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
     assert!(report["diagnostic_counts"]["UNSUPPORTED_ANNOTATION_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["UNSUPPORTED_VECTOR_GRAPHIC_DIFF"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_TOUNICODE_CID_FONT"].is_null());
-    assert_eq!(report["diagnostic_counts"]["MISSING_TOUNICODE"], 6);
+    assert!(report["diagnostic_counts"]["MISSING_TOUNICODE"].is_null());
     assert_eq!(report["diagnostic_counts"]["TAGGED_MCID_DETECTED"], 2);
     assert_eq!(
         report["diagnostic_counts"]["TAGGED_PDF_STRUCTURE_DETECTED"],

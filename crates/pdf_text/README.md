@@ -20,9 +20,12 @@ marked-content references. It is the text-extraction stage used by
   descendant-font, and `/ToUnicode` references.
 - Public `/ToUnicode` CMap parsing and application helpers for `bfchar`,
   controlled `bfrange`, and multi-byte text bytes.
+- Conservative Base14 Latin fallback for simple Type1 Helvetica, Times, and
+  Courier-family fonts when shown bytes are printable ASCII/basic whitespace and
+  no custom encoding is present.
 - Whitespace normalization for deterministic downstream matching.
-- `MISSING_TOUNICODE` diagnostics when extraction falls back to literal or hex
-  string bytes instead of a Unicode map.
+- `MISSING_TOUNICODE` diagnostics when extraction cannot use `/ToUnicode` or
+  the conservative Base14 Latin fallback safely.
 
 ## Pipeline Context
 
@@ -32,10 +35,9 @@ marked-content references. It is the text-extraction stage used by
 pdf_content ContentProgram -> pdf_text TextRun values -> pdf_semantic nodes
 ```
 
-The current CLI uses this crate's font resource model and `/ToUnicode` helpers
-before text-run extraction when page resources expose a decoded CMap stream.
-Broader font decoding, CID `/W` metrics, vertical writing, and shaping remain
-planned work.
+The current CLI uses this crate's font resource model, `/ToUnicode` helpers, and
+safe Base14 Latin fallback before text-run extraction. Broader font decoding,
+CID `/W` metrics, vertical writing, and shaping remain planned work.
 
 ## Current Compatibility Boundary
 

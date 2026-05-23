@@ -19,7 +19,7 @@ Legend:
 | Milestone 1.5 — Safety and modern-PDF compatibility gate | Implemented | Resource limits, xref streams, object streams, and manifest-driven corpus release thresholds are implemented. |
 | Milestone 2 — Fixture generator and corpus runner | Implemented | Corpus runner, reusable deterministic PDF fixture writer, and generated diff-pair golden snapshot matrix exist. |
 | Milestone 3 — Page tree and content stream parsing | Implemented | Page tree traversal, inherited page attributes, content stream resolution, tokenization, and text operator interpretation are covered. |
-| Milestone 4 — Text extraction | Implemented | Text extraction, ToUnicode, glyph positioning, text-run grouping, and the public font resource model with simple-font width metrics are covered. |
+| Milestone 4 — Text extraction | Implemented | Text extraction, ToUnicode, conservative Base14 Latin fallback, glyph positioning, text-run grouping, and the public font resource model with simple-font width metrics are covered. |
 | Milestone 5 — Layout and semantic extraction | Implemented | Blocks, headings, lists, anchors, aligned text-grid table row/cell candidates, sparse blank-cell reconstruction, conservative row/column spans, merged-cell placeholders, repeated table header-row evidence, and rectangle table-border hints exist. |
 | Milestone 6 — Core diff engine | Implemented | Matching, hunks, layout diffs, summary, severity, and deterministic ordering are covered. |
 | Milestone 7 — Reports and CLI | Implemented | JSON, AI JSON, Markdown, HTML, typed document-surface evidence, CLI commands, outputs, and exit behavior are covered. |
@@ -48,7 +48,7 @@ Legend:
 | M3-T3 — Content tokenizer | Implemented | Content tokenizer handles numbers, names, strings, arrays, dictionaries, operators, `TJ`, and unknown operators. |
 | M3-T4 — Text operator interpreter | Implemented | MVP text operators and graphics-state save/restore are interpreted with matrix/position tests. |
 | M4-T1 — Font resource model | Implemented | Font resource lookup captures resource names, object IDs, subtype, base font, encoding, descendant fonts, and `/ToUnicode` references with missing-resource diagnostics. |
-| M4-T2 — ToUnicode parser MVP | Implemented | `bfchar`, `bfrange`, multi-byte hex mapping, and unsupported CMap diagnostics are tested. |
+| M4-T2 — ToUnicode parser MVP | Implemented | `bfchar`, `bfrange`, multi-byte hex mapping, conservative Base14 Latin fallback for safe simple fonts, and unsupported CMap diagnostics are tested. |
 | M4-T3 — Glyph positioning MVP | Implemented | Text matrix, font size, spacing, `TJ` adjustment, width heuristics, and non-empty bboxes are covered. |
 | M4-T4 — Text run grouping | Implemented | Text runs preserve raw text, normalized text, glyph raw bytes, bboxes, source provenance, and stable output order. |
 | M5-T1 — Line and block clustering | Implemented | Baseline clustering, x ordering, paragraph grouping, bboxes, and two-column reading order are tested. |
@@ -64,7 +64,7 @@ Legend:
 | M7-T3 — Basic HTML report | Implemented | Self-contained HTML side-by-side report includes page/bbox evidence and inline SVG overlays. |
 | M7-T4 — CLI integration | Implemented | `diff`, `extract`, `inspect`, `corpus`, `benchmark`, formats, outputs, OCR path, typed annotation/form/outline/name-tree/metadata/attachment surfaces, and exit-code behavior are integration-tested. |
 | M8-T1 — Incremental updates and recovery parsing | Implemented | Latest `startxref`, `/Prev` diagnostics, xref recovery, and deterministic incremental-update offset metadata are exposed. |
-| M8-T2 — Better font handling | Implemented | CID/Type0 missing-`ToUnicode` diagnostics, simple-font `/Widths` metrics, and deterministic glyph-width fallbacks are implemented. |
+| M8-T2 — Better font handling | Implemented | CID/Type0 missing-`ToUnicode` diagnostics, simple-font `/Widths` metrics, conservative Base14 Latin fallback, and deterministic glyph-width fallbacks are implemented. |
 | M8-T3 — Tagged PDF structure | Implemented | Simple structure trees, parent-tree summaries, MCID preservation, and tagged semantic node ordering are implemented for controlled cases. |
 | M8-T4 — Fuzzing and malformed PDFs | Implemented | Feature-gated malformed-input tests plus standalone parser/object/content fuzz targets and seed corpora exist. |
 | M8-T5 — Benchmark target | Implemented | CLI benchmark reports parse/extract/semantic/diff/report timings, threshold result, diagnostics, summary, and memory sample when available. |
