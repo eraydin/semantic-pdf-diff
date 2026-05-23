@@ -3,8 +3,9 @@ use diff_core::{DiffConfig, diff_semantic_documents};
 use pdf_content::{ContentOp, ContentProgram};
 use serde::{Deserialize, Serialize};
 use spdfdiff_types::{
-    AiReviewReport, ByteRange, ChangeKind, ChangeSeverity, Diagnostic, DiffDocument, FileRole,
-    ObjectId, ParseConfig, PdfDiffError, Provenance, Rect, SemanticChange, SemanticNodeEvidence,
+    AiReviewReport, ByteRange, ChangeKind, ChangeSeverity, Diagnostic, DiagnosticSeverity,
+    DiffDocument, FileRole, ObjectId, ParseConfig, PdfDiffError, Provenance, Rect, SemanticChange,
+    SemanticNodeEvidence,
 };
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -418,7 +419,7 @@ struct CorpusFileReport {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CorpusFileStatus {
     Parsed,
@@ -1107,6 +1108,10 @@ fn build_corpus_report_model(
         match std::fs::read(&path) {
             Ok(bytes) => match semantic_document_from_pdf(&file, &bytes, config) {
                 Ok(document) => {
+                    let has_degrading_diagnostics = document
+                        .diagnostics
+                        .iter()
+                        .any(is_degrading_corpus_diagnostic);
                     let diagnostics = document
                         .diagnostics
                         .iter()
@@ -1116,11 +1121,11 @@ fn build_corpus_report_model(
                         *diagnostic_counts.entry(code.clone()).or_insert(0) += 1;
                     }
                     parsed += 1;
-                    let status = if diagnostics.is_empty() {
-                        CorpusFileStatus::Parsed
-                    } else {
+                    let status = if has_degrading_diagnostics {
                         partial += 1;
                         CorpusFileStatus::Partial
+                    } else {
+                        CorpusFileStatus::Parsed
                     };
                     files.push(CorpusFileReport {
                         file,
@@ -1182,6 +1187,13 @@ fn build_corpus_report_model(
         gate,
         files,
     })
+}
+
+fn is_degrading_corpus_diagnostic(diagnostic: &Diagnostic) -> bool {
+    matches!(
+        diagnostic.severity,
+        DiagnosticSeverity::Warning | DiagnosticSeverity::Error
+    )
 }
 
 fn build_corpus_diff_pair_reports(
@@ -4867,6 +4879,36 @@ endobj
     }
 
     #[test]
+    fn corpus_report_treats_info_only_diagnostics_as_parsed() {
+        let folder = PathBuf::from("target/spdfdiff_cli_tests/corpus_info_only");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("fixture folder should be created");
+        std::fs::write(folder.join("tagged.pdf"), tagged_pdf())
+            .expect("tagged fixture should be written");
+
+        let report = build_corpus_report_model(&folder, ParseConfig::default(), None)
+            .expect("corpus report should render");
+
+        assert_eq!(report.total, 1);
+        assert_eq!(report.parsed, 1);
+        assert_eq!(report.partial, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.files[0].status, CorpusFileStatus::Parsed);
+        assert_eq!(
+            report
+                .diagnostic_counts
+                .get("TAGGED_PDF_STRUCTURE_DETECTED"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.diagnostic_counts.get("TAGGED_MCID_DETECTED"),
+            Some(&1)
+        );
+
+        std::fs::remove_dir_all(&folder).expect("fixture folder should be removed");
+    }
+
+    #[test]
     fn corpus_gate_blocks_public_alpha_label_without_release_evidence() {
         let folder = PathBuf::from("target/spdfdiff_cli_tests/public_alpha_gate");
         let _ = std::fs::remove_dir_all(&folder);
@@ -5189,13 +5231,16 @@ endobj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /StructParents 0 /Contents 4 0 R >>
+<< /Type /Page /Parent 2 0 R /StructParents 0 /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
 endobj
 4 0 obj
-<< /Length 61 >>
+<< /Length 63 >>
 stream
 BT /P << /MCID 0 >> BDC /F1 12 Tf 72 720 Td (Tagged) Tj EMC ET
 endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
 endobj
 6 0 obj
 << /Type /StructTreeRoot /K [7 0 R] >>

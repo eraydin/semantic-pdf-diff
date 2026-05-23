@@ -26,9 +26,11 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   files, runs declared diff pairs, emits diff diagnostic counts, and reports a
   deterministic release gate with a manifest compatibility label. Manifests can
   pin maximum partial-file counts, file diagnostic counts, and diff diagnostic
-  counts as compatibility regression baselines. A `public-alpha` label is
-  release-blocking unless the corpus gate has curated release evidence. With
-  `--fail-on-gate`, a failed gate exits with code `1`.
+  counts as compatibility regression baselines. Files with only informational
+  diagnostics remain `parsed`; `partial` is reserved for warning or error
+  diagnostics. A `public-alpha` label is release-blocking unless the corpus gate
+  has curated release evidence. With `--fail-on-gate`, a failed gate exits with
+  code `1`.
 - `check --config .spdfdiff.toml` runs configured PDF pairs for CI, writes
   deterministic artifacts, applies threshold and baseline suppression rules, and
   emits stable summary JSON on stdout. A failed check exits with code `1`.

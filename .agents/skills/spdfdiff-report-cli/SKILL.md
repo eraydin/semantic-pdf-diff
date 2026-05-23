@@ -61,7 +61,8 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
     signature.
   - `spdfdiff corpus tests/fixtures/real_world --output corpus_report.json`
   - corpus manifests may include partial-file and diagnostic-code ceilings for
-    compatibility regression gates
+    compatibility regression gates; partial files are extraction successes with
+    warning/error diagnostics, while informational diagnostics remain counted
   - `spdfdiff benchmark --pages 50 --output benchmark.json`
   - `spdfdiff review review.ai.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output review.llm.json`
   - `spdfdiff check --config .spdfdiff.toml`

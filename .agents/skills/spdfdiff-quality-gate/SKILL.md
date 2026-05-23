@@ -58,7 +58,9 @@ gate.
 - Confirm resource-limit and diagnostic behavior for hostile or malformed inputs.
 - Confirm report-facing output remains deterministic.
 - Confirm corpus manifest gates cover partial-file and diagnostic-code
-  regressions when compatibility claims depend on corpus evidence.
+  regressions when compatibility claims depend on corpus evidence. Partial-file
+  ceilings track warning/error degradation; informational diagnostics stay
+  counted but do not make an otherwise parsed file partial.
 - Confirm `AGENTS.md` and plan files remain aligned if public workflow rules changed.
 - For fuzzing slices, confirm standalone targets compile through
   `cargo check --manifest-path fuzz/Cargo.toml --bins`; run `cargo fuzz run`

@@ -25,7 +25,9 @@ Use this reference with `spdfdiff-report-cli`.
 - `spdfdiff check --config .spdfdiff.toml`
 - Corpus manifests may declare maximum partial-file counts, per-file
   diagnostic maxima, and diff diagnostic maxima. Treat those as deterministic
-  compatibility regression gates.
+  compatibility regression gates. Partial-file counts track extraction
+  successes with warning/error diagnostics; informational diagnostics remain
+  counted separately.
 - Check configs may declare PDF pairs, artifact formats, threshold budgets,
   ignored change kinds, and baseline diff reports for CI suppression.
 

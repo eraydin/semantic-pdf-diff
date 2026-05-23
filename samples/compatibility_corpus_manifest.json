@@ -6,7 +6,7 @@
     "max_missing_required_files": 0,
     "max_failed_files": 0,
     "max_failed_diff_pairs": 0,
-    "max_partial_files": 4,
+    "max_partial_files": 2,
     "diagnostic_maxima": {
       "MISSING_TEXT_LAYER": 2,
       "MISSING_TOUNICODE": 0,

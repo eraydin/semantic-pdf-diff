@@ -263,7 +263,8 @@ Current implementation status:
   overlays for available old/new bounding boxes in PDF user space;
 - the corpus command emits aggregate parse/partial/failure totals,
   per-file node and diagnostic counts, stable diagnostic-code metrics, and
-  manifest gates for partial-file and diagnostic-count regressions.
+  manifest gates for warning/error partial-file and diagnostic-count
+  regressions.
 
 ## Recommended v0.4.0 release name
 

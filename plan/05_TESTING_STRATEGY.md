@@ -271,6 +271,8 @@ Report fields:
 Use the corpus runner to track progress over time.
 Manifest gates should pin compatibility regression baselines, including maximum
 partial files and selected diagnostic-code counts, not just parse failures.
+Partial files are extraction successes with warning/error diagnostics;
+informational diagnostics remain counted without changing file status.
 Manifest compatibility labels should remain `vertical-slice` or
 `compatibility-gate` until a `public-alpha` manifest has at least 30 parsed
 curated files, explicit partial-file thresholds, diff pairs, and zero failed

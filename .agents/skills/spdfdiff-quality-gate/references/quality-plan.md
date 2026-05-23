@@ -40,7 +40,8 @@ Public alpha requires:
 - resource limits enforced;
 - curated real-world corpus report;
 - stable diagnostics for unsupported features;
-- manifest thresholds for partial files and diagnostic-code regressions;
+- manifest thresholds for warning/error partial files and diagnostic-code
+  regressions;
 - docs that clearly state supported and unsupported behavior.
 
 ## Known High Risks
