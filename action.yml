@@ -49,7 +49,7 @@ runs:
 
     - name: Install Rust toolchain when needed
       if: ${{ steps.binary.outputs.available != 'true' }}
-      uses: dtolnay/rust-toolchain@1.100.0
+      uses: dtolnay/rust-toolchain@1.85.0
 
     - name: Install spdfdiff when needed
       if: ${{ steps.binary.outputs.available != 'true' }}
