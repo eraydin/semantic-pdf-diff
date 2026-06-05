@@ -337,6 +337,7 @@ spdfdiff extract file.pdf --format json
 spdfdiff corpus tests/fixtures/real_world --output corpus_report.json
 spdfdiff benchmark --pages 50 --output benchmark.json
 spdfdiff check --config .spdfdiff.toml
+spdfdiff visual-diff old.pdf new.pdf --renderer-command render-to-ppm --output visual.json
 ```
 
 ## 3. Semantic anchor strategy
@@ -434,7 +435,6 @@ json = ["dep:serde", "dep:serde_json"]
 html = []
 parallel = ["dep:rayon"]
 fuzzing = []
-unstable_visual = []
 ```
 
 ## 8. Error policy

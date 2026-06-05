@@ -1,5 +1,11 @@
 # Schema Changelog
 
+## 0.1.10
+
+- Added `visual_diff.schema.json` for the external-renderer visual diff report,
+  including renderer contract metadata, page status, changed-pixel counts,
+  max channel deltas, optional heatmap artifact paths, and diagnostics.
+
 ## 0.1.9
 
 - Added optional `semantic_role` evidence to diff reports so consumers can

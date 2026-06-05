@@ -32,13 +32,17 @@ stable diagnostics rather than silent success.
 - Selected document-surface comparisons for images, vector/style signatures,
   annotations, links, form fields, outlines, name trees, metadata/XMP, and
   embedded-file surfaces.
+- Renderer-grade visual diffing through `spdfdiff visual-diff` when an external
+  renderer command writes deterministic PPM page images; the CLI emits stable
+  JSON and optional PPM heatmaps.
 - Simple tagged-PDF summaries with `/RoleMap`, parent-tree, and MCID-backed
   text mapping for controlled cases.
 - Optional external OCR through `SPDFDIFF_OCR_COMMAND` or `tesseract` for
   supported image-only samples.
 
-Renderer-grade visual diffing, arbitrary table reconstruction, broad tagged-PDF
-coverage, and corpus-backed public-alpha compatibility remain incremental work.
+Arbitrary table reconstruction, broad tagged-PDF coverage, native renderer
+integration, and corpus-backed public-alpha compatibility remain incremental
+work.
 
 ## Quickstart
 

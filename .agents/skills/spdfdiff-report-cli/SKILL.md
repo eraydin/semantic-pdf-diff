@@ -41,7 +41,11 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   should use deterministic typed signatures instead of raw object-surface hashes.
   Image-only PDFs can use the external OCR adapter when
   `SPDFDIFF_OCR_COMMAND` or `tesseract` is available; OCR text must preserve
-  image-object provenance and deterministic diagnostics.
+  image-object provenance and deterministic diagnostics. Renderer-grade visual
+  diffing stays in the CLI/report layer through `spdfdiff visual-diff`: invoke
+  an external renderer command, require deterministic RGB PPM page outputs,
+  compare pixels with a stable threshold, and write deterministic JSON plus
+  optional PPM heatmaps without adding renderer dependencies to core crates.
 - Inspect and extract JSON reports include simple tagged-structure,
   `/RoleMap`, and parent-tree summaries when `pdf_core` parses
   `/StructTreeRoot`; mapped MCID text can now produce tagged semantic nodes,
@@ -66,6 +70,7 @@ description: Implement or review semantic-pdf-diff report generation and CLI wor
   - `spdfdiff benchmark --pages 50 --output benchmark.json`
   - `spdfdiff review review.ai.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output review.llm.json`
   - `spdfdiff check --config .spdfdiff.toml`
+  - `spdfdiff visual-diff old.pdf new.pdf --renderer-command <cmd> --output visual.json`
 - Exit codes must match `plan/01_ARCHITECTURE.md`.
 - Missing input files and unsupported encrypted/protected PDFs need useful user-facing errors.
 

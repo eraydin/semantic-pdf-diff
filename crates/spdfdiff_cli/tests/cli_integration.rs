@@ -27,6 +27,8 @@ struct RealSamplePair {
 }
 
 const REAL_SAMPLE_PDFS: &[&str] = &[
+    "Bean_and_Leaf_Menu_new.pdf",
+    "Bean_and_Leaf_Menu_old.pdf",
     "annotations_base_v1.pdf",
     "annotations_visual_markup_v2.pdf",
     "attachment_link_bundle_v1.pdf",
@@ -65,11 +67,19 @@ const REAL_SAMPLE_PDFS: &[&str] = &[
     "ultimate_semantic_diff_v2.pdf",
     "vector_paths_graphic_v1.pdf",
     "vector_paths_graphic_v2.pdf",
+    "visual_diff_image_content_new.pdf",
+    "visual_diff_image_content_old.pdf",
     "watermark_overlay_v1.pdf",
     "watermark_overlay_v2.pdf",
 ];
 
 const REAL_SAMPLE_PAIRS: &[RealSamplePair] = &[
+    RealSamplePair {
+        slug: "bean-and-leaf-menu",
+        old_name: "Bean_and_Leaf_Menu_old.pdf",
+        new_name: "Bean_and_Leaf_Menu_new.pdf",
+        expected: None,
+    },
     RealSamplePair {
         slug: "document",
         old_name: "document_v1.pdf",
@@ -198,6 +208,12 @@ const REAL_SAMPLE_PAIRS: &[RealSamplePair] = &[
         slug: "vector-paths-graphic",
         old_name: "vector_paths_graphic_v1.pdf",
         new_name: "vector_paths_graphic_v2.pdf",
+        expected: None,
+    },
+    RealSamplePair {
+        slug: "visual-diff-image-content",
+        old_name: "visual_diff_image_content_old.pdf",
+        new_name: "visual_diff_image_content_new.pdf",
         expected: None,
     },
     RealSamplePair {
@@ -371,6 +387,55 @@ fn diff_fail_on_changes_exits_one_only_when_changes_exist() {
         "--fail-on-changes",
     ]);
     assert_success(&unchanged);
+}
+
+#[test]
+fn visual_diff_command_uses_external_renderer_and_writes_heatmap() {
+    let fixture = TestFixture::new("visual_diff_command");
+    let old_pdf = fixture.write_pdf("old.pdf", "Visual old");
+    let new_pdf = fixture.write_pdf("new.pdf", "Visual new");
+    let renderer = fixture.write_mock_visual_renderer_command();
+    let output_path = fixture.path("visual-diff.json");
+    let artifacts_dir = fixture.path("visual-artifacts");
+    let renderer_command = quoted_command_path(&renderer);
+
+    let output = run_spdfdiff([
+        "visual-diff",
+        path_arg(&old_pdf).as_str(),
+        path_arg(&new_pdf).as_str(),
+        "--renderer-command",
+        renderer_command.as_str(),
+        "--output",
+        path_arg(&output_path).as_str(),
+        "--artifacts-dir",
+        path_arg(&artifacts_dir).as_str(),
+    ]);
+    assert_success(&output);
+    assert!(
+        output.stdout.is_empty(),
+        "--output should not duplicate the visual diff report on stdout"
+    );
+
+    let report = read_json(&output_path);
+    assert_eq!(report["schema_version"], "1");
+    assert_eq!(report["renderer"]["output_format"], "ppm-rgb");
+    assert_eq!(report["summary"]["compared_pages"], 1);
+    assert_eq!(report["summary"]["changed_pages"], 1);
+    assert_eq!(report["summary"]["changed_pixels"], 1);
+    assert_eq!(report["summary"]["total_pixels"], 2);
+    assert_eq!(report["pages"][0]["status"], "changed");
+    assert_eq!(report["pages"][0]["changed_pixel_ratio"], 0.5);
+    assert_eq!(
+        report["pages"][0]["heatmap"],
+        "heatmaps/page-0001-heatmap.ppm"
+    );
+    assert!(artifacts_dir.join("old-rendered/page-0001.ppm").is_file());
+    assert!(artifacts_dir.join("new-rendered/page-0001.ppm").is_file());
+    assert!(
+        artifacts_dir
+            .join("heatmaps/page-0001-heatmap.ppm")
+            .is_file()
+    );
 }
 
 #[test]
@@ -815,7 +880,18 @@ fn assert_real_sample_diff(fixture: &TestFixture, pair: RealSamplePair) {
         );
     }
     assert_diagnostic_code_absent(&report, "MISSING_TOUNICODE");
-    assert_diagnostic_code_absent(&report, "UNSUPPORTED_STREAM_FILTER");
+    if pair.slug == "bean-and-leaf-menu" {
+        assert!(
+            report["diagnostics"]
+                .as_array()
+                .expect("diagnostics should be an array")
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "UNSUPPORTED_STREAM_FILTER"),
+            "Bean and Leaf sample should preserve unsupported-filter diagnostics"
+        );
+    } else {
+        assert_diagnostic_code_absent(&report, "UNSUPPORTED_STREAM_FILTER");
+    }
     assert_diagnostic_code_absent(&report, "UNSUPPORTED_OBJECT_STREAM");
     assert_diagnostic_code_absent(&report, "MISSING_PAGE_CONTENT");
     assert!(
@@ -1334,9 +1410,9 @@ fn corpus_command_completes_against_real_sample_pdfs() {
 
     let report = read_json(&output_path);
     assert_eq!(report["folder"], "real_corpus");
-    assert_eq!(report["total"], 40);
-    assert_eq!(report["parsed"], 40);
-    assert_eq!(report["partial"], 2);
+    assert_eq!(report["total"], 44);
+    assert_eq!(report["parsed"], 44);
+    assert_eq!(report["partial"], 4);
     assert_eq!(report["failed"], 0);
     for (index, sample) in real_sample_pdf_names().iter().copied().enumerate() {
         assert_eq!(report["files"][index]["file"], sample);
@@ -1354,7 +1430,7 @@ fn corpus_command_completes_against_real_sample_pdfs() {
         2
     );
     assert!(report["diagnostic_counts"]["UNSUPPORTED_IMAGE_DIFF"].is_null());
-    assert!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"].is_null());
+    assert_eq!(report["diagnostic_counts"]["UNSUPPORTED_STREAM_FILTER"], 7);
     assert!(report["diagnostic_counts"]["UNSUPPORTED_OBJECT_STREAM"].is_null());
     assert!(report["diagnostic_counts"]["MISSING_PAGE_CONTENT"].is_null());
 }
@@ -1392,8 +1468,8 @@ fn corpus_command_evaluates_committed_sample_manifest_gate() {
             .len(),
         0
     );
-    assert_eq!(report["diff_pairs"].as_array().unwrap().len(), 20);
-    assert_eq!(report["diff_pairs"][0]["name"], "annotations");
+    assert_eq!(report["diff_pairs"].as_array().unwrap().len(), 22);
+    assert_eq!(report["diff_pairs"][0]["name"], "bean-and-leaf-menu");
     assert_eq!(report["diff_pairs"][0]["status"], "diffed");
     assert!(report["diff_diagnostic_counts"].is_object());
 }
@@ -1426,6 +1502,10 @@ fn assert_success(output: &Output) {
 
 fn path_arg(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn quoted_command_path(path: &Path) -> String {
+    path_arg(path)
 }
 
 fn sample_file(name: &str) -> PathBuf {
@@ -1690,6 +1770,37 @@ impl TestFixture {
                 .permissions();
             permissions.set_mode(0o755);
             fs::set_permissions(&path, permissions).expect("mock OCR command should be executable");
+            path
+        }
+    }
+
+    fn write_mock_visual_renderer_command(&self) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let path = self.path("mock-visual-renderer.cmd");
+            fs::write(
+                &path,
+                "@echo off\r\nif \"%SPDFDIFF_RENDER_ROLE%\"==\"old\" (\r\n  > \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo P3\r\n  >> \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo 2 1\r\n  >> \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo 255\r\n  >> \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo 0 0 0 255 255 255\r\n) else (\r\n  > \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo P3\r\n  >> \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo 2 1\r\n  >> \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo 255\r\n  >> \"%SPDFDIFF_RENDER_OUTPUT_DIR%\\page-0001.ppm\" echo 0 0 0 255 0 0\r\n)\r\n",
+            )
+            .expect("mock visual renderer command should be written");
+            path
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let path = self.path("mock-visual-renderer.sh");
+            fs::write(
+                &path,
+                "#!/bin/sh\nif [ \"$SPDFDIFF_RENDER_ROLE\" = \"old\" ]; then\n  pixels='0 0 0 255 255 255'\nelse\n  pixels='0 0 0 255 0 0'\nfi\ncat > \"$SPDFDIFF_RENDER_OUTPUT_DIR/page-0001.ppm\" <<EOF\nP3\n2 1\n255\n$pixels\nEOF\n",
+            )
+            .expect("mock visual renderer command should be written");
+            let mut permissions = fs::metadata(&path)
+                .expect("mock visual renderer command metadata should be readable")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions)
+                .expect("mock visual renderer command should be executable");
             path
         }
     }

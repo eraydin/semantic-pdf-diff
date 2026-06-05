@@ -23,6 +23,7 @@ Use this reference with `spdfdiff-report-cli`.
 - `spdfdiff extract file.pdf --format json`
 - `spdfdiff corpus tests/fixtures/real_world --output corpus_report.json`
 - `spdfdiff check --config .spdfdiff.toml`
+- `spdfdiff visual-diff old.pdf new.pdf --renderer-command <cmd>`
 - Corpus manifests may declare maximum partial-file counts, per-file
   diagnostic maxima, and diff diagnostic maxima. Treat those as deterministic
   compatibility regression gates. Partial-file counts track extraction
@@ -30,6 +31,8 @@ Use this reference with `spdfdiff-report-cli`.
   counted separately.
 - Check configs may declare PDF pairs, artifact formats, threshold budgets,
   ignored change kinds, and baseline diff reports for CI suppression.
+- Visual diff uses an external renderer adapter that writes deterministic RGB
+  PPM page images for pixel comparison and optional heatmap artifacts.
 
 ## Test Expectations
 
@@ -42,3 +45,6 @@ Use this reference with `spdfdiff-report-cli`.
 - Markdown includes summary table, change list, and diagnostics.
 - Basic HTML has no external network resources.
 - CLI exit codes are documented and tested.
+- Visual diff JSON includes schema version, page status, pixel counts, max
+  channel deltas, optional heatmap paths, and diagnostics without absolute
+  renderer command paths.

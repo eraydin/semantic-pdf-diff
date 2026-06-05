@@ -130,6 +130,14 @@ scanned PDFs, and invokes `SPDFDIFF_OCR_COMMAND <image>` or
 with image-object provenance. If no OCR engine produces text, the CLI keeps
 emitting stable missing-text-layer diagnostics.
 
+`spdfdiff visual-diff` now provides an external-renderer visual fallback path.
+The CLI invokes a configured renderer command with deterministic environment
+variables, reads RGB PPM page images, compares same-size pages pixel-by-pixel
+with a configurable channel threshold, emits stable JSON summaries, and can
+write deterministic PPM heatmaps under an artifacts directory. This is renderer
+grade when the supplied renderer is renderer grade, but it deliberately remains
+an adapter path rather than a core-crate renderer dependency.
+
 ## Phase 5 — AI-native review layer
 
 ### Objective

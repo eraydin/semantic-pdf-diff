@@ -6,9 +6,10 @@ documents into one place so integration tests and manual CLI checks have a
 single source of truth.
 
 The samples are designed to evaluate a semantic PDF diff engine across text,
-layout, table, image, metadata, annotation, form, vector graphic, and scanned
-document surfaces. Some scenarios describe capabilities that are intentionally
-diagnostic-backed or deferred by the current CLI rather than fully implemented.
+layout, table, image, metadata, annotation, form, vector graphic, scanned
+document, and external-renderer visual-diff surfaces. Some scenarios describe
+capabilities that are intentionally diagnostic-backed or adapter-backed by the
+current CLI rather than fully implemented inside core crates.
 
 ## CLI Report Format Coverage
 
@@ -381,3 +382,44 @@ file-attachment annotation dictionaries.
 - Current behavior should report the visible text changes and emit
   `UNSUPPORTED_ANNOTATION_DIFF` for the annotation and attachment surfaces until
   field-level annotation comparison is implemented.
+
+## 21. External Renderer Visual Diff With Image Content
+
+**Files:** `visual_diff_image_content_old.pdf`,
+`visual_diff_image_content_new.pdf`
+
+**Purpose:** Provide valid, openable PDFs with image XObjects for exercising the
+`spdfdiff visual-diff` external-renderer adapter and heatmap artifact path.
+
+**Expected scenario triggers:**
+
+- Both files include raster image content and can be opened in a normal PDF
+  viewer.
+- The semantic `diff` command should still report deterministic image payload
+  changes and surrounding text changes.
+- The `visual-diff` command should invoke a caller-provided renderer command,
+  compare the resulting RGB PPM page images, and emit stable page-level changed
+  pixel counts.
+- When `--artifacts-dir` is supplied, rendered pages should be preserved under
+  `old-rendered/` and `new-rendered/`, and changed pages should receive PPM
+  heatmaps under `heatmaps/`.
+- The visual result is renderer-grade only when the supplied external renderer
+  is renderer-grade; core crates still do not embed a PDF renderer.
+
+## 22. Bean And Leaf Menu Renderer Fixture
+
+**Files:** `Bean_and_Leaf_Menu_old.pdf`, `Bean_and_Leaf_Menu_new.pdf`
+
+**Purpose:** Preserve a larger, openable menu-style PDF pair for manual
+renderer-adapter testing and compatibility-gate diagnostics.
+
+**Expected scenario triggers:**
+
+- Both files are valid PDFs that can be opened in a normal viewer.
+- The files currently exercise unsupported stream-filter diagnostics while still
+  parsing as partial compatibility-gate inputs.
+- `diff` should preserve the exact unsupported-filter diagnostics instead of
+  treating the input as a hard failure.
+- `visual-diff` can be run against the pair when a renderer command is supplied.
+  With a real renderer, the output should represent page raster differences;
+  with a mock renderer, it only validates the adapter and report plumbing.

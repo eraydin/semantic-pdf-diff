@@ -2,15 +2,16 @@
   "schema_version": "1",
   "compatibility_label": "compatibility-gate",
   "thresholds": {
-    "min_parsed_files": 40,
+    "min_parsed_files": 44,
     "max_missing_required_files": 0,
     "max_failed_files": 0,
     "max_failed_diff_pairs": 0,
-    "max_partial_files": 2,
+    "max_partial_files": 4,
     "diagnostic_maxima": {
       "MISSING_TEXT_LAYER": 2,
       "MISSING_TOUNICODE": 0,
       "STREAM_LENGTH_MISMATCH": 0,
+      "UNSUPPORTED_STREAM_FILTER": 7,
       "TAGGED_MCID_DETECTED": 2,
       "TAGGED_PDF_STRUCTURE_DETECTED": 2
     },
@@ -18,11 +19,14 @@
       "MISSING_TEXT_LAYER": 2,
       "MISSING_TOUNICODE": 0,
       "STREAM_LENGTH_MISMATCH": 0,
+      "UNSUPPORTED_STREAM_FILTER": 7,
       "TAGGED_MCID_DETECTED": 2,
       "TAGGED_PDF_STRUCTURE_DETECTED": 2
     }
   },
   "required_files": [
+    "Bean_and_Leaf_Menu_new.pdf",
+    "Bean_and_Leaf_Menu_old.pdf",
     "annotations_base_v1.pdf",
     "annotations_visual_markup_v2.pdf",
     "attachment_link_bundle_v1.pdf",
@@ -61,10 +65,17 @@
     "ultimate_semantic_diff_v2.pdf",
     "vector_paths_graphic_v1.pdf",
     "vector_paths_graphic_v2.pdf",
+    "visual_diff_image_content_old.pdf",
+    "visual_diff_image_content_new.pdf",
     "watermark_overlay_v1.pdf",
     "watermark_overlay_v2.pdf"
   ],
   "diff_pairs": [
+    {
+      "name": "bean-and-leaf-menu",
+      "old_file": "Bean_and_Leaf_Menu_old.pdf",
+      "new_file": "Bean_and_Leaf_Menu_new.pdf"
+    },
     {
       "name": "annotations",
       "old_file": "annotations_base_v1.pdf",
@@ -129,6 +140,11 @@
       "name": "report-with-images",
       "old_file": "report_with_images_v1.pdf",
       "new_file": "report_with_images_v2.pdf"
+    },
+    {
+      "name": "visual-diff-image-content",
+      "old_file": "visual_diff_image_content_old.pdf",
+      "new_file": "visual_diff_image_content_new.pdf"
     },
     {
       "name": "scanned-document",

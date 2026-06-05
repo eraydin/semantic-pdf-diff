@@ -41,6 +41,9 @@ workflows where a text-only or screenshot-only PDF diff is not enough.
   OpenAI-compatible HTTP endpoint such as local llama.cpp `llama-server` and
   writes a request/response envelope. This is outside the deterministic diff
   path.
+- `visual-diff <old.pdf> <new.pdf>` invokes an external renderer command twice,
+  compares deterministic PPM page images pixel-by-pixel, writes stable JSON, and
+  can write PPM heatmaps under `--artifacts-dir`.
 
 ## Example
 
@@ -49,9 +52,28 @@ spdfdiff diff old.pdf new.pdf --format html --output diff.html
 spdfdiff diff old.pdf new.pdf --format ai-json --output review.json
 spdfdiff review review.json --endpoint http://127.0.0.1:8080/v1 --model local-model --output llm-review.json
 spdfdiff extract old.pdf --format json --output extract.json
+spdfdiff visual-diff old.pdf new.pdf --renderer-command .\render-to-ppm.cmd --artifacts-dir visual-artifacts --output visual.json
 spdfdiff corpus samples --manifest samples\compatibility_corpus_manifest.json --output corpus.json --fail-on-gate
 spdfdiff check --config .spdfdiff.toml
 ```
+
+## Visual Diff Renderer Contract
+
+`visual-diff` keeps PDF rendering outside the core crates. The configured
+renderer command is executed once for the old PDF and once for the new PDF. The
+CLI sets these environment variables:
+
+- `SPDFDIFF_RENDER_INPUT`: PDF path to render.
+- `SPDFDIFF_RENDER_OUTPUT_DIR`: directory where rendered page images must be
+  written.
+- `SPDFDIFF_RENDER_ROLE`: `old` or `new`.
+- `SPDFDIFF_RENDER_FORMAT`: currently `ppm`.
+- `SPDFDIFF_RENDER_PAGE_PATTERN`: `page-%04d.ppm`.
+
+The renderer must write RGB PPM files such as `page-0001.ppm`. The command can
+be supplied with `--renderer-command` or `SPDFDIFF_RENDER_COMMAND`. When
+`--artifacts-dir` is set, rendered pages are preserved in `old-rendered/` and
+`new-rendered/`, and changed pages get heatmaps in `heatmaps/`.
 
 ## CI Check Config
 
@@ -104,6 +126,9 @@ review works without adding TLS or hosted provider dependencies.
 - Image XObject payload changes by deterministic stream hash.
 - Native vector path operations and graphic-style operations by deterministic
   parsed content-operation signature.
+- Rendered page pixels through the optional external `visual-diff` adapter,
+  including changed-pixel counts, max channel deltas, page status, and optional
+  heatmap artifacts.
 - Text font resource and font-size changes for unchanged text as
   deterministic `StyleChanged` entries.
 - Text extraction that prefers `/ToUnicode` and uses a conservative Base14 Latin
@@ -136,7 +161,8 @@ pixel renderer. Text style classification currently covers content-stream font
 resource and font-size changes for unchanged text. Base14 fallback is limited to
 safe Latin simple-font bytes and does not claim broad font encoding support.
 Link/annotation comparison is field-level semantic comparison, not
-JavaScript/action execution. Renderer-grade visual diffing and renderer-grade
-table reconstruction from arbitrary drawing geometry remain incremental
-compatibility work. Unsupported surfaces are reported through stable diagnostics
-instead of being silently treated as supported semantic diffs.
+JavaScript/action execution. Renderer-grade visual diffing is available only
+through the external `visual-diff` renderer adapter; native renderer integration
+and renderer-grade table reconstruction from arbitrary drawing geometry remain
+incremental compatibility work. Unsupported surfaces are reported through stable
+diagnostics instead of being silently treated as supported semantic diffs.

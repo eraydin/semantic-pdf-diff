@@ -85,6 +85,20 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         max_review_items: usize,
     },
+    VisualDiff {
+        old_pdf: PathBuf,
+        new_pdf: PathBuf,
+        #[arg(long)]
+        renderer_command: Option<String>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        artifacts_dir: Option<PathBuf>,
+        #[arg(long, default_value_t = 0)]
+        pixel_threshold: u8,
+        #[arg(long)]
+        fail_on_visual_changes: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -252,6 +266,38 @@ fn run(cli: Cli) -> Result<i32, PdfDiffError> {
                 max_review_items,
             )?;
             write_or_print(to_json_pretty(&report)?, output)?;
+        }
+        Command::VisualDiff {
+            old_pdf,
+            new_pdf,
+            renderer_command,
+            output,
+            artifacts_dir,
+            pixel_threshold,
+            fail_on_visual_changes,
+        } => {
+            let renderer_command = renderer_command
+                .or_else(|| std::env::var("SPDFDIFF_RENDER_COMMAND").ok())
+                .ok_or_else(|| {
+                    PdfDiffError::InvalidInput(
+                        "visual-diff requires --renderer-command or SPDFDIFF_RENDER_COMMAND".into(),
+                    )
+                })?;
+            let report = run_visual_diff_command(
+                &old_pdf,
+                &new_pdf,
+                &renderer_command,
+                artifacts_dir.as_deref(),
+                pixel_threshold,
+            )?;
+            let changed = report.summary.changed_pages > 0
+                || report.summary.missing_old_pages > 0
+                || report.summary.missing_new_pages > 0
+                || report.summary.dimension_mismatch_pages > 0;
+            write_or_print(to_json_pretty(&report)?, output)?;
+            if fail_on_visual_changes && changed {
+                return Ok(1);
+            }
         }
     }
     Ok(0)
@@ -560,6 +606,77 @@ struct CheckPairReport {
 enum CheckPairStatus {
     Passed,
     Failed,
+}
+
+#[derive(Debug, Serialize)]
+struct VisualDiffReport {
+    schema_version: String,
+    old_file: String,
+    new_file: String,
+    renderer: VisualRendererReport,
+    pixel_threshold: u8,
+    summary: VisualDiffSummary,
+    pages: Vec<VisualPageDiff>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+struct VisualRendererReport {
+    command_configured: bool,
+    output_format: String,
+    page_file_pattern: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct VisualDiffSummary {
+    compared_pages: usize,
+    equal_pages: usize,
+    changed_pages: usize,
+    missing_old_pages: usize,
+    missing_new_pages: usize,
+    dimension_mismatch_pages: usize,
+    total_pixels: u64,
+    changed_pixels: u64,
+    max_channel_delta: u8,
+}
+
+#[derive(Debug, Serialize)]
+struct VisualPageDiff {
+    page_index: usize,
+    status: VisualPageStatus,
+    old_image: Option<VisualImageInfo>,
+    new_image: Option<VisualImageInfo>,
+    total_pixels: u64,
+    changed_pixels: u64,
+    changed_pixel_ratio: f64,
+    max_channel_delta: u8,
+    heatmap: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VisualPageStatus {
+    Equal,
+    Changed,
+    MissingOld,
+    MissingNew,
+    DimensionMismatch,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VisualImageInfo {
+    width: usize,
+    height: usize,
+    hash: String,
+}
+
+#[derive(Debug, Clone)]
+struct RenderedPage {
+    index: usize,
+    width: usize,
+    height: usize,
+    pixels_rgb: Vec<u8>,
+    hash: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1069,6 +1186,424 @@ fn sanitize_artifact_name(name: &str) -> String {
 
 fn path_for_report(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn run_visual_diff_command(
+    old_pdf: &Path,
+    new_pdf: &Path,
+    renderer_command: &str,
+    artifacts_dir: Option<&Path>,
+    pixel_threshold: u8,
+) -> Result<VisualDiffReport, PdfDiffError> {
+    let render_root = artifacts_dir.map_or_else(
+        || {
+            std::env::temp_dir().join(format!(
+                "spdfdiff-visual-{}-{}",
+                std::process::id(),
+                stable_hash(format!("{}|{}", old_pdf.display(), new_pdf.display()).as_bytes())
+            ))
+        },
+        Path::to_path_buf,
+    );
+    let cleanup_render_root = artifacts_dir.is_none();
+    if cleanup_render_root && render_root.exists() {
+        std::fs::remove_dir_all(&render_root)
+            .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    }
+    std::fs::create_dir_all(&render_root)
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+
+    let old_dir = render_root.join("old-rendered");
+    let new_dir = render_root.join("new-rendered");
+    let heatmap_dir = render_root.join("heatmaps");
+    if !cleanup_render_root {
+        for owned_dir in [&old_dir, &new_dir, &heatmap_dir] {
+            if owned_dir.exists() {
+                std::fs::remove_dir_all(owned_dir)
+                    .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+            }
+        }
+    }
+    let mut diagnostics = Vec::new();
+    let old_pages = render_pdf_pages_with_command(
+        old_pdf,
+        &old_dir,
+        "old",
+        renderer_command,
+        &mut diagnostics,
+    )?;
+    let new_pages = render_pdf_pages_with_command(
+        new_pdf,
+        &new_dir,
+        "new",
+        renderer_command,
+        &mut diagnostics,
+    )?;
+    let write_heatmaps = artifacts_dir.is_some();
+    if write_heatmaps {
+        std::fs::create_dir_all(&heatmap_dir)
+            .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    }
+
+    let (pages, summary) = compare_rendered_pages(
+        &old_pages,
+        &new_pages,
+        pixel_threshold,
+        write_heatmaps.then_some(heatmap_dir.as_path()),
+    )?;
+
+    if cleanup_render_root {
+        let _ = std::fs::remove_dir_all(&render_root);
+    }
+
+    Ok(VisualDiffReport {
+        schema_version: "1".to_owned(),
+        old_file: display_file_name(old_pdf),
+        new_file: display_file_name(new_pdf),
+        renderer: VisualRendererReport {
+            command_configured: true,
+            output_format: "ppm-rgb".to_owned(),
+            page_file_pattern: "page-%04d.ppm".to_owned(),
+        },
+        pixel_threshold,
+        summary,
+        pages,
+        diagnostics,
+    })
+}
+
+fn render_pdf_pages_with_command(
+    pdf_path: &Path,
+    output_dir: &Path,
+    role: &str,
+    renderer_command: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<RenderedPage>, PdfDiffError> {
+    std::fs::create_dir_all(output_dir)
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+
+    let mut command = renderer_shell_command(renderer_command);
+    command
+        .env("SPDFDIFF_RENDER_INPUT", pdf_path)
+        .env("SPDFDIFF_RENDER_OUTPUT_DIR", output_dir)
+        .env("SPDFDIFF_RENDER_ROLE", role)
+        .env("SPDFDIFF_RENDER_FORMAT", "ppm")
+        .env("SPDFDIFF_RENDER_PAGE_PATTERN", "page-%04d.ppm");
+    let output = command
+        .output()
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+    if !output.status.success() {
+        return Err(PdfDiffError::InvalidInput(format!(
+            "visual renderer failed for {role} PDF with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let pages = rendered_pages_from_dir(output_dir, diagnostics)?;
+    if pages.is_empty() {
+        diagnostics.push(Diagnostic::warning(
+            "VISUAL_RENDER_NO_PAGES",
+            format!("visual renderer produced no PPM pages for {role} PDF"),
+        ));
+    }
+    Ok(pages)
+}
+
+fn renderer_shell_command(renderer_command: &str) -> ProcessCommand {
+    #[cfg(windows)]
+    {
+        let mut command = ProcessCommand::new("cmd");
+        command.arg("/C").arg(renderer_command);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = ProcessCommand::new("sh");
+        command.arg("-c").arg(renderer_command);
+        command
+    }
+}
+
+fn rendered_pages_from_dir(
+    output_dir: &Path,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<RenderedPage>, PdfDiffError> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(output_dir)
+        .map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?
+    {
+        let entry = entry.map_err(|error| PdfDiffError::InvalidInput(error.to_string()))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("ppm") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+
+    let mut pages = Vec::new();
+    for (index, path) in paths.into_iter().enumerate() {
+        match read_ppm_rgb(&path) {
+            Ok((width, height, pixels_rgb)) => {
+                let hash = stable_hash(&pixels_rgb);
+                pages.push(RenderedPage {
+                    index,
+                    width,
+                    height,
+                    pixels_rgb,
+                    hash,
+                });
+            }
+            Err(message) => diagnostics.push(Diagnostic::warning(
+                "VISUAL_RENDER_IMAGE_UNREADABLE",
+                format!(
+                    "rendered page image {} could not be read: {message}",
+                    path_for_report(&path)
+                ),
+            )),
+        }
+    }
+    Ok(pages)
+}
+
+fn read_ppm_rgb(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let mut cursor = 0usize;
+    let magic = next_ppm_token(&bytes, &mut cursor)?;
+    let width = next_ppm_token(&bytes, &mut cursor)?
+        .parse::<usize>()
+        .map_err(|error| format!("invalid width: {error}"))?;
+    let height = next_ppm_token(&bytes, &mut cursor)?
+        .parse::<usize>()
+        .map_err(|error| format!("invalid height: {error}"))?;
+    let max_value = next_ppm_token(&bytes, &mut cursor)?
+        .parse::<usize>()
+        .map_err(|error| format!("invalid max value: {error}"))?;
+    if max_value == 0 || max_value > 255 {
+        return Err(format!("max value {max_value} is not supported"));
+    }
+    let expected_len = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "image dimensions overflowed".to_owned())?;
+
+    match magic.as_str() {
+        "P6" => {
+            if cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if bytes.len().saturating_sub(cursor) < expected_len {
+                return Err(format!(
+                    "P6 pixel payload has {} bytes but expected {expected_len}",
+                    bytes.len().saturating_sub(cursor)
+                ));
+            }
+            Ok((width, height, bytes[cursor..cursor + expected_len].to_vec()))
+        }
+        "P3" => {
+            let mut pixels = Vec::with_capacity(expected_len);
+            for _ in 0..expected_len {
+                let sample = next_ppm_token(&bytes, &mut cursor)?
+                    .parse::<usize>()
+                    .map_err(|error| format!("invalid P3 sample: {error}"))?;
+                if sample > max_value {
+                    return Err(format!("P3 sample {sample} exceeds max value {max_value}"));
+                }
+                pixels.push(((sample * 255) / max_value) as u8);
+            }
+            Ok((width, height, pixels))
+        }
+        other => Err(format!("PPM magic {other} is not supported")),
+    }
+}
+
+fn next_ppm_token(bytes: &[u8], cursor: &mut usize) -> Result<String, String> {
+    loop {
+        while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+            *cursor += 1;
+        }
+        if *cursor < bytes.len() && bytes[*cursor] == b'#' {
+            while *cursor < bytes.len() && bytes[*cursor] != b'\n' {
+                *cursor += 1;
+            }
+            continue;
+        }
+        break;
+    }
+    if *cursor >= bytes.len() {
+        return Err("unexpected end of PPM header".to_owned());
+    }
+    let start = *cursor;
+    while *cursor < bytes.len() && !bytes[*cursor].is_ascii_whitespace() {
+        *cursor += 1;
+    }
+    String::from_utf8(bytes[start..*cursor].to_vec())
+        .map_err(|error| format!("PPM token is not UTF-8: {error}"))
+}
+
+fn compare_rendered_pages(
+    old_pages: &[RenderedPage],
+    new_pages: &[RenderedPage],
+    pixel_threshold: u8,
+    heatmap_dir: Option<&Path>,
+) -> Result<(Vec<VisualPageDiff>, VisualDiffSummary), PdfDiffError> {
+    let mut pages = Vec::new();
+    let mut summary = VisualDiffSummary::default();
+    let page_count = old_pages.len().max(new_pages.len());
+    for page_index in 0..page_count {
+        let old_page = old_pages.get(page_index);
+        let new_page = new_pages.get(page_index);
+        let page =
+            compare_rendered_page(page_index, old_page, new_page, pixel_threshold, heatmap_dir)?;
+        match page.status {
+            VisualPageStatus::Equal => summary.equal_pages += 1,
+            VisualPageStatus::Changed => summary.changed_pages += 1,
+            VisualPageStatus::MissingOld => summary.missing_old_pages += 1,
+            VisualPageStatus::MissingNew => summary.missing_new_pages += 1,
+            VisualPageStatus::DimensionMismatch => summary.dimension_mismatch_pages += 1,
+        }
+        if matches!(
+            page.status,
+            VisualPageStatus::Equal | VisualPageStatus::Changed
+        ) {
+            summary.compared_pages += 1;
+        }
+        summary.total_pixels += page.total_pixels;
+        summary.changed_pixels += page.changed_pixels;
+        summary.max_channel_delta = summary.max_channel_delta.max(page.max_channel_delta);
+        pages.push(page);
+    }
+    Ok((pages, summary))
+}
+
+fn compare_rendered_page(
+    page_index: usize,
+    old_page: Option<&RenderedPage>,
+    new_page: Option<&RenderedPage>,
+    pixel_threshold: u8,
+    heatmap_dir: Option<&Path>,
+) -> Result<VisualPageDiff, PdfDiffError> {
+    let old_image = old_page.map(visual_image_info);
+    let new_image = new_page.map(visual_image_info);
+    let Some(old_page) = old_page else {
+        return Ok(VisualPageDiff {
+            page_index,
+            status: VisualPageStatus::MissingOld,
+            old_image,
+            new_image,
+            total_pixels: 0,
+            changed_pixels: 0,
+            changed_pixel_ratio: 0.0,
+            max_channel_delta: 0,
+            heatmap: None,
+        });
+    };
+    let Some(new_page) = new_page else {
+        return Ok(VisualPageDiff {
+            page_index,
+            status: VisualPageStatus::MissingNew,
+            old_image,
+            new_image,
+            total_pixels: 0,
+            changed_pixels: 0,
+            changed_pixel_ratio: 0.0,
+            max_channel_delta: 0,
+            heatmap: None,
+        });
+    };
+    if old_page.width != new_page.width || old_page.height != new_page.height {
+        return Ok(VisualPageDiff {
+            page_index,
+            status: VisualPageStatus::DimensionMismatch,
+            old_image,
+            new_image,
+            total_pixels: 0,
+            changed_pixels: 0,
+            changed_pixel_ratio: 0.0,
+            max_channel_delta: 0,
+            heatmap: None,
+        });
+    }
+
+    let mut changed_pixels = 0u64;
+    let mut max_channel_delta = 0u8;
+    let mut heatmap_pixels = heatmap_dir.map(|_| Vec::with_capacity(old_page.pixels_rgb.len()));
+    for (old_pixel, new_pixel) in old_page
+        .pixels_rgb
+        .chunks_exact(3)
+        .zip(new_page.pixels_rgb.chunks_exact(3))
+    {
+        let channel_delta = old_pixel
+            .iter()
+            .zip(new_pixel)
+            .map(|(old, new)| old.abs_diff(*new))
+            .max()
+            .unwrap_or(0);
+        max_channel_delta = max_channel_delta.max(channel_delta);
+        let changed = channel_delta > pixel_threshold;
+        if changed {
+            changed_pixels += 1;
+        }
+        if let Some(pixels) = &mut heatmap_pixels {
+            if changed {
+                pixels.extend_from_slice(&[255, 0, 0]);
+            } else {
+                let gray =
+                    ((u16::from(old_pixel[0]) + u16::from(old_pixel[1]) + u16::from(old_pixel[2]))
+                        / 3) as u8;
+                pixels.extend_from_slice(&[gray, gray, gray]);
+            }
+        }
+    }
+
+    let total_pixels = (old_page.width as u64) * (old_page.height as u64);
+    let heatmap = match (heatmap_dir, heatmap_pixels) {
+        (Some(dir), Some(pixels)) if changed_pixels > 0 => {
+            let file_name = format!("page-{:04}-heatmap.ppm", old_page.index + 1);
+            let path = dir.join(&file_name);
+            write_ppm_rgb(&path, old_page.width, old_page.height, &pixels)?;
+            Some(path_for_report(&Path::new("heatmaps").join(file_name)))
+        }
+        _ => None,
+    };
+    Ok(VisualPageDiff {
+        page_index,
+        status: if changed_pixels == 0 {
+            VisualPageStatus::Equal
+        } else {
+            VisualPageStatus::Changed
+        },
+        old_image,
+        new_image,
+        total_pixels,
+        changed_pixels,
+        changed_pixel_ratio: if total_pixels == 0 {
+            0.0
+        } else {
+            changed_pixels as f64 / total_pixels as f64
+        },
+        max_channel_delta,
+        heatmap,
+    })
+}
+
+fn visual_image_info(page: &RenderedPage) -> VisualImageInfo {
+    VisualImageInfo {
+        width: page.width,
+        height: page.height,
+        hash: page.hash.clone(),
+    }
+}
+
+fn write_ppm_rgb(
+    path: &Path,
+    width: usize,
+    height: usize,
+    pixels_rgb: &[u8],
+) -> Result<(), PdfDiffError> {
+    let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
+    bytes.extend_from_slice(pixels_rgb);
+    std::fs::write(path, bytes).map_err(|error| PdfDiffError::InvalidInput(error.to_string()))
 }
 
 #[cfg(test)]

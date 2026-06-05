@@ -101,7 +101,7 @@ treated as broad visual-rendering compatibility.
 
 1. **No dependency on third-party PDF libraries for the core engine.** General-purpose crates are allowed: `serde`, `thiserror`, `flate2`, `unicode-normalization`, `memmap2`, `smallvec`, `rayon`, `insta`, `proptest`, etc.
 2. **Every semantic result must preserve provenance.** A text block should point back to page, content stream, operator range, and source PDF object IDs where possible.
-3. **Layered fallback.** Prefer tagged PDF structure when available; otherwise use layout heuristics; otherwise fall back to text sequence diff; optionally fall back to visual diff later.
+3. **Layered fallback.** Prefer tagged PDF structure when available; otherwise use layout heuristics; otherwise fall back to text sequence diff; optionally use the external-renderer visual diff adapter for pixel-level evidence.
 4. **Deterministic output.** Same inputs must produce byte-identical JSON output unless explicitly configured otherwise.
 5. **AI-agent friendly tasks.** Every module must have clear boundaries, fixtures, acceptance tests, and no hidden cross-agent state.
 6. **Fail soft.** Invalid or unsupported PDF features should produce partial output plus diagnostics, not a total crash.
