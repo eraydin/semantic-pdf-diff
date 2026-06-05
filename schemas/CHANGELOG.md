@@ -1,6 +1,6 @@
 # Schema Changelog
 
-## 0.1.10
+## 0.1.12
 
 - Added `visual_diff.schema.json` for the external-renderer visual diff report,
   including renderer contract metadata, page status, changed-pixel counts,
