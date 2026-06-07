@@ -1265,6 +1265,13 @@ fn generated_reports_reflect_documented_scenario_expectations() {
         "interactive_forms_v2.pdf",
         &["Jane Doe", "Engineering", "Laptop"],
     );
+    assert_diff_lacks_diagnostic(
+        &fixture,
+        "interactive-forms-supported",
+        "interactive_forms_v1.pdf",
+        "interactive_forms_v2.pdf",
+        "UNSUPPORTED_FORM_FIELD_DIFF",
+    );
     assert_diff_contains_all(
         &fixture,
         "document-outline",
@@ -1670,6 +1677,27 @@ fn assert_diff_has_diagnostic(
             .any(|diagnostic| diagnostic["code"] == expected_code),
         "expected diagnostic code {expected_code} in {diagnostics:?}"
     );
+}
+
+fn assert_diff_lacks_diagnostic(
+    fixture: &TestFixture,
+    slug: &str,
+    old_name: &str,
+    new_name: &str,
+    absent_code: &str,
+) {
+    let output_path = fixture.path(&format!("{slug}.json"));
+    assert_success(&run_spdfdiff([
+        "diff",
+        path_arg(&real_sample_pdf(old_name)).as_str(),
+        path_arg(&real_sample_pdf(new_name)).as_str(),
+        "--format",
+        "json",
+        "--output",
+        path_arg(&output_path).as_str(),
+    ]));
+    let report = read_json(&output_path);
+    assert_diagnostic_code_absent(&report, absent_code);
 }
 
 fn assert_diagnostic_code_absent(report: &Value, code: &str) {

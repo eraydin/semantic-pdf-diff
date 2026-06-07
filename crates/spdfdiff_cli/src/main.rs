@@ -2441,13 +2441,6 @@ fn append_unsupported_feature_diagnostics(
         ));
     }
 
-    if document_has_any_token(document, &["/AcroForm", "/Widget"]) {
-        diagnostics.push(Diagnostic::warning(
-            "UNSUPPORTED_FORM_FIELD_DIFF",
-            "interactive form field comparison is not implemented",
-        ));
-    }
-
     append_font_diagnostics(font_resources, diagnostics);
     append_tagged_pdf_diagnostics(document, diagnostics);
 }
@@ -3991,12 +3984,6 @@ fn canonical_report_number(value: f32) -> String {
     text
 }
 
-fn document_has_any_token(document: &pdf_core::PdfDocument, tokens: &[&str]) -> bool {
-    tokens
-        .iter()
-        .any(|token| document_has_token(document, token))
-}
-
 fn document_has_token(document: &pdf_core::PdfDocument, token: &str) -> bool {
     document
         .objects
@@ -4685,6 +4672,11 @@ mod tests {
         assert!(evidence.contains("name=customer"));
         assert!(evidence.contains("value=Bob"));
         assert!(!evidence.contains("hash="));
+        assert!(
+            diff.diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "UNSUPPORTED_FORM_FIELD_DIFF")
+        );
     }
 
     #[test]
